@@ -152,28 +152,45 @@ export default function InvoicesPage() {
     return results;
   };
 
-  const uploadToCloudinary = async (file: File): Promise<string | null> => {
+  const uploadToCloudinary = async (file: File): Promise<{ url: string } | { error: string }> => {
     try {
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch("/api/upload", { method: "POST", body: fd });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data.url ?? null;
-    } catch {
-      return null;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { error: data.error || `Erreur ${res.status}` };
+      }
+      if (!data.url) return { error: "URL manquante dans la réponse Cloudinary" };
+      return { url: data.url };
+    } catch (e) {
+      return { error: (e as Error).message || "Erreur réseau" };
     }
   };
 
   const handleFiles = async (newFiles: File[]) => {
     if (newFiles.length === 0) return;
-    setFiles((prev) => [...prev, ...newFiles]);
+
+    // Filter: only accept images and PDFs
+    const validFiles = newFiles.filter((f) =>
+      f.type.startsWith("image/") || f.type === "application/pdf"
+    );
+    const rejected = newFiles.filter((f) =>
+      !f.type.startsWith("image/") && f.type !== "application/pdf"
+    );
+
+    if (validFiles.length === 0) {
+      setUploadResult(`Fichiers non supportés : ${rejected.map((f) => f.name).join(", ")}. Acceptés : images et PDF.`);
+      return;
+    }
+
+    setFiles((prev) => [...prev, ...validFiles]);
     setUploadResult("");
     setSendResult("");
     setOcrStatus("Traitement en cours…");
 
-    const imageFiles = newFiles.filter((f) => f.type.startsWith("image/"));
-    const pdfFiles   = newFiles.filter((f) => f.type === "application/pdf");
+    const imageFiles = validFiles.filter((f) => f.type.startsWith("image/"));
+    const pdfFiles   = validFiles.filter((f) => f.type === "application/pdf");
 
     // OCR sur les images
     if (imageFiles.length > 0) {
@@ -183,18 +200,32 @@ export default function InvoicesPage() {
     }
 
     if (pdfFiles.length > 0) {
-      setOcrStatus((s) => s + ` ${pdfFiles.length} PDF(s) — texte extrait après enregistrement via IA.`);
+      setOcrStatus(`${pdfFiles.length} PDF(s) prêt(s) — texte extrait via IA après enregistrement.`);
     }
 
     // Upload vers Cloudinary
-    setOcrStatus((s) => s + " Upload Cloudinary…");
+    setOcrStatus((s) => `${s} Envoi vers Cloudinary…`);
     const urls: { name: string; url: string }[] = [];
-    for (const file of newFiles) {
-      const url = await uploadToCloudinary(file);
-      if (url) urls.push({ name: file.name, url });
+    const uploadErrors: string[] = [];
+
+    for (const file of validFiles) {
+      const result = await uploadToCloudinary(file);
+      if ("url" in result) {
+        urls.push({ name: file.name, url: result.url });
+      } else {
+        uploadErrors.push(`${file.name} : ${result.error}`);
+        console.error("Upload Cloudinary échoué:", file.name, result.error);
+      }
     }
+
     setUploadedUrls((prev) => [...prev, ...urls]);
-    setOcrStatus((s) => s.replace("Upload Cloudinary…", `${urls.length} fichier(s) uploadé(s) ✓`));
+
+    if (uploadErrors.length > 0) {
+      setUploadResult(`⚠️ Erreur upload : ${uploadErrors.join(" | ")}`);
+      setOcrStatus(`${urls.length}/${validFiles.length} fichier(s) uploadé(s).`);
+    } else {
+      setOcrStatus(`✓ ${urls.length} fichier(s) uploadé(s) sur Cloudinary.`);
+    }
   };
 
   const handleFileInput = (e: ChangeEvent<HTMLInputElement>) => {
@@ -430,8 +461,9 @@ export default function InvoicesPage() {
                   </button>
                 </div>
 
-                <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" multiple onChange={handleFileInput} className="hidden" />
-                <input ref={fileInputRef} type="file" accept="image/*,.pdf" multiple onChange={handleFileInput} className="hidden" />
+                {/* Sur mobile : capture="environment" ouvre la caméra. Sur PC : ouvre le sélecteur de fichiers images */}
+                <input ref={cameraInputRef} type="file" accept="image/*" multiple onChange={handleFileInput} className="hidden" />
+                <input ref={fileInputRef} type="file" accept="image/*,application/pdf,.pdf" multiple onChange={handleFileInput} className="hidden" />
 
                 {/* Region */}
                 <div>
