@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Accountant {
+  id        String   @id @default(cuid())
+  region    String   @unique
+  email     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  invoices Invoice[]
+
+  @@map("accountants")
+}
+
+model Invoice {
+  id           String      @id @default(cuid())
+  filename     String
+  originalName String
+  size         Int
+  mimeType     String
+  ocrText      String?
+  region       String
+  accountantId String?
+  accountant   Accountant? @relation(fields: [accountantId], references: [id], onDelete: SetNull)
+  sentAt       DateTime?
+  amount       Float?
+  category     String?
+  status       String      @default("pending")
+  invoiceDate  DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  aiOptimizations AiOptimization[]
+
+  @@map("invoices")
+}
+
+model AiOptimization {
+  id        String   @id @default(cuid())
+  invoiceId String?
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  prompt    String
+  response  String
+  region    String
+  createdAt DateTime @default(now())
+
+  @@map("ai_optimizations")
+}
+
+model SendHistory {
+  id             String   @id @default(cuid())
+  region         String
+  recipientEmail String
+  message        String
+  filesCount     Int
+  sentAt         DateTime @default(now())
+  success        Boolean  @default(true)
+  error          String?
+
+  @@map("send_history")
+}
