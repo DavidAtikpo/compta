@@ -61,7 +61,7 @@ export default function HistoryPage() {
     regionOptions.find((o) => o.value === r)?.flag || "🌍";
 
   return (
-    <div className="min-h-screen bg-slate-50 px-4 py-8">
+    <div className="px-4 py-6 lg:px-6 lg:py-8">
       <div className="mx-auto max-w-7xl space-y-8">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Historique des transmissions</h1>

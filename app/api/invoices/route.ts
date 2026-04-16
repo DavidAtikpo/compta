@@ -54,6 +54,7 @@ export async function POST(request: NextRequest) {
       amount,
       category,
       invoiceDate,
+      fileUrl,
     } = body;
 
     if (!originalName || !region) {
@@ -74,8 +75,8 @@ export async function POST(request: NextRequest) {
         : null;
 
     const result = await pool.query(
-      `INSERT INTO invoices (id, filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, status, "invoiceDate", "createdAt", "updatedAt")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, NOW(), NOW())
+      `INSERT INTO invoices (id, filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, status, "invoiceDate", "fileUrl", "createdAt", "updatedAt")
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, NOW(), NOW())
        RETURNING *`,
       [
         filename || originalName,
@@ -88,6 +89,7 @@ export async function POST(request: NextRequest) {
         amount || null,
         category || null,
         invoiceDate || null,
+        fileUrl || null,
       ]
     );
 

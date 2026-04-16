@@ -16,6 +16,32 @@ model User {
   updatedAt    DateTime @updatedAt
 }
 
+model Structure {
+  id        String   @id @default(cuid())
+  name      String
+  region    String
+  type      String
+  siret     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("structures")
+}
+
+model LegalAlert {
+  id          String   @id @default(cuid())
+  title       String
+  description String
+  source      String
+  url         String?
+  pubDate     DateTime
+  region      String   @default("france")
+  seen        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@map("legal_alerts")
+}
+
 model Accountant {
   id        String   @id @default(cuid())
   region    String   @unique
@@ -29,22 +55,31 @@ model Accountant {
 }
 
 model Invoice {
-  id           String      @id @default(cuid())
-  filename     String
-  originalName String
-  size         Int
-  mimeType     String
-  ocrText      String?
-  region       String
-  accountantId String?
-  accountant   Accountant? @relation(fields: [accountantId], references: [id], onDelete: SetNull)
-  sentAt       DateTime?
-  amount       Float?
-  category     String?
-  status       String      @default("pending")
-  invoiceDate  DateTime?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  id              String      @id @default(cuid())
+  filename        String
+  originalName    String
+  size            Int
+  mimeType        String
+  ocrText         String?
+  region          String
+  accountantId    String?
+  accountant      Accountant? @relation(fields: [accountantId], references: [id], onDelete: SetNull)
+  sentAt          DateTime?
+  amount          Float?
+  category        String?
+  status          String      @default("pending")
+  invoiceDate     DateTime?
+  fileUrl         String?
+  shareToken      String?     @unique
+  fournisseur     String?
+  numeroFacture   String?
+  montantHT       Float?
+  montantTVA      Float?
+  tauxTVA         Float?
+  montantTTC      Float?
+  structureId     String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 
   aiOptimizations AiOptimization[]
 

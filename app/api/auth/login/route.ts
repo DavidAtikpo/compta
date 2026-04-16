@@ -12,7 +12,7 @@ if (!JWT_SECRET) {
 export async function POST(request: Request) {
   const body = await request.json();
   const email = body.email?.toString().trim().toLowerCase();
-  const password = body.password?.toString();
+  const password = body.password?.toString().trim();
 
   if (!email || !password) {
     return NextResponse.json({ error: "Email et mot de passe sont requis." }, { status: 400 });

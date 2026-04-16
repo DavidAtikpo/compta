@@ -1,16 +1,41 @@
 #!/usr/bin/env node
 
+/**
+ * Préférez `npx prisma db push` pour aligner les tables sur prisma/schema.prisma.
+ * Ce script fixe le search_path (comme lib/postgres.ts) pour que les DDL
+ * ciblent le même schéma que Prisma (ex. ?schema=compta sur Neon).
+ */
+
 const { Pool } = require('pg');
 require('dotenv').config();
+
+function sanitizePgIdent(name) {
+  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) ? name : undefined;
+}
+
+function prismaSchemaFromUrl(url) {
+  const fromEnv = process.env.DATABASE_SCHEMA?.trim();
+  if (fromEnv) return sanitizePgIdent(fromEnv);
+  if (!url) return undefined;
+  const m = url.match(/[?&]schema=([^&]+)/);
+  const raw = m ? decodeURIComponent(m[1]) : undefined;
+  return raw ? sanitizePgIdent(raw) : undefined;
+}
+
+const prismaSchema = prismaSchemaFromUrl(process.env.DATABASE_URL || '');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
+  ...(prismaSchema ? { options: `-c search_path=${prismaSchema},public` } : {}),
 });
 
 async function createTables() {
   try {
     console.log('Connexion à la base de données...');
+    if (prismaSchema) {
+      await pool.query(`CREATE SCHEMA IF NOT EXISTS ${prismaSchema}`);
+    }
 
     // Créer la table accountants
     await pool.query(`

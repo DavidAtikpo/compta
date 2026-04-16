@@ -79,6 +79,16 @@ interface ConversationMessage {
   timestamp: Date;
 }
 
+interface LegalAlert {
+  id: string;
+  title: string;
+  description: string;
+  source: string;
+  url: string | null;
+  pubDate: string;
+  seen: boolean;
+}
+
 export default function OptimizePage() {
   const [region, setRegion] = useState("france");
   const [businessType, setBusinessType] = useState("eurl");
@@ -89,9 +99,14 @@ export default function OptimizePage() {
   const [taxRules, setTaxRules] = useState<TaxRule[]>([]);
   const [loadingRules, setLoadingRules] = useState(false);
   const [showRules, setShowRules] = useState(false);
+  const [legalAlerts, setLegalAlerts] = useState<LegalAlert[]>([]);
+  const [alertsUnread, setAlertsUnread] = useState(0);
+  const [showAlerts, setShowAlerts] = useState(false);
+  const [loadingAlerts, setLoadingAlerts] = useState(false);
 
   useEffect(() => {
     loadTaxRules();
+    loadAlerts();
   }, []);
 
   const loadTaxRules = async () => {
@@ -104,6 +119,30 @@ export default function OptimizePage() {
       }
     } catch { /* silent */ }
     finally { setLoadingRules(false); }
+  };
+
+  const loadAlerts = async (refresh = false) => {
+    setLoadingAlerts(true);
+    try {
+      const url = refresh ? "/api/legifrance?refresh=1" : "/api/legifrance";
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        setLegalAlerts(data.alerts ?? []);
+        setAlertsUnread((data.alerts ?? []).filter((a: LegalAlert) => !a.seen).length);
+      }
+    } catch { /* silent */ }
+    finally { setLoadingAlerts(false); }
+  };
+
+  const markAlertSeen = async (id: string | "all") => {
+    await fetch("/api/legifrance", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    setLegalAlerts((prev) => prev.map((a) => id === "all" || a.id === id ? { ...a, seen: true } : a));
+    setAlertsUnread(id === "all" ? 0 : Math.max(0, alertsUnread - 1));
   };
 
   const handleOptimize = async (customPrompt?: string) => {
@@ -187,13 +226,85 @@ export default function OptimizePage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 px-4 py-8">
+    <div className="px-4 py-6 lg:px-6 lg:py-8">
       <div className="mx-auto max-w-7xl space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Optimisation fiscale IA</h1>
-          <p className="text-slate-500 mt-1 text-sm">
-            IA spécialisée en fiscalité française — barèmes 2024/2025, tous les dispositifs légaux disponibles
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Optimisation fiscale IA</h1>
+            <p className="text-slate-500 mt-1 text-sm">
+              IA spécialisée en fiscalité française — barèmes 2024/2025, tous les dispositifs légaux disponibles
+            </p>
+          </div>
+          {/* Alertes Légifrance */}
+          <div className="relative shrink-0">
+            <button
+              onClick={() => { setShowAlerts(!showAlerts); if (!showAlerts) loadAlerts(); }}
+              className="relative inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+            >
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
+              Alertes loi
+              {alertsUnread > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-[10px] font-bold text-white">
+                  {alertsUnread}
+                </span>
+              )}
+            </button>
+            {showAlerts && (
+              <div className="absolute right-0 top-full mt-2 z-50 w-96 rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden">
+                <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">Alertes Légifrance / JO</h3>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => loadAlerts(true)}
+                      disabled={loadingAlerts}
+                      className="text-xs text-blue-600 hover:text-blue-700 disabled:opacity-50"
+                    >
+                      {loadingAlerts ? "…" : "Actualiser"}
+                    </button>
+                    {alertsUnread > 0 && (
+                      <button onClick={() => markAlertSeen("all")} className="text-xs text-slate-400 hover:text-slate-600">
+                        Tout marquer lu
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="max-h-80 overflow-y-auto divide-y divide-slate-100">
+                  {legalAlerts.length === 0 ? (
+                    <p className="text-xs text-slate-400 text-center py-6">
+                      {loadingAlerts ? "Chargement…" : "Aucune alerte. Cliquez sur Actualiser."}
+                    </p>
+                  ) : (
+                    legalAlerts.map((alert) => (
+                      <div
+                        key={alert.id}
+                        className={`px-4 py-3 cursor-pointer hover:bg-slate-50 transition ${!alert.seen ? "bg-blue-50/50" : ""}`}
+                        onClick={() => { markAlertSeen(alert.id); if (alert.url) window.open(alert.url, "_blank"); }}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <p className={`text-xs font-medium leading-snug ${!alert.seen ? "text-slate-900" : "text-slate-600"}`}>
+                            {!alert.seen && <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 mr-1.5 align-middle" />}
+                            {alert.title}
+                          </p>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleOptimize(`Analyse cette mise à jour légale et son impact fiscal pour mon cas (${businessType}, ${region}) : "${alert.title}". ${alert.description}`); setShowAlerts(false); }}
+                            className="shrink-0 text-xs text-blue-600 hover:text-blue-700 whitespace-nowrap"
+                          >
+                            Analyser →
+                          </button>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{alert.description}</p>
+                        <p className="text-[10px] text-slate-300 mt-1">
+                          {new Date(alert.pubDate).toLocaleDateString("fr-FR")} — {alert.source}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="grid gap-6 lg:grid-cols-[340px_1fr]">

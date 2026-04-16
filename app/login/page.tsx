@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -56,8 +57,15 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-white/10 text-white text-3xl font-bold mb-4">
-            C
+          <div className="mb-4 inline-block rounded-full ring-2 ring-white/20 shadow-lg shadow-blue-500/20">
+            <Image
+              src="/logo.jpg"
+              alt="The Code — logo"
+              width={80}
+              height={80}
+              className="h-20 w-20 rounded-full object-cover"
+              priority
+            />
           </div>
           <h1 className="text-3xl font-bold text-white">Compta IA</h1>
           <p className="mt-2 text-slate-400 text-sm">
