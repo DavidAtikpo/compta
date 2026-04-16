@@ -69,6 +69,7 @@ export default function InvoicesPage() {
   const [createOpen, setCreateOpen] = useState(false);
 
   const [extractingId, setExtractingId] = useState<string | null>(null);
+  const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [shareLinks, setShareLinks] = useState<Record<string, string>>({});
 
@@ -279,13 +280,31 @@ export default function InvoicesPage() {
 
   const handleExtract = async (id: string) => {
     setExtractingId(id);
+    setExtractResults((prev) => ({ ...prev, [id]: { ok: true, msg: "" } }));
     try {
       const res = await fetch(`/api/invoices/${id}/extract`, { method: "POST" });
-      if (res.ok) {
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
+        const d = json.data ?? {};
+        const parts: string[] = [];
+        if (d.fournisseur)    parts.push(d.fournisseur);
+        if (d.montantTTC)     parts.push(`TTC: ${Number(d.montantTTC).toFixed(2)} €`);
+        if (d.montantHT)      parts.push(`HT: ${Number(d.montantHT).toFixed(2)} €`);
+        if (d.numeroFacture)  parts.push(`N°${d.numeroFacture}`);
+        const msg = parts.length > 0 ? `✓ ${parts.join(" · ")}` : "✓ Extrait (aucune donnée trouvée)";
+        setExtractResults((prev) => ({ ...prev, [id]: { ok: true, msg } }));
         await loadInvoices(filterRegion || undefined, filterStatus || undefined);
+      } else {
+        const errMsg = json.error || `Erreur ${res.status}`;
+        setExtractResults((prev) => ({ ...prev, [id]: { ok: false, msg: `✗ ${errMsg}` } }));
       }
-    } catch { /* silent */ }
-    finally { setExtractingId(null); }
+    } catch (e) {
+      setExtractResults((prev) => ({ ...prev, [id]: { ok: false, msg: `✗ Erreur réseau` } }));
+      void e;
+    } finally {
+      setExtractingId(null);
+      setTimeout(() => setExtractResults((prev) => { const n = { ...prev }; delete n[id]; return n; }), 6000);
+    }
   };
 
   const handleShare = async (id: string) => {
@@ -586,10 +605,10 @@ export default function InvoicesPage() {
             </div>
           </div>
 
-          <div className="overflow-y-auto" style={{ maxHeight: "600px" }}>
+          <div className="overflow-x-auto">
             {loadingList ? (
               <div className="p-6 space-y-3">
-                {[0, 1, 2, 3].map((i) => <div key={i} className="h-16 rounded-xl bg-slate-100 animate-pulse" />)}
+                {[0, 1, 2, 3].map((i) => <div key={i} className="h-12 rounded-xl bg-slate-100 animate-pulse" />)}
               </div>
             ) : invoices.length === 0 ? (
               <div className="p-8 text-center text-slate-400">
@@ -606,95 +625,171 @@ export default function InvoicesPage() {
                 </button>
               </div>
             ) : (
-              <ul className="divide-y divide-slate-100">
-                {invoices.map((inv) => (
-                  <li key={inv.id} className="px-6 py-4 hover:bg-slate-50 transition">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-start gap-3 min-w-0">
-                        {inv.fileUrl ? (
-                          <a href={inv.fileUrl} target="_blank" rel="noopener noreferrer" title="Voir le document">
-                            <span className="text-xl shrink-0 hover:scale-110 transition-transform block">
-                              {regionOptions.find((r) => r.value === inv.region)?.flag || "🌍"}
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-100 bg-slate-50 text-left">
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">N° Facture</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Date</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Client / Fournisseur</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Référence</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant HT</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant TTC</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Statut</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {invoices.map((inv) => {
+                    const montantTTC = inv.montantTTC ?? inv.amount;
+                    const montantHT  = inv.montantHT;
+                    const dateLabel  = inv.createdAt
+                      ? new Date(inv.createdAt).toLocaleDateString("fr-FR")
+                      : "—";
+                    const flag = regionOptions.find((r) => r.value === inv.region)?.flag ?? "🌍";
+
+                    return (
+                      <tr key={inv.id} className="hover:bg-slate-50 transition-colors">
+                        {/* N° Facture */}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-base">{flag}</span>
+                            <span className="font-mono text-xs font-semibold text-slate-800">
+                              {inv.numeroFacture ?? <span className="text-slate-300 font-normal italic">—</span>}
                             </span>
-                          </a>
-                        ) : (
-                          <span className="text-xl shrink-0">
-                            {regionOptions.find((r) => r.value === inv.region)?.flag || "🌍"}
-                          </span>
-                        )}
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-slate-900 truncate">
-                            {inv.fournisseur ? <span className="font-semibold">{inv.fournisseur}</span> : inv.originalName}
-                            {inv.numeroFacture && <span className="ml-1.5 text-xs text-slate-400">#{inv.numeroFacture}</span>}
+                          </div>
+                        </td>
+
+                        {/* Date */}
+                        <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-600">
+                          {dateLabel}
+                        </td>
+
+                        {/* Client / Fournisseur */}
+                        <td className="px-4 py-3 max-w-[180px]">
+                          <p className="truncate text-sm font-medium text-slate-900">
+                            {inv.fournisseur ?? (
+                              <span className="text-slate-400 font-normal italic text-xs">
+                                {inv.originalName}
+                              </span>
+                            )}
                           </p>
-                          <p className="text-xs text-slate-500 mt-0.5 truncate">
-                            {inv.originalName}
-                            {inv.category ? ` • ${inv.category}` : ""}
-                            {" • "}
-                            {new Date(inv.createdAt).toLocaleDateString("fr-FR")}
-                          </p>
-                          {(inv.montantHT || inv.montantTVA) && (
-                            <p className="text-xs text-slate-400 mt-0.5">
-                              HT {inv.montantHT?.toFixed(2)} € • TVA {inv.montantTVA?.toFixed(2)} €
-                            </p>
+                          {inv.category && (
+                            <p className="truncate text-xs text-slate-400">{inv.category}</p>
                           )}
+                        </td>
+
+                        {/* Référence fichier */}
+                        <td className="px-4 py-3 max-w-[160px]">
+                          <p className="truncate text-xs text-slate-500">{inv.originalName}</p>
                           {inv.accountant_email && (
-                            <p className="text-xs text-slate-400 truncate">→ {inv.accountant_email}</p>
+                            <p className="truncate text-xs text-slate-400">→ {inv.accountant_email}</p>
                           )}
-                          {shareLinks[inv.id] && (
-                            <a
-                              href={shareLinks[inv.id]}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs text-blue-500 hover:text-blue-700 truncate block max-w-xs"
+                        </td>
+
+                        {/* Montant HT */}
+                        <td className="px-4 py-3 whitespace-nowrap text-right font-mono text-sm text-slate-700">
+                          {montantHT != null
+                            ? <span>{montantHT.toFixed(2)} <span className="text-xs text-slate-400">€</span></span>
+                            : <span className="text-slate-300">—</span>}
+                        </td>
+
+                        {/* Montant TTC */}
+                        <td className="px-4 py-3 whitespace-nowrap text-right">
+                          {montantTTC != null
+                            ? <span className="font-mono font-semibold text-slate-900">{montantTTC.toFixed(2)} <span className="text-xs text-slate-400">€</span></span>
+                            : <span className="text-slate-300 font-mono">—</span>}
+                        </td>
+
+                        {/* Statut */}
+                        <td className="px-4 py-3 whitespace-nowrap text-center">
+                          <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                            inv.status === "sent"     ? "bg-emerald-100 text-emerald-700"
+                            : inv.status === "archived" ? "bg-slate-100 text-slate-600"
+                            : "bg-amber-100 text-amber-700"
+                          }`}>
+                            {inv.status === "sent" ? "Envoyé" : inv.status === "archived" ? "Archivé" : "En attente"}
+                          </span>
+                        </td>
+
+                        {/* Actions */}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <div className="flex items-center justify-center gap-1.5">
+                            {/* Bouton PDF / document */}
+                            {inv.fileUrl ? (
+                              <a
+                                href={inv.fileUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Voir le document"
+                                className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-100 transition"
+                              >
+                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                                </svg>
+                                PDF
+                              </a>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-300">
+                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                                </svg>
+                                PDF
+                              </span>
+                            )}
+
+                                 {/* Extraction IA */}
+                                 <div className="flex flex-col items-center gap-0.5">
+                                   <button
+                                     onClick={() => handleExtract(inv.id)}
+                                     disabled={extractingId === inv.id}
+                                     title="Extraction comptable IA"
+                                     className={`inline-flex items-center rounded-lg border px-2 py-1 text-xs transition disabled:opacity-40 ${
+                                       extractResults[inv.id]
+                                         ? extractResults[inv.id].ok
+                                           ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                           : "border-rose-200 bg-rose-50 text-rose-700"
+                                         : "border-slate-200 text-slate-600 hover:bg-slate-100"
+                                     }`}
+                                   >
+                                     {extractingId === inv.id ? (
+                                       <span className="flex items-center gap-1">
+                                         <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                                           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                                           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8z"/>
+                                         </svg>
+                                         IA…
+                                       </span>
+                                     ) : "⚡ IA"}
+                                   </button>
+                                   {extractResults[inv.id]?.msg && (
+                                     <span className={`max-w-[120px] truncate text-[10px] leading-tight ${
+                                       extractResults[inv.id].ok ? "text-emerald-600" : "text-rose-600"
+                                     }`} title={extractResults[inv.id].msg}>
+                                       {extractResults[inv.id].msg}
+                                     </span>
+                                   )}
+                                 </div>
+
+                            {/* Partage */}
+                            <button
+                              onClick={() => handleShare(inv.id)}
+                              disabled={sharingId === inv.id}
+                              title={shareLinks[inv.id] ? "Lien partagé — cliquer pour copier" : "Générer un lien de partage"}
+                              className={`inline-flex items-center rounded-lg border px-2 py-1 text-xs transition disabled:opacity-40 ${
+                                shareLinks[inv.id]
+                                  ? "border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100"
+                                  : "border-slate-200 text-slate-600 hover:bg-slate-100"
+                              }`}
                             >
-                              🔗 Lien partagé
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex flex-col items-end gap-1.5 shrink-0">
-                        {inv.amount != null && (
-                          <span className="text-sm font-semibold text-slate-800">{inv.amount.toFixed(2)} €</span>
-                        )}
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                          inv.status === "sent" ? "bg-emerald-100 text-emerald-700"
-                          : inv.status === "archived" ? "bg-slate-100 text-slate-600"
-                          : "bg-amber-100 text-amber-700"
-                        }`}>
-                          {inv.status === "sent" ? "Envoyé" : inv.status === "archived" ? "Archivé" : "En attente"}
-                        </span>
-                        <div className="flex gap-1 mt-1">
-                          <button
-                            onClick={() => handleExtract(inv.id)}
-                            disabled={extractingId === inv.id}
-                            title="Extraction comptable IA"
-                            className="rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50 transition"
-                          >
-                            {extractingId === inv.id ? "…" : "⚡ IA"}
-                          </button>
-                          <button
-                            onClick={() => handleShare(inv.id)}
-                            disabled={sharingId === inv.id}
-                            title="Générer un lien de partage"
-                            className="rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50 transition"
-                          >
-                            {sharingId === inv.id ? "…" : shareLinks[inv.id] ? "🔗" : "Partager"}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                    {inv.ocrText && (
-                      <details className="mt-2">
-                        <summary className="text-xs text-blue-600 cursor-pointer hover:text-blue-700">Voir texte OCR</summary>
-                        <pre className="mt-1 text-xs text-slate-600 whitespace-pre-wrap leading-4 max-h-28 overflow-y-auto rounded bg-slate-50 p-2 border border-slate-100">
-                          {inv.ocrText.slice(0, 500)}{inv.ocrText.length > 500 ? "…" : ""}
-                        </pre>
-                      </details>
-                    )}
-                  </li>
-                ))}
-              </ul>
+                              {sharingId === inv.id ? "…" : "🔗"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             )}
           </div>
         </div>

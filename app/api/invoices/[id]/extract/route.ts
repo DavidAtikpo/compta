@@ -26,11 +26,31 @@ export async function POST(
       return NextResponse.json({ error: "OPENAI_API_KEY non configurée." }, { status: 400 });
     }
 
-    const messages: object[] = [
-      {
-        role: "system",
-        content: `Tu es un expert en comptabilité. Extrait les données comptables structurées d'une facture.
-Réponds UNIQUEMENT en JSON avec exactement ces champs (null si non trouvé) :
+    // Cloudinary : convertit PDF → image première page en remplaçant l'extension
+    // et en insérant pg_1/ avant le dernier segment du public_id
+    function cloudinaryPdfToImage(url: string): string | null {
+      if (!url) return null;
+      // Exemple : https://res.cloudinary.com/Cides/image/upload/v123/compta-ia/file.pdf
+      // → https://res.cloudinary.com/Cides/image/upload/pg_1/v123/compta-ia/file.jpg
+      const pdfMatch = url.match(/^(https:\/\/res\.cloudinary\.com\/.+\/upload\/)(.+\.pdf)$/i);
+      if (pdfMatch) {
+        return `${pdfMatch[1]}pg_1/${pdfMatch[2].replace(/\.pdf$/i, ".jpg")}`;
+      }
+      return null;
+    }
+
+    // Determine the best image URL to send to GPT Vision
+    let imageUrlForVision: string | null = null;
+    if (fileUrl) {
+      if (fileUrl.match(/\.(jpg|jpeg|png|webp|gif)$/i)) {
+        imageUrlForVision = fileUrl;
+      } else if (fileUrl.match(/\.pdf$/i)) {
+        imageUrlForVision = cloudinaryPdfToImage(fileUrl);
+      }
+    }
+
+    const systemPrompt = `Tu es un expert-comptable. Extrait les données comptables structurées depuis une facture.
+Réponds UNIQUEMENT en JSON valide avec exactement ces champs (null si non trouvé) :
 {
   "fournisseur": string | null,
   "numeroFacture": string | null,
@@ -42,26 +62,35 @@ Réponds UNIQUEMENT en JSON avec exactement ces champs (null si non trouvé) :
   "description": string | null,
   "compteComptable": string | null
 }
-Pour le compte comptable, utilise le plan comptable français (ex: 607 pour achats, 606 pour fournitures, 615 pour entretien, 622 pour honoraires, etc.)`,
-      },
-    ];
+Règles : montants en nombre décimal (ex: 120.50), tauxTVA en pourcentage (ex: 20), dateFacture au format YYYY-MM-DD.
+Pour le compte comptable, utilise le plan comptable français (607=achats, 606=fournitures, 615=entretien, 622=honoraires, 625=déplacement, 626=télécom, 627=services bancaires, 641=salaires).`;
 
-    if (fileUrl && fileUrl.match(/\.(jpg|jpeg|png|webp|gif)$/i)) {
+    const messages: object[] = [{ role: "system", content: systemPrompt }];
+
+    if (imageUrlForVision) {
+      // Vision : image ou PDF converti en image (première page)
       messages.push({
         role: "user",
         content: [
           {
             type: "text",
-            text: `Analyse cette facture (${originalName}) et extrait les données comptables.${ocrText ? `\n\nTexte OCR disponible :\n${ocrText}` : ""}`,
+            text: `Analyse cette facture "${originalName}" et extrait toutes les données comptables.${ocrText ? `\n\nTexte OCR additionnel :\n${ocrText.slice(0, 2000)}` : ""}`,
           },
-          { type: "image_url", image_url: { url: fileUrl, detail: "high" } },
+          { type: "image_url", image_url: { url: imageUrlForVision, detail: "high" } },
         ],
       });
-    } else {
+    } else if (ocrText) {
+      // Texte OCR uniquement
       messages.push({
         role: "user",
-        content: `Analyse cette facture (${originalName}) et extrait les données comptables.\n\nTexte OCR :\n${ocrText || "Non disponible"}`,
+        content: `Analyse cette facture "${originalName}" à partir du texte OCR ci-dessous et extrait toutes les données comptables.\n\nTexte OCR :\n${ocrText.slice(0, 4000)}`,
       });
+    } else {
+      // Aucune donnée disponible — retourne immédiatement
+      return NextResponse.json(
+        { error: "Aucune image ni texte OCR disponible pour cette facture. Uploadez d'abord le document." },
+        { status: 422 }
+      );
     }
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
