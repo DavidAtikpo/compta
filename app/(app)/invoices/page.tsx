@@ -138,6 +138,18 @@ function imapCountryFilterMatch(query: string, label: string, value: string): bo
   return hay.includes(q);
 }
 
+/** URLs image : aperçu en balise img (évite l’iframe qui affiche la photo trop zoomée sur mobile). */
+function isLikelyImagePreviewUrl(url: string): boolean {
+  const u = url.toLowerCase();
+  if (u.includes("/raw/upload/")) return false;
+  if (u.includes("/image/upload/") || u.includes("/image/authenticated/") || u.includes("/image/private/"))
+    return true;
+  if (u.includes("cloudinary.com") && u.includes("/image/")) return true;
+  if (/\.(jpe?g|png|gif|webp|bmp|heic|heif)(\?|#|$|\/)/i.test(u)) return true;
+  if (u.includes("resource_type=image")) return true;
+  return false;
+}
+
 const categoryOptions = [
   "Fournitures bureau",
   "Déplacement / Transport",
@@ -935,7 +947,6 @@ export default function InvoicesPage() {
   };
 
   const previewInvoiceDocument = async (invId: string, title: string) => {
-    setPreviewImageMode(false);
     const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
     if (!t) { setMessage("Connectez-vous pour voir le document."); return; }
     try {
@@ -944,7 +955,10 @@ export default function InvoicesPage() {
       if (res.ok && contentType.includes("application/json")) {
         const data = await res.json().catch(() => ({}));
         if (typeof data.url === "string") {
-          setPreviewTitle(title); setPreviewUrl(data.url); setPreviewOpen(true);
+          setPreviewTitle(title);
+          setPreviewUrl(data.url);
+          setPreviewImageMode(isLikelyImagePreviewUrl(data.url));
+          setPreviewOpen(true);
           return;
         }
         setMessage(typeof data.error === "string" ? data.error : "Aperçu impossible.");
@@ -953,7 +967,11 @@ export default function InvoicesPage() {
       if (res.ok) {
         const blob = await res.blob();
         const blobUrl = URL.createObjectURL(blob);
-        setPreviewTitle(title); setPreviewUrl(blobUrl); setPreviewOpen(true);
+        const mime = blob.type || contentType;
+        setPreviewTitle(title);
+        setPreviewUrl(blobUrl);
+        setPreviewImageMode(mime.startsWith("image/"));
+        setPreviewOpen(true);
         return;
       }
       const err = await res.json().catch(() => ({}));
@@ -1106,8 +1124,12 @@ export default function InvoicesPage() {
               </button>
             </div>
             {previewImageMode ? (
-              <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-100 p-2">
-                <img src={previewUrl} alt={previewTitle} className="max-h-full max-w-full object-contain" />
+              <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-slate-100 p-3">
+                <img
+                  src={previewUrl}
+                  alt={previewTitle}
+                  className="mx-auto block h-auto max-h-[calc(100dvh-5.5rem)] w-auto max-w-full object-contain [image-rendering:auto]"
+                />
               </div>
             ) : (
               <iframe src={previewUrl} title="Aperçu document" className="min-h-0 flex-1 w-full border-0" />
