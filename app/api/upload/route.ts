@@ -28,6 +28,14 @@ export async function POST(request: Request) {
       );
     }
 
+    // Re-configure with the latest env values (normalized to lowercase)
+    cloudinary.config({
+      cloud_name: cloudName.toLowerCase().trim(),
+      api_key: apiKey.trim(),
+      api_secret: apiSecret.trim(),
+      secure: true,
+    });
+
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
 
@@ -48,7 +56,8 @@ export async function POST(request: Request) {
       );
     }
 
-    console.log(`Upload Cloudinary: ${file.name} (${file.type}, ${(file.size / 1024).toFixed(1)} KB)`);
+    console.log(`Upload Cloudinary: "${file.name}" (${file.type || "type inconnu"}, ${(file.size / 1024).toFixed(1)} KB)`);
+    console.log(`Cloudinary config: cloud=${cloudName}, key=${apiKey?.slice(0, 6)}...`);
 
     const buffer = Buffer.from(await file.arrayBuffer());
     // For PDFs, use the proper mime type; Cloudinary handles PDFs as images
@@ -72,10 +81,27 @@ export async function POST(request: Request) {
       bytes: result.bytes,
     });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("Erreur Cloudinary upload:", msg);
+    // Cloudinary throws objects like { error: { message: "..." }, http_code: 401 }
+    let msg = "Erreur inconnue";
+    if (error instanceof Error) {
+      msg = error.message;
+    } else if (typeof error === "object" && error !== null) {
+      const e = error as Record<string, unknown>;
+      if (e.error && typeof e.error === "object") {
+        const inner = e.error as Record<string, unknown>;
+        msg = String(inner.message ?? JSON.stringify(e.error));
+      } else if (e.message) {
+        msg = String(e.message);
+      } else {
+        msg = JSON.stringify(error);
+      }
+    } else {
+      msg = String(error);
+    }
+    console.error("Erreur Cloudinary upload (raw):", JSON.stringify(error, null, 2));
+    console.error("Erreur Cloudinary upload (msg):", msg);
     return NextResponse.json(
-      { error: `Erreur upload Cloudinary : ${msg}` },
+      { error: `Erreur Cloudinary : ${msg}` },
       { status: 500 }
     );
   }
