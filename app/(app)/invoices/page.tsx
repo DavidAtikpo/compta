@@ -348,19 +348,25 @@ export default function InvoicesPage() {
       setMessage("Connectez-vous pour télécharger le document.");
       return;
     }
+    // Onglet ouvert tout de suite (sinon le navigateur bloque window.open après await fetch)
+    const w = window.open("about:blank", "_blank", "noopener,noreferrer");
+    if (!w) {
+      setMessage("Autorisez les pop-ups pour ce site afin d’ouvrir le PDF.");
+      return;
+    }
     try {
       const res = await fetch(`/api/invoices/${invId}/file`, {
         headers: { Authorization: `Bearer ${t}` },
-        redirect: "manual",
       });
-      const loc = res.headers.get("Location");
-      if (res.status === 302 && loc) {
-        window.open(loc, "_blank", "noopener,noreferrer");
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && typeof data.url === "string") {
+        w.location.href = data.url;
         return;
       }
-      const err = await res.json().catch(() => ({}));
-      setMessage(typeof err.error === "string" ? err.error : "Téléchargement impossible.");
+      w.close();
+      setMessage(typeof data.error === "string" ? data.error : "Téléchargement impossible.");
     } catch {
+      w.close();
       setMessage("Erreur réseau.");
     }
   };

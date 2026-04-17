@@ -1,17 +1,129 @@
 import { NextResponse } from "next/server";
 import { v2 as cloudinary } from "cloudinary";
 import { pool } from "../../../../../lib/postgres";
-import { signCloudinaryUrlIfApplicable } from "../../../../../lib/cloudinary-delivery";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
-function configureCloudinary(): boolean {
+function setupCloudinary(): boolean {
   const name = process.env.CLOUDINARY_CLOUD_NAME?.toLowerCase().trim();
-  const key = process.env.CLOUDINARY_API_KEY?.trim();
-  const secret = process.env.CLOUDINARY_API_SECRET?.trim();
-  if (!name || !key || !secret) return false;
-  cloudinary.config({ cloud_name: name, api_key: key, api_secret: secret, secure: true });
+  const key  = process.env.CLOUDINARY_API_KEY?.trim();
+  const sec  = process.env.CLOUDINARY_API_SECRET?.trim();
+  if (!name || !key || !sec) return false;
+  cloudinary.config({ cloud_name: name, api_key: key, api_secret: sec, secure: true });
   return true;
+}
+
+/** Extract public_id from a Cloudinary URL (strips version prefix, keeps folder/name.ext) */
+function extractPublicId(url: string): { publicId: string; resourceType: "image" | "raw" } | null {
+  const m = url.match(
+    /^https:\/\/res\.cloudinary\.com\/[^/]+\/(image|raw)\/upload\/(?:v\d+\/)?(.+)$/i
+  );
+  if (!m) return null;
+  return { publicId: m[2], resourceType: m[1].toLowerCase() as "image" | "raw" };
+}
+
+/**
+ * Convert a Cloudinary PDF (stored as image/upload) to JPEG data URL.
+ * Strategy 1 (fast): Apply inline transformation pg_1,f_jpg on the image/upload URL directly.
+ * Strategy 2 (fallback): Re-upload using base64 from a Cloudinary eager transform.
+ */
+async function pdfCloudinaryToJpegDataUrl(fileUrl: string): Promise<string | null> {
+  // Strategy 1: image/upload URL → add transformation pg_1,f_jpg inline (no re-upload needed)
+  // Works when the PDF was uploaded as image type (our new default)
+  const imgUploadMatch = fileUrl.match(
+    /^(https:\/\/res\.cloudinary\.com\/[^/]+\/image\/upload\/)(v\d+\/)(.+\.pdf)$/i
+  );
+  if (imgUploadMatch) {
+    const transformedUrl = `${imgUploadMatch[1]}pg_1,f_jpg,q_auto,w_1600,c_limit/${imgUploadMatch[2]}${imgUploadMatch[3]}`;
+    console.log("Tentative transformation inline:", transformedUrl.slice(0, 100));
+    const result = await imageUrlToDataUrl(transformedUrl);
+    if (result) return result;
+    // Try without version segment
+    const noVersionUrl = `${imgUploadMatch[1]}pg_1,f_jpg,q_auto,w_1600,c_limit/${imgUploadMatch[3]}`;
+    const result2 = await imageUrlToDataUrl(noVersionUrl);
+    if (result2) return result2;
+  }
+
+  // Strategy 2 (for old raw/upload PDFs): re-upload the PDF bytes via Cloudinary API
+  if (!setupCloudinary()) {
+    console.warn("Cloudinary non configuré");
+    return null;
+  }
+
+  const parsed = extractPublicId(fileUrl);
+  if (!parsed) {
+    console.warn("URL Cloudinary non reconnue:", fileUrl);
+    return null;
+  }
+
+  // Generate a signed URL for our own asset — Cloudinary SDK can access it
+  const signedUrl = cloudinary.url(parsed.publicId, {
+    resource_type: parsed.resourceType,
+    sign_url: true,
+    secure: true,
+    type: "upload",
+  });
+
+  console.log("Téléchargement PDF signé…");
+  const pdfRes = await fetch(signedUrl, { signal: AbortSignal.timeout(30000) });
+  if (!pdfRes.ok) {
+    console.warn(`PDF 401/404 même avec URL signée (${pdfRes.status}). Ce fichier est inaccessible.`);
+    return null;
+  }
+
+  const pdfBuf = Buffer.from(await pdfRes.arrayBuffer());
+  if (pdfBuf.length < 100) return null;
+
+  const tempPublicId = `compta-ia/extract-tmp-${Date.now()}`;
+  let uploadedPublicId: string | null = null;
+
+  try {
+    const up = await cloudinary.uploader.upload(
+      `data:application/pdf;base64,${pdfBuf.toString("base64")}`,
+      {
+        public_id: tempPublicId,
+        resource_type: "image",
+        overwrite: true,
+        eager: [{ width: 1600, crop: "limit", format: "jpg", page: 1 }],
+        eager_async: false,
+      }
+    );
+    uploadedPublicId = up.public_id;
+    const jpgUrl = up?.eager?.[0]?.secure_url as string | undefined;
+    if (jpgUrl) {
+      const data = await imageUrlToDataUrl(jpgUrl);
+      if (data) return data;
+    }
+  } catch (e) {
+    console.error("pdfCloudinaryToJpegDataUrl re-upload:", e);
+  } finally {
+    if (uploadedPublicId) {
+      try {
+        await cloudinary.uploader.destroy(uploadedPublicId, { resource_type: "image", invalidate: true });
+      } catch { /* ignore */ }
+    }
+  }
+  return null;
+}
+
+/** For regular image URLs: fetch and return as base64 data URL */
+async function imageUrlToDataUrl(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    if (!res.ok) {
+      console.warn(`Téléchargement image échoué: ${res.status} ${url.slice(0, 100)}`);
+      return null;
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 64) return null;
+    const ct = res.headers.get("content-type")?.split(";")[0]?.trim() || "image/jpeg";
+    if (!ct.startsWith("image/")) return null;
+    return `data:${ct};base64,${buf.toString("base64")}`;
+  } catch (e) {
+    console.warn("imageUrlToDataUrl:", (e as Error).message);
+    return null;
+  }
 }
 
 export async function POST(
@@ -30,122 +142,33 @@ export async function POST(
       return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });
     }
 
-    const { ocrText, originalName, fileUrl } = invoiceRes.rows[0];
+    const { ocrText, originalName, fileUrl } = invoiceRes.rows[0] as {
+      ocrText: string | null;
+      originalName: string;
+      fileUrl: string | null;
+    };
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (!openaiKey) {
       return NextResponse.json({ error: "OPENAI_API_KEY non configurée." }, { status: 400 });
     }
 
-    // URLs Cloudinary (surtout image/fetch) échouent souvent côté OpenAI → on télécharge côté serveur et on envoie en data URL
-    function cloudinaryPdfToRasterUrls(url: string): string[] {
-      if (!url || !url.toLowerCase().includes(".pdf")) return [];
-
-      const cloudMatch = url.match(/^https:\/\/res\.cloudinary\.com\/([^/]+)\//i);
-      const cloudName = cloudMatch?.[1];
-      if (!cloudName) return [];
-
-      const tx = "pg_1,f_jpg,q_auto,w_1600,c_limit";
-
-      if (url.includes("/raw/upload/")) {
-        const enc = encodeURIComponent(url);
-        return [`https://res.cloudinary.com/${cloudName}/image/fetch/${tx}/${enc}`];
-      }
-
-      const up = url.match(/^(https:\/\/res\.cloudinary\.com\/[^/]+\/)image\/upload\/((?:v\d+\/)?.+\.pdf)$/i);
-      if (up) {
-        return [`${up[1]}image/upload/${tx}/${up[2]}`];
-      }
-
-      return [];
-    }
-
-    async function fileUrlToVisionDataUrl(url: string): Promise<string | null> {
-      const lower = url.toLowerCase();
-      const isImage = /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(lower);
-      const isPdf = /\.pdf(\?|$)/i.test(lower);
-
-      const tryFetch = async (u: string): Promise<string | null> => {
-        const resolved = signCloudinaryUrlIfApplicable(u);
-        const res = await fetch(resolved, { signal: AbortSignal.timeout(45000) });
-        if (!res.ok) {
-          console.warn(`Vision fetch failed ${res.status}: ${u.slice(0, 120)}…`);
-          return null;
-        }
-        const buf = Buffer.from(await res.arrayBuffer());
-        if (buf.length < 64) return null;
-        const ct = res.headers.get("content-type")?.split(";")[0]?.trim() || "image/jpeg";
-        if (!ct.startsWith("image/")) {
-          console.warn(`Vision fetch unexpected type ${ct}`);
-          return null;
-        }
-        return `data:${ct};base64,${buf.toString("base64")}`;
-      };
-
-      if (isImage) return tryFetch(url);
-
-      if (isPdf) {
-        for (const rasterUrl of cloudinaryPdfToRasterUrls(url)) {
-          const data = await tryFetch(rasterUrl);
-          if (data) return data;
-        }
-
-        // Repli : re-upload temporaire du PDF (API signée) → eager page 1 en JPG → data URL → suppression
-        const pdfRes = await fetch(signCloudinaryUrlIfApplicable(url), {
-          signal: AbortSignal.timeout(45000),
-        });
-        if (!pdfRes.ok) {
-          console.warn("Impossible de télécharger le PDF pour l’extraction.");
-          return null;
-        }
-        const pdfBuf = Buffer.from(await pdfRes.arrayBuffer());
-        if (pdfBuf.length < 100) return null;
-
-        if (!configureCloudinary()) {
-          console.warn("Cloudinary non configuré — impossible le repli PDF→image.");
-          return null;
-        }
-
-        const tempId = `temp-extract/${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-        let uploadedPublicId: string | null = null;
-        try {
-          const up = await cloudinary.uploader.upload(
-            `data:application/pdf;base64,${pdfBuf.toString("base64")}`,
-            {
-              folder: "compta-ia",
-              public_id: tempId,
-              resource_type: "image",
-              overwrite: true,
-              eager: [{ width: 1600, crop: "limit", format: "jpg", page: 1 }],
-              eager_async: false,
-            }
-          );
-          uploadedPublicId = up.public_id;
-          const eagerUrl = up?.eager?.[0]?.secure_url as string | undefined;
-          if (eagerUrl) {
-            const data = await tryFetch(eagerUrl);
-            if (data) return data;
-          }
-        } catch (e) {
-          console.error("Repli Cloudinary PDF→JPG:", e);
-        } finally {
-          if (uploadedPublicId) {
-            try {
-              await cloudinary.uploader.destroy(uploadedPublicId, { resource_type: "image", invalidate: true });
-            } catch {
-              /* ignore */
-            }
-          }
-        }
-        return null;
-      }
-
-      return null;
-    }
-
+    // Build vision data URL
     let visionDataUrl: string | null = null;
+
     if (fileUrl) {
-      visionDataUrl = await fileUrlToVisionDataUrl(fileUrl);
+      const isPdf   = /\.pdf(\?|$)/i.test(fileUrl);
+      const isImage = /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(fileUrl);
+
+      if (isImage) {
+        visionDataUrl = await imageUrlToDataUrl(fileUrl);
+      } else if (isPdf) {
+        console.log("Conversion PDF→JPG via Cloudinary API…");
+        visionDataUrl = await pdfCloudinaryToJpegDataUrl(fileUrl);
+        if (!visionDataUrl) {
+          console.warn("Conversion PDF échouée — repli sur OCR si disponible");
+        }
+      }
     }
 
     const systemPrompt = `Tu es un expert-comptable. Extrait les données comptables structurées depuis une facture.
@@ -167,7 +190,6 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
     const messages: object[] = [{ role: "system", content: systemPrompt }];
 
     if (visionDataUrl) {
-      // Vision : data URL (téléchargée par notre serveur) — évite invalid_image_url côté OpenAI sur les URLs Cloudinary
       messages.push({
         role: "user",
         content: [
@@ -179,15 +201,13 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
         ],
       });
     } else if (ocrText) {
-      // Texte OCR uniquement
       messages.push({
         role: "user",
         content: `Analyse cette facture "${originalName}" à partir du texte OCR ci-dessous et extrait toutes les données comptables.\n\nTexte OCR :\n${ocrText.slice(0, 4000)}`,
       });
     } else {
-      // Aucune donnée disponible — retourne immédiatement
       return NextResponse.json(
-        { error: "Aucune image ni texte OCR disponible pour cette facture. Uploadez d'abord le document." },
+        { error: "Aucune image/PDF ni texte OCR disponible. Ré-uploadez le document depuis la page factures." },
         { status: 422 }
       );
     }
@@ -196,7 +216,7 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${openaiKey}`,
       },
       body: JSON.stringify({
         model: "gpt-4o",
@@ -221,26 +241,25 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
       if (!Number.isNaN(d.getTime())) invoiceDateVal = d;
     }
 
-    // Persist extracted data to DB
     await pool.query(
       `UPDATE invoices SET
-        "fournisseur" = COALESCE($1, "fournisseur"),
+        "fournisseur"   = COALESCE($1, "fournisseur"),
         "numeroFacture" = COALESCE($2, "numeroFacture"),
-        "montantHT" = COALESCE($3, "montantHT"),
-        "tauxTVA" = COALESCE($4, "tauxTVA"),
-        "montantTVA" = COALESCE($5, "montantTVA"),
-        "montantTTC" = COALESCE($6, "montantTTC"),
-        amount = COALESCE($6, amount),
-        "invoiceDate" = COALESCE($8::timestamptz, "invoiceDate"),
-        "updatedAt" = NOW()
+        "montantHT"     = COALESCE($3, "montantHT"),
+        "tauxTVA"       = COALESCE($4, "tauxTVA"),
+        "montantTVA"    = COALESCE($5, "montantTVA"),
+        "montantTTC"    = COALESCE($6, "montantTTC"),
+        amount          = COALESCE($6, amount),
+        "invoiceDate"   = COALESCE($8::timestamptz, "invoiceDate"),
+        "updatedAt"     = NOW()
       WHERE id = $7`,
       [
         extracted.fournisseur || null,
         extracted.numeroFacture || null,
-        extracted.montantHT || null,
-        extracted.tauxTVA || null,
-        extracted.montantTVA || null,
-        extracted.montantTTC || null,
+        extracted.montantHT    || null,
+        extracted.tauxTVA      || null,
+        extracted.montantTVA   || null,
+        extracted.montantTTC   || null,
         id,
         invoiceDateVal,
       ]

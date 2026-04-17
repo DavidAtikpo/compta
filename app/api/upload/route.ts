@@ -64,14 +64,12 @@ export async function POST(request: Request) {
     const mimeType = file.type || (file.name.endsWith(".pdf") ? "application/pdf" : "application/octet-stream");
     const base64 = `data:${mimeType};base64,${buffer.toString("base64")}`;
 
-    // PDFs → resource_type "raw" so they are served as real downloadable PDF files
-    // Images → resource_type "image" for transformations (OCR, Vision AI)
-    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-    const resourceType = isPdf ? "raw" : "image";
-
+    // Always use resource_type "image" — even for PDFs.
+    // Cloudinary accepts PDFs as image type and allows page transformations (pg_1, f_jpg, etc.)
+    // "raw" type blocks delivery (401) on many accounts and prevents transformations.
     const result = await cloudinary.uploader.upload(base64, {
       folder: "compta-ia",
-      resource_type: resourceType,
+      resource_type: "image",
       use_filename: true,
       unique_filename: true,
       filename_override: file.name.replace(/[^a-zA-Z0-9._-]/g, "_"),
