@@ -43,6 +43,8 @@ interface Invoice {
   montantHT: number | null;
   montantTVA: number | null;
   montantTTC: number | null;
+  tauxTVA: number | null;
+  invoiceDate: string | null;
 }
 
 export default function InvoicesPage() {
@@ -335,6 +337,31 @@ export default function InvoicesPage() {
     } finally {
       setExtractingId(null);
       setTimeout(() => setExtractResults((prev) => { const n = { ...prev }; delete n[id]; return n; }), 6000);
+    }
+  };
+
+  const openInvoiceDocument = async (invId: string) => {
+    const t =
+      token ??
+      (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+    if (!t) {
+      setMessage("Connectez-vous pour télécharger le document.");
+      return;
+    }
+    try {
+      const res = await fetch(`/api/invoices/${invId}/file`, {
+        headers: { Authorization: `Bearer ${t}` },
+        redirect: "manual",
+      });
+      const loc = res.headers.get("Location");
+      if (res.status === 302 && loc) {
+        window.open(loc, "_blank", "noopener,noreferrer");
+        return;
+      }
+      const err = await res.json().catch(() => ({}));
+      setMessage(typeof err.error === "string" ? err.error : "Téléchargement impossible.");
+    } catch {
+      setMessage("Erreur réseau.");
     }
   };
 
@@ -661,10 +688,13 @@ export default function InvoicesPage() {
                 <thead>
                   <tr className="border-b border-slate-100 bg-slate-50 text-left">
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">N° Facture</th>
-                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Date</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap" title="Date d'enregistrement dans l'application">Ajout</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap" title="Date sur la facture (extraction IA)">Date facture</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Client / Fournisseur</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Référence</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant HT</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Taux TVA</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant TVA</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant TTC</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Statut</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Actions</th>
@@ -674,8 +704,13 @@ export default function InvoicesPage() {
                   {invoices.map((inv) => {
                     const montantTTC = inv.montantTTC ?? inv.amount;
                     const montantHT  = inv.montantHT;
-                    const dateLabel  = inv.createdAt
+                    const montantTVA = inv.montantTVA;
+                    const tauxTVA    = inv.tauxTVA;
+                    const dateAjout  = inv.createdAt
                       ? new Date(inv.createdAt).toLocaleDateString("fr-FR")
+                      : "—";
+                    const dateFacture = inv.invoiceDate
+                      ? new Date(inv.invoiceDate).toLocaleDateString("fr-FR")
                       : "—";
                     const flag = regionOptions.find((r) => r.value === inv.region)?.flag ?? "🌍";
 
@@ -691,9 +726,14 @@ export default function InvoicesPage() {
                           </div>
                         </td>
 
-                        {/* Date */}
+                        {/* Date d'enregistrement */}
                         <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-600">
-                          {dateLabel}
+                          {dateAjout}
+                        </td>
+
+                        {/* Date sur la facture */}
+                        <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-600">
+                          {dateFacture}
                         </td>
 
                         {/* Client / Fournisseur */}
@@ -725,6 +765,20 @@ export default function InvoicesPage() {
                             : <span className="text-slate-300">—</span>}
                         </td>
 
+                        {/* Taux TVA */}
+                        <td className="px-4 py-3 whitespace-nowrap text-right font-mono text-sm text-slate-700">
+                          {tauxTVA != null
+                            ? <span>{Number(tauxTVA).toLocaleString("fr-FR", { maximumFractionDigits: 2 })} <span className="text-xs text-slate-400">%</span></span>
+                            : <span className="text-slate-300">—</span>}
+                        </td>
+
+                        {/* Montant TVA */}
+                        <td className="px-4 py-3 whitespace-nowrap text-right font-mono text-sm text-slate-700">
+                          {montantTVA != null
+                            ? <span>{montantTVA.toFixed(2)} <span className="text-xs text-slate-400">€</span></span>
+                            : <span className="text-slate-300">—</span>}
+                        </td>
+
                         {/* Montant TTC */}
                         <td className="px-4 py-3 whitespace-nowrap text-right">
                           {montantTTC != null
@@ -748,19 +802,17 @@ export default function InvoicesPage() {
                           <div className="flex items-center justify-center gap-1.5">
                             {/* Bouton PDF / document */}
                             {inv.fileUrl ? (
-                              <a
-                                href={inv.fileUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                download
-                                title="Télécharger le document"
+                              <button
+                                type="button"
+                                onClick={() => void openInvoiceDocument(inv.id)}
+                                title="Télécharger le document (lien signé)"
                                 className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-100 transition"
                               >
                                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
                                 </svg>
                                 PDF
-                              </a>
+                              </button>
                             ) : (
                               <span className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-300">
                                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

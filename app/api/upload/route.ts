@@ -75,6 +75,7 @@ export async function POST(request: Request) {
       use_filename: true,
       unique_filename: true,
       filename_override: file.name.replace(/[^a-zA-Z0-9._-]/g, "_"),
+      access_mode: "public",
     });
 
     console.log(`Upload réussi: ${result.secure_url}`);
