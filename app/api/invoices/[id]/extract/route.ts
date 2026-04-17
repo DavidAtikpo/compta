@@ -26,15 +26,20 @@ export async function POST(
       return NextResponse.json({ error: "OPENAI_API_KEY non configurée." }, { status: 400 });
     }
 
-    // Cloudinary : convertit PDF → image première page en remplaçant l'extension
-    // et en insérant pg_1/ avant le dernier segment du public_id
+    // Convert a Cloudinary PDF URL (raw or image type) to a JPG preview of page 1
     function cloudinaryPdfToImage(url: string): string | null {
       if (!url) return null;
-      // Exemple : https://res.cloudinary.com/Cides/image/upload/v123/compta-ia/file.pdf
-      // → https://res.cloudinary.com/Cides/image/upload/pg_1/v123/compta-ia/file.jpg
-      const pdfMatch = url.match(/^(https:\/\/res\.cloudinary\.com\/.+\/upload\/)(.+\.pdf)$/i);
-      if (pdfMatch) {
-        return `${pdfMatch[1]}pg_1/${pdfMatch[2].replace(/\.pdf$/i, ".jpg")}`;
+      // raw/upload → image/upload with pg_1 transformation
+      // https://res.cloudinary.com/cloud/raw/upload/v123/compta-ia/file.pdf
+      // → https://res.cloudinary.com/cloud/image/upload/pg_1/v123/compta-ia/file.jpg
+      const rawMatch = url.match(/^(https:\/\/res\.cloudinary\.com\/[^/]+\/)raw(\/upload\/)(.+\.pdf)$/i);
+      if (rawMatch) {
+        return `${rawMatch[1]}image${rawMatch[2]}pg_1/${rawMatch[3].replace(/\.pdf$/i, ".jpg")}`;
+      }
+      // image/upload → add pg_1 transformation
+      const imgMatch = url.match(/^(https:\/\/res\.cloudinary\.com\/.+\/upload\/)(.+\.pdf)$/i);
+      if (imgMatch) {
+        return `${imgMatch[1]}pg_1/${imgMatch[2].replace(/\.pdf$/i, ".jpg")}`;
       }
       return null;
     }
