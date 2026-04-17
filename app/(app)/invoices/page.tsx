@@ -252,6 +252,10 @@ export default function InvoicesPage() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewTitle, setPreviewTitle] = useState("Aperçu document");
+  /** Aperçu brouillon Cloudinary : image (balise img), PDF (iframe). */
+  const [previewImageMode, setPreviewImageMode] = useState(false);
+  /** Upload Cloudinary (OCR + envoi) en cours pour les fichiers du modal nouvelle facture */
+  const [draftUploading, setDraftUploading] = useState(false);
 
   // Email import states
   const [imapHost, setImapHost] = useState("imap.gmail.com");
@@ -477,37 +481,42 @@ export default function InvoicesPage() {
       setUploadResult(`Fichiers non supportés : ${rejected.map((f) => f.name).join(", ")}. Acceptés : images et PDF.`);
       return;
     }
-    setFiles((prev) => [...prev, ...validFiles]);
-    setUploadResult("");
-    setSendResult("");
-    setOcrStatus("Traitement en cours…");
-    const imageFiles = validFiles.filter((f) => f.type.startsWith("image/"));
-    const pdfFiles   = validFiles.filter((f) => f.type === "application/pdf");
-    if (imageFiles.length > 0) {
-      const texts = await runOcr(imageFiles);
-      setExtractedTexts((prev) => [...prev, ...texts]);
-      setOcrStatus(`OCR terminé — ${texts.length} image(s) analysée(s).`);
-    }
-    if (pdfFiles.length > 0) {
-      setOcrStatus(`${pdfFiles.length} PDF(s) prêt(s) — texte extrait via IA après enregistrement.`);
-    }
-    setOcrStatus((s) => `${s} Envoi vers Cloudinary…`);
-    const urls: { name: string; url: string }[] = [];
-    const uploadErrors: string[] = [];
-    for (const file of validFiles) {
-      const result = await uploadToCloudinary(file);
-      if ("url" in result) urls.push({ name: file.name, url: result.url });
-      else {
-        uploadErrors.push(`${file.name} : ${result.error}`);
-        console.error("Upload Cloudinary échoué:", file.name, result.error);
+    setDraftUploading(true);
+    try {
+      setFiles((prev) => [...prev, ...validFiles]);
+      setUploadResult("");
+      setSendResult("");
+      setOcrStatus("Traitement en cours…");
+      const imageFiles = validFiles.filter((f) => f.type.startsWith("image/"));
+      const pdfFiles = validFiles.filter((f) => f.type === "application/pdf");
+      if (imageFiles.length > 0) {
+        const texts = await runOcr(imageFiles);
+        setExtractedTexts((prev) => [...prev, ...texts]);
+        setOcrStatus(`OCR terminé — ${texts.length} image(s) analysée(s).`);
       }
-    }
-    setUploadedUrls((prev) => [...prev, ...urls]);
-    if (uploadErrors.length > 0) {
-      setUploadResult(`⚠️ Erreur upload : ${uploadErrors.join(" | ")}`);
-      setOcrStatus(`${urls.length}/${validFiles.length} fichier(s) uploadé(s).`);
-    } else {
-      setOcrStatus(`✓ ${urls.length} fichier(s) uploadé(s) sur Cloudinary.`);
+      if (pdfFiles.length > 0) {
+        setOcrStatus((s) => `${s} ${pdfFiles.length} PDF(s) prêt(s) — texte extrait via IA après enregistrement.`);
+      }
+      setOcrStatus((s) => `${s} Enregistrement sur Cloudinary…`);
+      const urls: { name: string; url: string }[] = [];
+      const uploadErrors: string[] = [];
+      for (const file of validFiles) {
+        const result = await uploadToCloudinary(file);
+        if ("url" in result) urls.push({ name: file.name, url: result.url });
+        else {
+          uploadErrors.push(`${file.name} : ${result.error}`);
+          console.error("Upload Cloudinary échoué:", file.name, result.error);
+        }
+      }
+      setUploadedUrls((prev) => [...prev, ...urls]);
+      if (uploadErrors.length > 0) {
+        setUploadResult(`⚠️ Erreur upload Cloudinary : ${uploadErrors.join(" | ")}`);
+        setOcrStatus(`${urls.length}/${validFiles.length} fichier(s) sur Cloudinary. Corrigez ou retirez les fichiers en erreur.`);
+      } else {
+        setOcrStatus(`✓ ${urls.length} pièce(s) enregistrée(s) sur Cloudinary — vous pouvez prévisualiser, télécharger ou envoyer au cabinet.`);
+      }
+    } finally {
+      setDraftUploading(false);
     }
   };
 
@@ -520,7 +529,17 @@ export default function InvoicesPage() {
   };
 
   const handleSaveInvoices = async () => {
-    if (files.length === 0) { setUploadResult("Aucun fichier à enregistrer."); return; }
+    if (files.length === 0) {
+      setUploadResult("Aucun fichier à enregistrer.");
+      return;
+    }
+    const missing = files.filter((f) => !uploadedUrls.some((u) => u.name === f.name));
+    if (missing.length > 0) {
+      setUploadResult(
+        `Chaque pièce doit d’abord être sur Cloudinary. ${missing.length} fichier(s) sans URL : supprimez-les ou attendez la fin de l’upload.`,
+      );
+      return;
+    }
     setUploading(true);
     setUploadResult("");
     let autoExtractOk = 0;
@@ -578,7 +597,15 @@ export default function InvoicesPage() {
   };
 
   const handleSendToAccountant = async () => {
-    if (files.length === 0) { setSendResult("Aucun fichier à envoyer."); return; }
+    if (files.length === 0) {
+      setSendResult("Aucun fichier à envoyer.");
+      return;
+    }
+    const missing = files.filter((f) => !uploadedUrls.some((u) => u.name === f.name));
+    if (missing.length > 0) {
+      setSendResult("Toutes les pièces doivent être uploadées sur Cloudinary avant l’envoi au cabinet.");
+      return;
+    }
     setSending(true);
     setSendResult("");
     const formData = new FormData();
@@ -839,7 +866,41 @@ export default function InvoicesPage() {
     }
   };
 
+  const closeDocumentPreview = () => {
+    if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
+    setPreviewOpen(false);
+    setPreviewUrl(null);
+    setPreviewImageMode(false);
+  };
+
+  const openDraftCloudinaryPreview = (url: string, title: string, isImage: boolean) => {
+    setPreviewTitle(title);
+    setPreviewUrl(url);
+    setPreviewImageMode(isImage);
+    setPreviewOpen(true);
+  };
+
+  const downloadDraftFromCloudinary = async (url: string, filename: string) => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename || "piece";
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  };
+
   const previewInvoiceDocument = async (invId: string, title: string) => {
+    setPreviewImageMode(false);
     const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
     if (!t) { setMessage("Connectez-vous pour voir le document."); return; }
     try {
@@ -978,6 +1039,9 @@ export default function InvoicesPage() {
     ? invoices.find((i) => i.id === openActionMenuId)
     : undefined;
 
+  const draftAllOnCloudinary =
+    files.length > 0 && files.every((f) => uploadedUrls.some((u) => u.name === f.name));
+
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col px-4 py-3 sm:px-6 lg:px-8">
       {/* Document preview modal — plein écran */}
@@ -988,16 +1052,19 @@ export default function InvoicesPage() {
               <p className="truncate text-xs font-medium text-slate-800">{previewTitle}</p>
               <button
                 type="button"
-                onClick={() => {
-                  if (previewUrl.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
-                  setPreviewOpen(false); setPreviewUrl(null);
-                }}
+                onClick={closeDocumentPreview}
                 className="rounded px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-100"
               >
                 Fermer
               </button>
             </div>
-            <iframe src={previewUrl} title="Aperçu document" className="min-h-0 flex-1 w-full border-0" />
+            {previewImageMode ? (
+              <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-100 p-2">
+                <img src={previewUrl} alt={previewTitle} className="max-h-full max-w-full object-contain" />
+              </div>
+            ) : (
+              <iframe src={previewUrl} title="Aperçu document" className="min-h-0 flex-1 w-full border-0" />
+            )}
           </div>
         </div>
       )}
@@ -1733,23 +1800,91 @@ export default function InvoicesPage() {
               </div>
 
               {files.length > 0 && (
-                <div className="rounded border border-slate-200 bg-slate-50 p-3">
-                  <div className="mb-2 flex items-center justify-between">
-                    <p className="text-[11px] font-medium text-slate-800">{files.length} fichier(s)</p>
-                    <button type="button" onClick={handleClearAll} className="text-[10px] text-slate-500 hover:text-slate-800">Tout effacer</button>
+                <div className="rounded-lg border-2 border-slate-200 bg-slate-50 p-3">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-[11px] font-bold text-slate-900">{files.length} pièce(s)</p>
+                      <p className="text-[10px] text-slate-600">
+                        {draftUploading
+                          ? "Upload Cloudinary en cours…"
+                          : draftAllOnCloudinary
+                            ? "Sur Cloudinary — aperçu, téléchargement et envoi disponibles."
+                            : "En attente d’upload Cloudinary pour au moins un fichier."}
+                      </p>
+                    </div>
+                    <button type="button" onClick={handleClearAll} className="text-[10px] font-medium text-slate-500 hover:text-slate-900">
+                      Tout effacer
+                    </button>
                   </div>
-                  <ul className="space-y-1.5">
-                    {files.map((file, i) => (
-                      <li key={`${file.name}-${i}`} className="flex items-center justify-between text-[11px] text-slate-700">
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <span className="rounded bg-slate-200 px-1 py-0.5 font-mono text-[10px] text-slate-600">{file.type.includes("pdf") ? "PDF" : "IMG"}</span>
-                          <span className="truncate flex-1">{file.name}</span>
-                          {uploadedUrls.find((u) => u.name === file.name) && <span className="shrink-0 text-[10px] text-emerald-600">OK</span>}
-                        </div>
-                        <button type="button" onClick={() => handleDeleteFile(i)} className="ml-1 shrink-0 text-[10px] text-slate-600 hover:text-slate-900">Retirer</button>
-                      </li>
-                    ))}
+                  <ul className="space-y-2">
+                    {files.map((file, i) => {
+                      const cloud = uploadedUrls.find((u) => u.name === file.name);
+                      const isImg = file.type.startsWith("image/");
+                      return (
+                        <li
+                          key={`${file.name}-${i}`}
+                          className="flex flex-col gap-2 rounded-md border border-slate-200 bg-white p-2 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div className="flex min-w-0 flex-1 items-start gap-2">
+                            {cloud && isImg ? (
+                              <button
+                                type="button"
+                                onClick={() => openDraftCloudinaryPreview(cloud.url, file.name, true)}
+                                className="h-14 w-14 shrink-0 overflow-hidden rounded border border-slate-200 bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                                title="Agrandir"
+                              >
+                                <img src={cloud.url} alt={file.name} className="h-full w-full object-cover" />
+                              </button>
+                            ) : (
+                              <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded border border-dashed border-slate-200 bg-slate-50 text-[10px] font-medium text-slate-500">
+                                {file.type.includes("pdf") ? "PDF" : "IMG"}
+                              </span>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-[11px] font-medium text-slate-900">{file.name}</p>
+                              <p className="text-[10px] text-slate-500">
+                                {cloud ? (
+                                  <span className="font-medium text-emerald-700">Enregistré sur Cloudinary</span>
+                                ) : (
+                                  <span className="text-amber-700">Upload Cloudinary…</span>
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5 sm:justify-end">
+                            {cloud && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => openDraftCloudinaryPreview(cloud.url, file.name, isImg)}
+                                  className="rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-semibold text-slate-800 hover:bg-slate-50"
+                                >
+                                  Voir
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void downloadDraftFromCloudinary(cloud.url, file.name)}
+                                  className="rounded border border-slate-300 bg-white px-2 py-1 text-[10px] font-semibold text-slate-800 hover:bg-slate-50"
+                                >
+                                  Télécharger
+                                </button>
+                              </>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteFile(i)}
+                              className="rounded border border-red-200 bg-white px-2 py-1 text-[10px] font-medium text-red-700 hover:bg-red-50"
+                            >
+                              Retirer
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
+                  <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
+                    « Envoyer au cabinet » joint les fichiers à l’e-mail (SMTP) après vérification Cloudinary. « Enregistrer » crée la facture en base avec l’URL Cloudinary.
+                  </p>
                 </div>
               )}
 
@@ -1771,11 +1906,21 @@ export default function InvoicesPage() {
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={handleSaveInvoices} disabled={uploading || files.length === 0} className="rounded border border-slate-200 bg-slate-100 px-3 py-2 text-[11px] font-medium text-slate-900 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={handleSaveInvoices}
+                  disabled={uploading || draftUploading || files.length === 0 || !draftAllOnCloudinary}
+                  className="rounded-lg border-2 border-slate-200 bg-slate-100 px-3 py-2.5 text-[11px] font-semibold text-slate-900 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+                >
                   {uploading ? "Enregistrement…" : "Enregistrer"}
                 </button>
-                <button type="button" onClick={handleSendToAccountant} disabled={sending || files.length === 0} className="rounded bg-slate-900 px-3 py-2 text-[11px] font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50">
+                <button
+                  type="button"
+                  onClick={handleSendToAccountant}
+                  disabled={sending || draftUploading || files.length === 0 || !draftAllOnCloudinary}
+                  className="rounded-lg bg-slate-900 px-3 py-2.5 text-[11px] font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
                   {sending ? "Envoi…" : "Envoyer au cabinet"}
                 </button>
               </div>
