@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import Tesseract from "tesseract.js";
@@ -348,29 +348,49 @@ export default function InvoicesPage() {
       setMessage("Connectez-vous pour télécharger le document.");
       return;
     }
-    // Onglet ouvert tout de suite (sinon le navigateur bloque window.open après await fetch)
-    const w = window.open("about:blank", "_blank", "noopener,noreferrer");
-    if (!w) {
-      setMessage("Autorisez les pop-ups pour ce site afin d’ouvrir le PDF.");
-      return;
-    }
     try {
       const res = await fetch(`/api/invoices/${invId}/file`, {
         headers: { Authorization: `Bearer ${t}` },
       });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && typeof data.url === "string") {
-        w.location.href = data.url;
+
+      // Case 1: server returned a JSON { url } (private download URL)
+      const contentType = res.headers.get("content-type") || "";
+      if (res.ok && contentType.includes("application/json")) {
+        const data = await res.json().catch(() => ({}));
+        if (typeof data.url === "string") {
+          const a = document.createElement("a");
+          a.href = data.url;
+          a.download = "";
+          a.rel = "noopener noreferrer";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          return;
+        }
+        setMessage(typeof data.error === "string" ? data.error : "Téléchargement impossible.");
         return;
       }
-      w.close();
-      setMessage(typeof data.error === "string" ? data.error : "Téléchargement impossible.");
+
+      // Case 2: server streamed the file directly (proxy mode)
+      if (res.ok) {
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = "document.pdf";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+        return;
+      }
+
+      const err = await res.json().catch(() => ({}));
+      setMessage(typeof err.error === "string" ? err.error : "Téléchargement impossible.");
     } catch {
-      w.close();
-      setMessage("Erreur réseau.");
+      setMessage("Erreur réseau lors du téléchargement.");
     }
   };
-
   const handleShare = async (id: string) => {
     setSharingId(id);
     try {
