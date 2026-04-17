@@ -4,15 +4,9 @@ import { pool } from "../../../lib/postgres";
 
 export const runtime = "nodejs";
 
-const envFallbackEmails: Record<string, string> = {
-  france: process.env.ACCOUNTANT_EMAIL_FRANCE || "",
-  togo: process.env.ACCOUNTANT_EMAIL_TOGO || "",
-  vietnam: process.env.ACCOUNTANT_EMAIL_VIETNAM || "",
-  autre: process.env.ACCOUNTANT_EMAIL_AUTRE || "",
-};
-
 async function resolveRecipientEmail(region: string): Promise<string> {
-  // 1. Try database first (user-configured)
+  // Only use user-configured accountants stored in DB.
+  // No fallback to env variables anymore.
   try {
     const result = await pool.query(
       "SELECT email FROM accountants WHERE region = $1",
@@ -22,16 +16,10 @@ async function resolveRecipientEmail(region: string): Promise<string> {
       return result.rows[0].email as string;
     }
   } catch (err) {
-    console.error("DB lookup failed, falling back to env:", err);
+    console.error("DB lookup failed:", err);
   }
 
-  // 2. Fall back to env vars
-  if (envFallbackEmails[region]) {
-    return envFallbackEmails[region];
-  }
-
-  // 3. Generic fallback
-  return process.env.FROM_EMAIL || "";
+  return "";
 }
 
 export async function POST(request: Request) {

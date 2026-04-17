@@ -181,6 +181,8 @@ Réponds UNIQUEMENT en JSON valide avec exactement ces champs (null si non trouv
   "tauxTVA": number | null,
   "montantTVA": number | null,
   "montantTTC": number | null,
+  "montantRegle": number | null,
+  "estReglee": boolean | null,
   "description": string | null,
   "compteComptable": string | null
 }
@@ -241,6 +243,18 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
       if (!Number.isNaN(d.getTime())) invoiceDateVal = d;
     }
 
+    // Persist AI "paid" markers inside ocrText so list page can read both OCR + IA result
+    const paidAmountFromAi =
+      typeof extracted.montantRegle === "number" && !Number.isNaN(extracted.montantRegle)
+        ? extracted.montantRegle
+        : null;
+    const paidFlagFromAi =
+      typeof extracted.estReglee === "boolean" ? extracted.estReglee : null;
+    const aiPaidMarkerParts: string[] = [];
+    if (paidAmountFromAi != null) aiPaidMarkerParts.push(`[AI_PAID_AMOUNT]=${paidAmountFromAi}`);
+    if (paidFlagFromAi != null) aiPaidMarkerParts.push(`[AI_PAID_FLAG]=${paidFlagFromAi ? "true" : "false"}`);
+    const aiPaidMarkers = aiPaidMarkerParts.join("\n");
+
     await pool.query(
       `UPDATE invoices SET
         "fournisseur"   = COALESCE($1, "fournisseur"),
@@ -250,6 +264,11 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
         "montantTVA"    = COALESCE($5, "montantTVA"),
         "montantTTC"    = COALESCE($6, "montantTTC"),
         amount          = COALESCE($6, amount),
+        "ocrText"       = CASE
+                            WHEN $9::text IS NULL OR $9::text = '' THEN "ocrText"
+                            WHEN "ocrText" IS NULL OR "ocrText" = '' THEN $9::text
+                            ELSE "ocrText" || E'\n' || $9::text
+                          END,
         "invoiceDate"   = COALESCE($8::timestamptz, "invoiceDate"),
         "updatedAt"     = NOW()
       WHERE id = $7`,
@@ -262,6 +281,7 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
         extracted.montantTTC   || null,
         id,
         invoiceDateVal,
+        aiPaidMarkers || null,
       ]
     );
 

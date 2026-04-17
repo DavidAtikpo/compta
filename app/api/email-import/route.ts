@@ -12,6 +12,21 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function ensureFileNameWithExt(filename: string, contentType: string): string {
+  const hasExt = /\.[a-z0-9]+$/i.test(filename);
+  if (hasExt) return filename;
+  if (contentType.includes("pdf")) return `${filename}.pdf`;
+  if (contentType.includes("png")) return `${filename}.png`;
+  if (contentType.includes("jpeg") || contentType.includes("jpg")) return `${filename}.jpg`;
+  if (contentType.includes("webp")) return `${filename}.webp`;
+  if (contentType.includes("gif")) return `${filename}.gif`;
+  return `${filename}.bin`;
+}
+
 function imapFetchEmails(config: {
   user: string;
   password: string;
@@ -135,20 +150,49 @@ export async function POST(request: Request) {
     for (const email of emails) {
       for (const att of email.attachments) {
         try {
+          const normalizedName = ensureFileNameWithExt(
+            att.filename || "piece_jointe",
+            att.contentType || "application/octet-stream"
+          );
+          const safeName = sanitizeFilename(normalizedName);
+          const isPdf =
+            /pdf/i.test(att.contentType || "") || /\.pdf$/i.test(normalizedName);
+          const normalizedMime = isPdf
+            ? "application/pdf"
+            : att.contentType || "application/octet-stream";
+
           // Upload to Cloudinary
-          const base64 = `data:${att.contentType};base64,${att.content.toString("base64")}`;
+          const base64 = `data:${normalizedMime};base64,${att.content.toString("base64")}`;
           const uploaded = await cloudinary.uploader.upload(base64, {
             folder: "compta-ia/email-imports",
-            resource_type: "auto",
+            // Keep same behavior as manual upload: image resource supports PDF pages and previews
+            resource_type: "image",
             use_filename: true,
+            unique_filename: true,
+            filename_override: safeName,
+            access_mode: "public",
           });
 
           // Save invoice to DB
-          await pool.query(
+          const inserted = await pool.query(
             `INSERT INTO invoices (id, filename, "originalName", size, "mimeType", "fileUrl", region, status, "createdAt", "updatedAt")
-             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'pending', NOW(), NOW())`,
-            [att.filename, att.filename, att.content.length, att.contentType, uploaded.secure_url, region]
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'pending', NOW(), NOW())
+             RETURNING id`,
+            [
+              safeName,
+              normalizedName,
+              att.content.length,
+              normalizedMime,
+              uploaded.secure_url,
+              region,
+            ]
           );
+          const invoiceId = inserted.rows?.[0]?.id as string | undefined;
+          // Best effort: trigger extraction automatically (same behavior as manual upload)
+          if (invoiceId) {
+            const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+            fetch(`${baseUrl}/api/invoices/${invoiceId}/extract`, { method: "POST" }).catch(() => {});
+          }
           imported++;
         } catch (e) {
           errors.push(`${att.filename}: ${(e as Error).message}`);
@@ -164,6 +208,25 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("Erreur import email:", error);
+
+    const raw = String((error as Error)?.message || error || "");
+    const lower = raw.toLowerCase();
+    const isAuthError =
+      lower.includes("authenticationfailed") ||
+      lower.includes("invalid credentials") ||
+      lower.includes("auth");
+
+    if (isAuthError) {
+      return NextResponse.json(
+        {
+          error:
+            "Échec authentification IMAP (identifiants invalides). Vérifiez email/mot de passe. Gmail : activez IMAP et utilisez un mot de passe d'application (pas le mot de passe normal).",
+          code: "IMAP_AUTH_FAILED",
+        },
+        { status: 401 }
+      );
+    }
+
     return NextResponse.json(
       { error: `Erreur import IMAP : ${(error as Error).message}` },
       { status: 500 }

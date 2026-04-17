@@ -3,10 +3,10 @@
 import { useEffect, useState, type ChangeEvent } from "react";
 
 const regionOptions = [
-  { value: "france", label: "France", flag: "🇫🇷", envKey: "ACCOUNTANT_EMAIL_FRANCE" },
-  { value: "togo", label: "Togo", flag: "🇹🇬", envKey: "ACCOUNTANT_EMAIL_TOGO" },
-  { value: "vietnam", label: "Vietnam", flag: "🇻🇳", envKey: "ACCOUNTANT_EMAIL_VIETNAM" },
-  { value: "autre", label: "Autre", flag: "🌍", envKey: "ACCOUNTANT_EMAIL_AUTRE" },
+  { value: "france", label: "France", flag: "🇫🇷" },
+  { value: "togo", label: "Togo", flag: "🇹🇬" },
+  { value: "vietnam", label: "Vietnam", flag: "🇻🇳" },
+  { value: "autre", label: "Autre", flag: "🌍" },
 ];
 
 const businessTypes = [
@@ -31,16 +31,18 @@ interface Structure {
   siret: string | null;
 }
 
-const defaultEmails: AccountEmails = { france: "", togo: "", vietnam: "", autre: "" };
+const defaultEmails: AccountEmails = {};
 
 export default function SettingsPage() {
   const [accountEmails, setAccountEmails] = useState<AccountEmails>(defaultEmails);
+  const [newRegionName, setNewRegionName] = useState("");
+  const [newRegionEmail, setNewRegionEmail] = useState("");
   const [savedMessage, setSavedMessage] = useState("");
   const [loading, setLoading] = useState(true);
 
   // Structures
   const [structures, setStructures] = useState<Structure[]>([]);
-  const [newStruct, setNewStruct] = useState({ name: "", region: "france", type: "EURL / SASU", siret: "" });
+  const [newStruct, setNewStruct] = useState({ name: "", region: "", type: "EURL / SASU", siret: "" });
   const [structMsg, setStructMsg] = useState("");
   const [savingStruct, setSavingStruct] = useState(false);
 
@@ -49,7 +51,7 @@ export default function SettingsPage() {
   const [imapPort, setImapPort] = useState("993");
   const [imapUser, setImapUser] = useState("");
   const [imapPass, setImapPass] = useState("");
-  const [imapRegion, setImapRegion] = useState("france");
+  const [imapRegion, setImapRegion] = useState("");
   const [importResult, setImportResult] = useState("");
   const [importing, setImporting] = useState(false);
 
@@ -58,6 +60,14 @@ export default function SettingsPage() {
     loadStructures();
   }, []);
 
+  const knownRegions = Array.from(
+    new Set([
+      ...Object.keys(accountEmails),
+      ...structures.map((s) => s.region).filter(Boolean),
+      ...regionOptions.map((r) => r.value),
+    ])
+  ).sort((a, b) => a.localeCompare(b, "fr"));
+
   const loadAccountants = async () => {
     try {
       const res = await fetch("/api/accountants");
@@ -65,7 +75,11 @@ export default function SettingsPage() {
         const list: { region: string; email: string }[] = await res.json();
         const emailMap: AccountEmails = { ...defaultEmails };
         list.forEach((acc) => { if (emailMap[acc.region] !== undefined) emailMap[acc.region] = acc.email; });
+        list.forEach((acc) => {
+          if (acc.region) emailMap[acc.region] = acc.email;
+        });
         setAccountEmails(emailMap);
+        if (!imapRegion && list.length > 0) setImapRegion(list[0].region);
       }
     } catch (err) {
       console.error("Erreur chargement comptables:", err);
@@ -83,6 +97,23 @@ export default function SettingsPage() {
 
   const handleChange = (region: string, value: string) => {
     setAccountEmails((cur) => ({ ...cur, [region]: value }));
+  };
+
+  const handleAddRegionEmail = () => {
+    const region = newRegionName.trim().toLowerCase();
+    const email = newRegionEmail.trim();
+    if (!region || !email) return;
+    setAccountEmails((cur) => ({ ...cur, [region]: email }));
+    setNewRegionName("");
+    setNewRegionEmail("");
+  };
+
+  const handleRemoveRegionEmail = (region: string) => {
+    setAccountEmails((cur) => {
+      const next = { ...cur };
+      delete next[region];
+      return next;
+    });
   };
 
   const handleSave = async () => {
@@ -107,7 +138,7 @@ export default function SettingsPage() {
   };
 
   const handleAddStructure = async () => {
-    if (!newStruct.name.trim()) return;
+    if (!newStruct.name.trim() || !newStruct.region.trim()) return;
     setSavingStruct(true);
     setStructMsg("");
     try {
@@ -118,7 +149,7 @@ export default function SettingsPage() {
       });
       if (res.ok) {
         setStructMsg("Structure ajoutée.");
-        setNewStruct({ name: "", region: "france", type: "EURL / SASU", siret: "" });
+        setNewStruct({ name: "", region: "", type: "EURL / SASU", siret: "" });
         await loadStructures();
       } else {
         const d = await res.json();
@@ -194,31 +225,80 @@ export default function SettingsPage() {
           </p>
         </div>
 
+        {/* First-time setup */}
+        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-6">
+          <h2 className="font-semibold text-blue-900">Configuration initiale (première connexion)</h2>
+          <p className="mt-1 text-xs text-blue-800">
+            Complétez ces étapes pour que l'application fonctionne sans valeur codée en dur.
+          </p>
+          <ul className="mt-3 space-y-1.5 text-sm text-blue-900">
+            <li>1) Ajouter au moins une structure (pays + type juridique).</li>
+            <li>2) Renseigner l'email du cabinet pour chaque pays utilisé.</li>
+            <li>3) Vérifier SMTP (envoi emails) dans le fichier .env.</li>
+            <li>4) (Optionnel) Configurer IMAP pour import automatique des pièces.</li>
+          </ul>
+        </div>
+
         {/* Emails cabinets */}
         <div className="rounded-2xl bg-white border border-slate-200 shadow-sm overflow-hidden">
           <div className="border-b border-slate-100 px-6 py-4">
             <h2 className="font-semibold text-slate-900">Emails des cabinets comptables</h2>
-            <p className="text-xs text-slate-400 mt-1">Prioritaires sur les variables d'environnement.</p>
+            <p className="text-xs text-slate-400 mt-1">
+              Obligatoire : ces emails sont utilisés pour l'envoi au cabinet (plus de fallback dans le code).
+            </p>
           </div>
           <div className="p-6 space-y-5">
-            {regionOptions.map((opt) => (
-              <div key={opt.value} className="rounded-xl border border-slate-200 bg-slate-50 p-5">
+            {Object.entries(accountEmails).map(([region, email]) => (
+              <div key={region} className="rounded-xl border border-slate-200 bg-slate-50 p-5">
                 <div className="flex items-center gap-3 mb-3">
-                  <span className="text-2xl">{opt.flag}</span>
                   <div>
-                    <p className="font-semibold text-slate-900">{opt.label}</p>
-                    <p className="text-xs text-slate-400">env : {opt.envKey}</p>
+                    <p className="font-semibold text-slate-900">{region}</p>
+                    <p className="text-xs text-slate-400">Cabinet pour {region}</p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveRegionEmail(region)}
+                    className="ml-auto text-xs text-rose-600 hover:text-rose-800"
+                  >
+                    Supprimer
+                  </button>
                 </div>
                 <input
                   type="email"
-                  value={accountEmails[opt.value] || ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => handleChange(opt.value, e.target.value)}
+                  value={email || ""}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => handleChange(region, e.target.value)}
                   className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 focus:border-slate-500 focus:outline-none"
-                  placeholder={`Email du cabinet ${opt.label}…`}
+                  placeholder={`Email du cabinet ${region}…`}
                 />
               </div>
             ))}
+            <div className="rounded-xl border border-dashed border-slate-300 bg-white p-4 space-y-3">
+              <p className="text-sm font-medium text-slate-800">Ajouter un pays / région cabinet</p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <input
+                  type="text"
+                  value={newRegionName}
+                  onChange={(e) => setNewRegionName(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-900 focus:border-slate-500 focus:outline-none"
+                  placeholder="Ex: senegal, benin, canada..."
+                />
+                <input
+                  type="email"
+                  value={newRegionEmail}
+                  onChange={(e) => setNewRegionEmail(e.target.value)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-900 focus:border-slate-500 focus:outline-none"
+                  placeholder="cabinet@exemple.com"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleAddRegionEmail}
+                disabled={!newRegionName.trim() || !newRegionEmail.trim()}
+                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              >
+                Ajouter ce pays / région
+              </button>
+            </div>
             <button onClick={handleSave} className="w-full rounded-xl bg-slate-900 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-700">
               Enregistrer les cabinets
             </button>
@@ -269,13 +349,14 @@ export default function SettingsPage() {
                 placeholder="Nom de la société / structure"
               />
               <div className="grid grid-cols-2 gap-3">
-                <select
+                <input
+                  type="text"
                   value={newStruct.region}
-                  onChange={(e) => setNewStruct((s) => ({ ...s, region: e.target.value }))}
+                  onChange={(e) => setNewStruct((s) => ({ ...s, region: e.target.value.trim().toLowerCase() }))}
+                  list="known-regions-list"
                   className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 focus:outline-none"
-                >
-                  {regionOptions.map((o) => <option key={o.value} value={o.value}>{o.flag} {o.label}</option>)}
-                </select>
+                  placeholder="Pays/région (ex: france, benin...)"
+                />
                 <select
                   value={newStruct.type}
                   onChange={(e) => setNewStruct((s) => ({ ...s, type: e.target.value }))}
@@ -284,6 +365,9 @@ export default function SettingsPage() {
                   {businessTypes.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
+              <datalist id="known-regions-list">
+                {knownRegions.map((r) => <option key={r} value={r} />)}
+              </datalist>
               <input
                 type="text"
                 value={newStruct.siret}
@@ -359,20 +443,14 @@ export default function SettingsPage() {
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Affecter à la région</label>
-              <div className="grid grid-cols-4 gap-2">
-                {regionOptions.map((o) => (
-                  <button
-                    key={o.value}
-                    onClick={() => setImapRegion(o.value)}
-                    className={`flex flex-col items-center gap-1 rounded-xl border-2 p-2 text-xs font-medium transition ${
-                      imapRegion === o.value ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 text-slate-600 hover:border-slate-300"
-                    }`}
-                  >
-                    <span>{o.flag}</span>
-                    {o.label}
-                  </button>
-                ))}
-              </div>
+              <input
+                type="text"
+                value={imapRegion}
+                onChange={(e) => setImapRegion(e.target.value.trim().toLowerCase())}
+                list="known-regions-list"
+                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm focus:outline-none"
+                placeholder="Pays/région cible (ex: france, togo, benin...)"
+              />
             </div>
             <div className="rounded-xl bg-amber-50 border border-amber-100 p-3">
               <p className="text-xs text-amber-800">
@@ -408,7 +486,6 @@ export default function SettingsPage() {
                 <li><span className="text-blue-600">SMTP_HOST / SMTP_USER / SMTP_PASS</span> — Email sortant</li>
                 <li><span className="text-blue-600">IMAP_HOST / IMAP_USER / IMAP_PASS</span> — Email entrant (optionnel)</li>
                 <li><span className="text-blue-600">NEXT_PUBLIC_BASE_URL</span> — URL publique (liens partage)</li>
-                <li><span className="text-blue-600">ACCOUNTANT_EMAIL_FRANCE/TOGO/VIETNAM/AUTRE</span> — Fallback emails</li>
               </ul>
             </div>
             <div className="rounded-xl bg-blue-50 border border-blue-100 p-4">

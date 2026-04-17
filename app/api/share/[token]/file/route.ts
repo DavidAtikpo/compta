@@ -1,8 +1,141 @@
 import { NextResponse } from "next/server";
+import { v2 as cloudinary } from "cloudinary";
 import { pool } from "../../../../../lib/postgres";
-import { signedUrlFromStoredCloudinaryUrl } from "../../../../../lib/cloudinary-delivery";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
+
+type DeliveryType = "upload" | "authenticated" | "private";
+
+function setupCloudinary(): boolean {
+  const name = process.env.CLOUDINARY_CLOUD_NAME?.toLowerCase().trim();
+  const key = process.env.CLOUDINARY_API_KEY?.trim();
+  const sec = process.env.CLOUDINARY_API_SECRET?.trim();
+  if (!name || !key || !sec) return false;
+  cloudinary.config({ cloud_name: name, api_key: key, api_secret: sec, secure: true });
+  return true;
+}
+
+function buildPublicIdCandidates(publicId: string): string[] {
+  const trimmed = publicId.trim();
+  if (!trimmed) return [];
+  const set = new Set<string>([trimmed]);
+  if (trimmed.toLowerCase().endsWith(".pdf")) {
+    set.add(trimmed.slice(0, -4));
+  } else {
+    set.add(`${trimmed}.pdf`);
+  }
+  return Array.from(set);
+}
+
+function makePrivateDownloadUrls(
+  publicId: string,
+  resourceType: "image" | "raw",
+  deliveryType: DeliveryType = "upload"
+): string[] {
+  if (!setupCloudinary()) return [];
+  try {
+    const formatMatch = publicId.match(/\.([a-z0-9]+)$/i);
+    const format = formatMatch ? formatMatch[1].toLowerCase() : undefined;
+    const basePublicId = formatMatch ? publicId.slice(0, -((format?.length ?? 0) + 1)) : publicId;
+    const expiry = Math.floor(Date.now() / 1000) + 600;
+
+    const candidates: Array<{ pid: string; fmt: string | null }> = [];
+    candidates.push({ pid: basePublicId, fmt: format ?? "pdf" });
+    candidates.push({ pid: publicId, fmt: format ?? "pdf" });
+    candidates.push({ pid: basePublicId, fmt: null });
+    candidates.push({ pid: publicId, fmt: null });
+
+    const urls: string[] = [];
+    for (const c of candidates) {
+      try {
+        const u = cloudinary.utils.private_download_url(
+          c.pid,
+          (c.fmt as unknown as string) ?? (null as unknown as string),
+          {
+            resource_type: resourceType,
+            type: deliveryType,
+            attachment: true,
+            expires_at: expiry,
+          }
+        );
+        if (u) urls.push(u);
+      } catch {
+        // skip variant
+      }
+    }
+    return Array.from(new Set(urls));
+  } catch {
+    return [];
+  }
+}
+
+async function resolveAssetFromAdminApi(
+  publicId: string,
+  hintType: "image" | "raw"
+): Promise<{ publicId: string; resourceType: "image" | "raw"; deliveryType: DeliveryType } | null> {
+  if (!setupCloudinary()) return null;
+  const types: ("image" | "raw")[] =
+    hintType === "image" ? ["image", "raw"] : ["raw", "image"];
+  const ids = buildPublicIdCandidates(publicId);
+  const deliveryTypes: DeliveryType[] = ["upload", "authenticated", "private"];
+
+  for (const rt of types) {
+    for (const dt of deliveryTypes) {
+      for (const pid of ids) {
+        try {
+          const res = (await cloudinary.api.resource(pid, {
+            resource_type: rt,
+            type: dt,
+          })) as { public_id: string; resource_type: "image" | "raw"; type?: string };
+          if (res?.public_id) {
+            return {
+              publicId: res.public_id,
+              resourceType: (res.resource_type as "image" | "raw") ?? rt,
+              deliveryType: (res.type as DeliveryType) || dt,
+            };
+          }
+        } catch {
+          // continue trying variants
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function firstWorkingPrivateUrl(
+  publicId: string,
+  hintType: "image" | "raw",
+  hintDeliveryType: DeliveryType = "upload"
+): Promise<{ url: string; resourceType: "image" | "raw"; publicId: string; deliveryType: DeliveryType } | null> {
+  const types: ("image" | "raw")[] =
+    hintType === "image" ? ["image", "raw"] : ["raw", "image"];
+  const ids = buildPublicIdCandidates(publicId);
+  const deliveryTypes: DeliveryType[] =
+    hintDeliveryType === "upload"
+      ? ["upload", "authenticated", "private"]
+      : [hintDeliveryType, "upload", "authenticated", "private"];
+
+  for (const resourceType of types) {
+    for (const deliveryType of deliveryTypes) {
+      for (const pid of ids) {
+        const urls = makePrivateDownloadUrls(pid, resourceType, deliveryType);
+        for (const url of urls) {
+          try {
+            const check = await fetch(url, { signal: AbortSignal.timeout(10000) });
+            if (check.ok) {
+              return { url, resourceType, publicId: pid, deliveryType };
+            }
+          } catch {
+            // continue
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
 
 export async function GET(
   _request: Request,
@@ -11,21 +144,69 @@ export async function GET(
   const { token } = await params;
 
   try {
-    const r = await pool.query(
-      `SELECT "fileUrl" FROM invoices WHERE "shareToken" = $1`,
-      [token]
-    );
-    const fileUrl = r.rows[0]?.fileUrl as string | null | undefined;
+    const r = await pool.query(`SELECT "fileUrl", "originalName" FROM invoices WHERE "shareToken" = $1`, [token]);
+    const row = r.rows[0] as { fileUrl: string | null; originalName: string } | undefined;
+    const fileUrl = row?.fileUrl;
     if (!fileUrl) {
       return NextResponse.json({ error: "Lien invalide." }, { status: 404 });
     }
 
-    const signed = signedUrlFromStoredCloudinaryUrl(fileUrl);
-    if (!signed) {
-      return NextResponse.json({ error: "Fichier indisponible." }, { status: 400 });
+    const m = fileUrl.match(
+      /^https:\/\/res\.cloudinary\.com\/[^/]+\/(image|raw)\/upload\/(?:v\d+\/)?(.+)$/i
+    );
+    if (!m) {
+      return NextResponse.redirect(fileUrl, 302);
+    }
+    const resourceType = m[1].toLowerCase() as "image" | "raw";
+    const publicId = m[2];
+
+    const asset = await resolveAssetFromAdminApi(publicId, resourceType);
+    const resolved = await firstWorkingPrivateUrl(
+      asset?.publicId ?? publicId,
+      asset?.resourceType ?? resourceType,
+      (asset?.deliveryType as DeliveryType) ?? "upload"
+    );
+    if (resolved) return NextResponse.redirect(resolved.url, 302);
+
+    // Final fallback: proxy stream through our API
+    if (!setupCloudinary()) {
+      return NextResponse.json({ error: "Cloudinary non configuré." }, { status: 500 });
+    }
+    const deliveryType = asset?.deliveryType || "upload";
+    const types: ("image" | "raw")[] =
+      (asset?.resourceType ?? resourceType) === "image" ? ["image", "raw"] : ["raw", "image"];
+    const ids = buildPublicIdCandidates(asset?.publicId ?? publicId);
+
+    let fileRes: Response | null = null;
+    for (const rt of types) {
+      for (const pid of ids) {
+        const signedUrl = cloudinary.url(pid, {
+          resource_type: rt,
+          type: deliveryType,
+          sign_url: true,
+          secure: true,
+        });
+        const res = await fetch(signedUrl, { signal: AbortSignal.timeout(25000) });
+        if (res.ok) {
+          fileRes = res;
+          break;
+        }
+      }
+      if (fileRes) break;
+    }
+    if (!fileRes) {
+      return NextResponse.json({ error: "Fichier indisponible." }, { status: 502 });
     }
 
-    return NextResponse.redirect(signed, 302);
+    const contentType = fileRes.headers.get("content-type") || "application/octet-stream";
+    const filename = row?.originalName || publicId.split("/").pop() || "document";
+    return new Response(fileRes.body, {
+      headers: {
+        "Content-Type": contentType,
+        "Content-Disposition": `attachment; filename="${encodeURIComponent(filename)}"`,
+        "Cache-Control": "no-store",
+      },
+    });
   } catch (e) {
     console.error("GET share file:", e);
     return NextResponse.json({ error: "Erreur serveur." }, { status: 500 });

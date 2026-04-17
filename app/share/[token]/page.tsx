@@ -74,6 +74,7 @@ export default async function SharePage({
   const statusLabels: Record<string, string> = {
     sent: "Transmis", pending: "En attente", archived: "Archivé",
   };
+  const amountTTC = invoice.montantTTC ?? invoice.amount;
 
   return (
     <div className="min-h-dvh bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
@@ -98,36 +99,28 @@ export default async function SharePage({
 
           <div className="p-6 space-y-5">
             <div className="grid grid-cols-2 gap-4">
-              {invoice.fournisseur && (
-                <div>
-                  <p className="text-xs text-slate-500 mb-0.5">Fournisseur</p>
-                  <p className="text-sm font-medium text-slate-900">{invoice.fournisseur}</p>
-                </div>
-              )}
-              {invoice.numeroFacture && (
-                <div>
-                  <p className="text-xs text-slate-500 mb-0.5">N° Facture</p>
-                  <p className="text-sm font-medium text-slate-900">{invoice.numeroFacture}</p>
-                </div>
-              )}
+              <div>
+                <p className="text-xs text-slate-500 mb-0.5">Fournisseur</p>
+                <p className="text-sm font-medium text-slate-900">{invoice.fournisseur ?? "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500 mb-0.5">N° Facture</p>
+                <p className="text-sm font-medium text-slate-900">{invoice.numeroFacture ?? "—"}</p>
+              </div>
               <div>
                 <p className="text-xs text-slate-500 mb-0.5">Région</p>
                 <p className="text-sm font-medium text-slate-900">{regionLabel[invoice.region] ?? invoice.region}</p>
               </div>
-              {invoice.category && (
-                <div>
-                  <p className="text-xs text-slate-500 mb-0.5">Catégorie</p>
-                  <p className="text-sm font-medium text-slate-900">{invoice.category}</p>
-                </div>
-              )}
-              {invoice.invoiceDate && (
-                <div>
-                  <p className="text-xs text-slate-500 mb-0.5">Date facture</p>
-                  <p className="text-sm font-medium text-slate-900">
-                    {new Date(invoice.invoiceDate).toLocaleDateString("fr-FR")}
-                  </p>
-                </div>
-              )}
+              <div>
+                <p className="text-xs text-slate-500 mb-0.5">Catégorie</p>
+                <p className="text-sm font-medium text-slate-900">{invoice.category ?? "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500 mb-0.5">Date facture</p>
+                <p className="text-sm font-medium text-slate-900">
+                  {invoice.invoiceDate ? new Date(invoice.invoiceDate).toLocaleDateString("fr-FR") : "—"}
+                </p>
+              </div>
               <div>
                 <p className="text-xs text-slate-500 mb-0.5">Enregistré le</p>
                 <p className="text-sm font-medium text-slate-900">
@@ -136,27 +129,25 @@ export default async function SharePage({
               </div>
             </div>
 
-            {(invoice.montantHT || invoice.amount) && (
-              <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-2">
-                <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">Montants</p>
-                {invoice.montantHT && (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-600">Montant HT</span>
-                    <span className="font-medium text-slate-900">{invoice.montantHT.toFixed(2)} €</span>
-                  </div>
-                )}
-                {invoice.tauxTVA && (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-600">TVA ({invoice.tauxTVA}%)</span>
-                    <span className="font-medium text-slate-900">{invoice.montantTVA?.toFixed(2) ?? "—"} €</span>
-                  </div>
-                )}
-                <div className="flex justify-between text-sm font-semibold border-t border-slate-200 pt-2 mt-1">
-                  <span className="text-slate-900">Total TTC</span>
-                  <span className="text-slate-900">{(invoice.montantTTC ?? invoice.amount ?? 0).toFixed(2)} €</span>
-                </div>
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-2">
+              <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">Montants extraits</p>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-600">Montant HT</span>
+                <span className="font-medium text-slate-900">{invoice.montantHT != null ? `${invoice.montantHT.toFixed(2)} €` : "—"}</span>
               </div>
-            )}
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-600">Taux TVA</span>
+                <span className="font-medium text-slate-900">{invoice.tauxTVA != null ? `${invoice.tauxTVA}%` : "—"}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-600">Montant TVA</span>
+                <span className="font-medium text-slate-900">{invoice.montantTVA != null ? `${invoice.montantTVA.toFixed(2)} €` : "—"}</span>
+              </div>
+              <div className="flex justify-between text-sm font-semibold border-t border-slate-200 pt-2 mt-1">
+                <span className="text-slate-900">Total TTC</span>
+                <span className="text-slate-900">{amountTTC != null ? `${amountTTC.toFixed(2)} €` : "—"}</span>
+              </div>
+            </div>
 
             {invoice.fileUrl && (
               <a

@@ -47,6 +47,38 @@ interface Invoice {
   invoiceDate: string | null;
 }
 
+function extractPaidAmount(ocrText: string | null): number | null {
+  if (!ocrText) return null;
+  // Priority 1: structured marker injected by server-side AI extraction
+  const aiMarkers = [...ocrText.matchAll(/\[AI_PAID_AMOUNT\]\s*=\s*([0-9]+(?:[.,][0-9]{1,2})?)/gi)];
+  if (aiMarkers.length > 0) {
+    const last = aiMarkers[aiMarkers.length - 1]?.[1];
+    if (last) {
+      const amount = Number(last.replace(",", "."));
+      if (!Number.isNaN(amount)) return amount;
+    }
+  }
+
+  const normalized = ocrText.replace(/\s+/g, " ");
+  const patterns = [
+    /montant\s+pay[ée]\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,2})?)/i,
+    /total\s+pay[ée]\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,2})?)/i,
+    /paid\s+amount\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,2})?)/i,
+    /amount\s+paid\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,2})?)/i,
+    /total\s+paid\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,2})?)/i,
+    /paid\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,2})?)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) {
+      const amount = Number(match[1].replace(",", "."));
+      if (!Number.isNaN(amount)) return amount;
+    }
+  }
+  return null;
+}
+
 export default function InvoicesPage() {
   const [token, setToken] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState("");
@@ -72,8 +104,12 @@ export default function InvoicesPage() {
 
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
+  const [sendingInvoiceId, setSendingInvoiceId] = useState<string | null>(null);
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [shareLinks, setShareLinks] = useState<Record<string, string>>({});
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewTitle, setPreviewTitle] = useState("Aperçu document");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -239,11 +275,14 @@ export default function InvoicesPage() {
     setUploading(true);
     setUploadResult("");
     const savedIds: string[] = [];
+    let autoExtractOk = 0;
+    let autoExtractFail = 0;
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const ocrText = extractedTexts[i]?.text || null;
         const fileUrl = uploadedUrls.find((u) => u.name === file.name)?.url || null;
+        setOcrStatus(`Enregistrement ${i + 1}/${files.length} : ${file.name}`);
         const res = await fetch("/api/invoices", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -262,14 +301,30 @@ export default function InvoicesPage() {
         if (res.ok) {
           const inv = await res.json();
           savedIds.push(inv.id);
-          // Auto-extract comptable data pour PDFs ou images uploadées
+          // Extraction IA AUTOMATIQUE après enregistrement.
+          // Le bouton ⚡ reste disponible en secours en cas d'échec.
           if (fileUrl && inv.id) {
-            fetch(`/api/invoices/${inv.id}/extract`, { method: "POST" }).catch(() => {});
+            setOcrStatus(`Extraction IA ${i + 1}/${files.length} : ${file.name}`);
+            try {
+              const exRes = await fetch(`/api/invoices/${inv.id}/extract`, { method: "POST" });
+              if (exRes.ok) autoExtractOk++;
+              else autoExtractFail++;
+            } catch {
+              autoExtractFail++;
+            }
           }
         }
       }
-      setUploadResult(`${savedIds.length} facture(s) enregistrée(s) et analysée(s).`);
-      loadInvoices(filterRegion || undefined, filterStatus || undefined);
+      const totalExtract = autoExtractOk + autoExtractFail;
+      if (totalExtract > 0) {
+        setUploadResult(
+          `${savedIds.length} facture(s) enregistrée(s). Extraction IA auto : ${autoExtractOk} OK${autoExtractFail ? `, ${autoExtractFail} en erreur (⚡ pour relancer)` : ""}.`
+        );
+      } else {
+        setUploadResult(`${savedIds.length} facture(s) enregistrée(s).`);
+      }
+      setOcrStatus("Traitement terminé.");
+      await loadInvoices(filterRegion || undefined, filterStatus || undefined);
       handleClearAll();
       setCreateOpen(false);
     } catch {
@@ -340,6 +395,85 @@ export default function InvoicesPage() {
     }
   };
 
+  const handleSendSingleInvoice = async (inv: Invoice) => {
+    const t =
+      token ??
+      (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+    if (!t) {
+      setMessage("Connectez-vous pour envoyer la facture.");
+      return;
+    }
+
+    setSendingInvoiceId(inv.id);
+    setMessage("");
+    try {
+      // 1) Resolve secure file URL or proxy blob via our API
+      const fileRes = await fetch(`/api/invoices/${inv.id}/file`, {
+        headers: { Authorization: `Bearer ${t}` },
+      });
+
+      let fileBlob: Blob | null = null;
+      const contentType = fileRes.headers.get("content-type") || "";
+      if (fileRes.ok && contentType.includes("application/json")) {
+        const data = await fileRes.json().catch(() => ({}));
+        if (typeof data.url !== "string") {
+          setMessage(typeof data.error === "string" ? data.error : "Impossible de récupérer le fichier.");
+          return;
+        }
+        const remote = await fetch(data.url);
+        if (!remote.ok) {
+          setMessage(`Impossible de télécharger le fichier (${remote.status}).`);
+          return;
+        }
+        fileBlob = await remote.blob();
+      } else if (fileRes.ok) {
+        fileBlob = await fileRes.blob();
+      } else {
+        const err = await fileRes.json().catch(() => ({}));
+        setMessage(typeof err.error === "string" ? err.error : "Impossible de récupérer le fichier.");
+        return;
+      }
+
+      if (!fileBlob || fileBlob.size === 0) {
+        setMessage("Fichier vide ou inaccessible.");
+        return;
+      }
+
+      // 2) Send through existing endpoint
+      const formData = new FormData();
+      formData.append("region", inv.region);
+      formData.append("senderName", userEmail || "Utilisateur Compta IA");
+      formData.append(
+        "message",
+        `Transmission facture ${inv.numeroFacture ?? inv.originalName}.\nRégion : ${inv.region}`
+      );
+      formData.append("invoiceIds", inv.id);
+      formData.append(
+        "files",
+        new File([fileBlob], inv.originalName || "facture.pdf", {
+          type: fileBlob.type || "application/pdf",
+        })
+      );
+
+      const sendRes = await fetch("/api/send-to-accountant", {
+        method: "POST",
+        headers: t ? { Authorization: `Bearer ${t}` } : {},
+        body: formData,
+      });
+      const sendJson = await sendRes.json().catch(() => ({}));
+      if (!sendRes.ok) {
+        setMessage(sendJson.error || "Erreur lors de l'envoi au cabinet.");
+        return;
+      }
+      setMessage(sendJson.message || "Facture envoyée au cabinet.");
+      await loadInvoices(filterRegion || undefined, filterStatus || undefined);
+    } catch {
+      setMessage("Erreur réseau lors de l'envoi.");
+    } finally {
+      setSendingInvoiceId(null);
+    }
+  };
+
   const openInvoiceDocument = async (invId: string) => {
     const t =
       token ??
@@ -391,6 +525,45 @@ export default function InvoicesPage() {
       setMessage("Erreur réseau lors du téléchargement.");
     }
   };
+
+  const previewInvoiceDocument = async (invId: string, title: string) => {
+    const t =
+      token ??
+      (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+    if (!t) {
+      setMessage("Connectez-vous pour voir le document.");
+      return;
+    }
+    try {
+      const res = await fetch(`/api/invoices/${invId}/file?disposition=inline`, {
+        headers: { Authorization: `Bearer ${t}` },
+      });
+      const contentType = res.headers.get("content-type") || "";
+      if (res.ok && contentType.includes("application/json")) {
+        const data = await res.json().catch(() => ({}));
+        if (typeof data.url === "string") {
+          setPreviewTitle(title);
+          setPreviewUrl(data.url);
+          setPreviewOpen(true);
+          return;
+        }
+        setMessage(typeof data.error === "string" ? data.error : "Aperçu impossible.");
+        return;
+      }
+      if (res.ok) {
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        setPreviewTitle(title);
+        setPreviewUrl(blobUrl);
+        setPreviewOpen(true);
+        return;
+      }
+      const err = await res.json().catch(() => ({}));
+      setMessage(typeof err.error === "string" ? err.error : "Aperçu impossible.");
+    } catch {
+      setMessage("Erreur réseau lors de l'aperçu.");
+    }
+  };
   const handleShare = async (id: string) => {
     setSharingId(id);
     try {
@@ -433,6 +606,31 @@ export default function InvoicesPage() {
 
   return (
     <div className="px-4 py-6 lg:px-6 lg:py-8">
+      {previewOpen && previewUrl && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/70 p-4">
+          <div className="flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <p className="truncate text-sm font-medium text-slate-800">{previewTitle}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  if (previewUrl.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
+                  setPreviewOpen(false);
+                  setPreviewUrl(null);
+                }}
+                className="rounded-md px-2 py-1 text-sm text-slate-600 hover:bg-slate-100"
+              >
+                Fermer
+              </button>
+            </div>
+            <iframe
+              src={previewUrl}
+              title="Aperçu document"
+              className="h-full w-full"
+            />
+          </div>
+        </div>
+      )}
       <div className="mx-auto max-w-5xl space-y-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -719,8 +917,7 @@ export default function InvoicesPage() {
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Client / Fournisseur</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Référence</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant HT</th>
-                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Taux TVA</th>
-                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant TVA</th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Règlé</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant TTC</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Statut</th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Actions</th>
@@ -730,8 +927,7 @@ export default function InvoicesPage() {
                   {invoices.map((inv) => {
                     const montantTTC = inv.montantTTC ?? inv.amount;
                     const montantHT  = inv.montantHT;
-                    const montantTVA = inv.montantTVA;
-                    const tauxTVA    = inv.tauxTVA;
+                    const paidAmount = extractPaidAmount(inv.ocrText);
                     const dateAjout  = inv.createdAt
                       ? new Date(inv.createdAt).toLocaleDateString("fr-FR")
                       : "—";
@@ -791,18 +987,17 @@ export default function InvoicesPage() {
                             : <span className="text-slate-300">—</span>}
                         </td>
 
-                        {/* Taux TVA */}
-                        <td className="px-4 py-3 whitespace-nowrap text-right font-mono text-sm text-slate-700">
-                          {tauxTVA != null
-                            ? <span>{Number(tauxTVA).toLocaleString("fr-FR", { maximumFractionDigits: 2 })} <span className="text-xs text-slate-400">%</span></span>
-                            : <span className="text-slate-300">—</span>}
-                        </td>
-
-                        {/* Montant TVA */}
-                        <td className="px-4 py-3 whitespace-nowrap text-right font-mono text-sm text-slate-700">
-                          {montantTVA != null
-                            ? <span>{montantTVA.toFixed(2)} <span className="text-xs text-slate-400">€</span></span>
-                            : <span className="text-slate-300">—</span>}
+                        {/* Règlé (détection FR/EN dans OCR) */}
+                        <td className="px-4 py-3 whitespace-nowrap text-center">
+                          {paidAmount != null ? (
+                            <span className="inline-flex rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
+                              Oui · {paidAmount.toFixed(2)} €
+                            </span>
+                          ) : (
+                            <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-500">
+                              —
+                            </span>
+                          )}
                         </td>
 
                         {/* Montant TTC */}
@@ -828,17 +1023,31 @@ export default function InvoicesPage() {
                           <div className="flex items-center justify-center gap-1.5">
                             {/* Bouton PDF / document */}
                             {inv.fileUrl ? (
-                              <button
-                                type="button"
-                                onClick={() => void openInvoiceDocument(inv.id)}
-                                title="Télécharger le document (lien signé)"
-                                className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-100 transition"
-                              >
-                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                                </svg>
-                                PDF
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void previewInvoiceDocument(inv.id, inv.originalName)}
+                                  title="Voir le document"
+                                  className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 transition"
+                                >
+                                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                  </svg>
+                                  Voir
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void openInvoiceDocument(inv.id)}
+                                  title="Télécharger le document (lien signé)"
+                                  className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-100 transition"
+                                >
+                                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                                  </svg>
+                                  PDF
+                                </button>
+                              </>
                             ) : (
                               <span className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-300">
                                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -894,6 +1103,16 @@ export default function InvoicesPage() {
                             >
                               {sharingId === inv.id ? "…" : "🔗"}
                             </button>
+
+                                 {/* Envoi mail cabinet */}
+                                 <button
+                                   onClick={() => handleSendSingleInvoice(inv)}
+                                   disabled={sendingInvoiceId === inv.id || !inv.fileUrl}
+                                   title={!inv.fileUrl ? "Aucun document à envoyer" : "Envoyer cette facture au cabinet"}
+                                   className="inline-flex items-center rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-100 disabled:opacity-40 transition"
+                                 >
+                                   {sendingInvoiceId === inv.id ? "…" : "✉️"}
+                                 </button>
                           </div>
                         </td>
                       </tr>

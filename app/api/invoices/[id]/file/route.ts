@@ -18,7 +18,14 @@ function setupCloudinary(): boolean {
 }
 
 /** Generate a private download URL using Cloudinary API credentials (bypasses delivery restrictions) */
-function makePrivateDownloadUrls(publicId: string, resourceType: "image" | "raw"): string[] {
+type DeliveryType = "upload" | "authenticated" | "private";
+
+function makePrivateDownloadUrls(
+  publicId: string,
+  resourceType: "image" | "raw",
+  deliveryType: DeliveryType = "upload",
+  asAttachment = true
+): string[] {
   if (!setupCloudinary()) return [];
   try {
     const formatMatch = publicId.match(/\.([a-z0-9]+)$/i);
@@ -41,7 +48,8 @@ function makePrivateDownloadUrls(publicId: string, resourceType: "image" | "raw"
           (c.fmt as unknown as string) ?? (null as unknown as string),
           {
             resource_type: resourceType,
-            attachment: true,
+            type: deliveryType,
+            attachment: asAttachment,
             expires_at: expiry,
           }
         );
@@ -71,24 +79,38 @@ function buildPublicIdCandidates(publicId: string): string[] {
 
 async function firstWorkingPrivateUrl(
   publicId: string,
-  hintType: "image" | "raw"
-): Promise<{ url: string; resourceType: "image" | "raw"; publicId: string } | null> {
+  hintType: "image" | "raw",
+  hintDeliveryType: DeliveryType = "upload",
+  asAttachment = true
+): Promise<{ url: string; resourceType: "image" | "raw"; publicId: string; deliveryType: DeliveryType } | null> {
   const types: ("image" | "raw")[] =
     hintType === "image" ? ["image", "raw"] : ["raw", "image"];
   const ids = buildPublicIdCandidates(publicId);
+  const deliveryTypes: DeliveryType[] =
+    hintDeliveryType === "upload"
+      ? ["upload", "authenticated", "private"]
+      : [hintDeliveryType, "upload", "authenticated", "private"];
 
   for (const resourceType of types) {
-    for (const pid of ids) {
-      const urls = makePrivateDownloadUrls(pid, resourceType);
-      for (const url of urls) {
-        try {
-          const check = await fetch(url, { signal: AbortSignal.timeout(10000) });
-          if (check.ok) {
-            return { url, resourceType, publicId: pid };
+    for (const deliveryType of deliveryTypes) {
+      for (const pid of ids) {
+        const urls = makePrivateDownloadUrls(pid, resourceType, deliveryType, asAttachment);
+        for (const url of urls) {
+          try {
+            const check = await fetch(url, { signal: AbortSignal.timeout(10000) });
+            if (check.ok) {
+              return { url, resourceType, publicId: pid, deliveryType };
+            }
+            console.log(
+              "private url test failed",
+              resourceType,
+              deliveryType,
+              pid.slice(-20),
+              check.status
+            );
+          } catch {
+            // try next candidate
           }
-          console.log("private url test failed", resourceType, pid.slice(-20), check.status);
-        } catch {
-          // try next candidate
         }
       }
     }
@@ -99,29 +121,35 @@ async function firstWorkingPrivateUrl(
 async function resolveAssetFromAdminApi(
   publicId: string,
   hintType: "image" | "raw"
-): Promise<{ publicId: string; resourceType: "image" | "raw"; deliveryType: string } | null> {
+): Promise<{ publicId: string; resourceType: "image" | "raw"; deliveryType: DeliveryType } | null> {
   if (!setupCloudinary()) return null;
   const types: ("image" | "raw")[] =
     hintType === "image" ? ["image", "raw"] : ["raw", "image"];
   const ids = buildPublicIdCandidates(publicId);
+  const deliveryTypes: DeliveryType[] = ["upload", "authenticated", "private"];
 
   for (const rt of types) {
-    for (const pid of ids) {
-      try {
-        const res = (await cloudinary.api.resource(pid, { resource_type: rt })) as {
-          public_id: string;
-          resource_type: "image" | "raw";
-          type?: string;
-        };
-        if (res?.public_id) {
-          return {
-            publicId: res.public_id,
-            resourceType: (res.resource_type as "image" | "raw") ?? rt,
-            deliveryType: res.type || "upload",
+    for (const dt of deliveryTypes) {
+      for (const pid of ids) {
+        try {
+          const res = (await cloudinary.api.resource(pid, {
+            resource_type: rt,
+            type: dt,
+          })) as {
+            public_id: string;
+            resource_type: "image" | "raw";
+            type?: string;
           };
+          if (res?.public_id) {
+            return {
+              publicId: res.public_id,
+              resourceType: (res.resource_type as "image" | "raw") ?? rt,
+              deliveryType: (res.type as DeliveryType) || dt,
+            };
+          }
+        } catch {
+          // continue trying variants
         }
-      } catch {
-        // continue trying variants
       }
     }
   }
@@ -133,6 +161,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const { searchParams } = new URL(request.url);
+  const inline = searchParams.get("disposition") === "inline";
 
   // JWT auth
   const auth = request.headers.get("authorization");
@@ -177,7 +207,9 @@ export async function GET(
     // Generate & validate a private download URL (tries image/raw + with/without .pdf)
     const resolved = await firstWorkingPrivateUrl(
       asset?.publicId ?? publicId,
-      asset?.resourceType ?? resourceType
+      asset?.resourceType ?? resourceType,
+      (asset?.deliveryType as DeliveryType) ?? "upload",
+      !inline
     );
     if (resolved) {
       console.log(
@@ -228,7 +260,7 @@ export async function GET(
     return new Response(fileRes.body, {
       headers: {
         "Content-Type": contentType,
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(filename)}"`,
+        "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${encodeURIComponent(filename)}"`,
         "Cache-Control": "no-store",
       },
     });
