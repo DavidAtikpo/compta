@@ -53,64 +53,45 @@ const nav = [
   },
 ];
 
-type SidebarProps = {
-  mobileOpen: boolean;
-  onNavigate: () => void;
-};
-
-export function Sidebar({ mobileOpen, onNavigate }: SidebarProps) {
+export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <>
-      <div
-        className={`fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-sm transition-opacity lg:hidden ${
-          mobileOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
-        }`}
-        aria-hidden={!mobileOpen}
-        onClick={onNavigate}
-      />
-      <aside
-        className={`fixed inset-y-0 left-0 z-50 flex h-dvh w-56 shrink-0 flex-col border-r border-slate-200 bg-white shadow-xl transition-transform duration-200 ease-out lg:static lg:z-0 lg:h-full lg:translate-x-0 lg:shadow-none ${
-          mobileOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
-      >
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-slate-100 px-3">
-          <Link href="/" className="flex min-w-0 items-center gap-2" onClick={onNavigate}>
-            <Image
-              src="/logo.jpg"
-              alt="The Code — logo"
-              width={32}
-              height={32}
-              className="h-8 w-8 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
-            />
-            <span className="truncate text-sm font-semibold text-slate-900">Compta IA</span>
-          </Link>
-        </div>
-        <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
-          {nav.map((item) => {
-            const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={onNavigate}
-                className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition ${
-                  active
-                    ? "bg-slate-900 text-white shadow-sm"
-                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                }`}
-              >
-                {item.icon}
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="shrink-0 border-t border-slate-100 p-2 text-[10px] leading-snug text-slate-400">
-          Optimisation fiscale — usage pro. Consultez votre expert-comptable.
-        </div>
-      </aside>
-    </>
+    <aside className="hidden h-dvh w-56 shrink-0 flex-col border-r border-slate-200 bg-white lg:flex">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-slate-100 px-3">
+        <Link href="/" className="flex min-w-0 items-center gap-2">
+          <Image
+            src="/logo.jpg"
+            alt="The Code — logo"
+            width={32}
+            height={32}
+            className="h-8 w-8 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+          />
+          <span className="truncate text-sm font-semibold text-slate-900">Compta IA</span>
+        </Link>
+      </div>
+      <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
+        {nav.map((item) => {
+          const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition ${
+                active
+                  ? "bg-slate-900 text-white shadow-sm"
+                  : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+              }`}
+            >
+              {item.icon}
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+      <div className="shrink-0 border-t border-slate-100 p-2 text-[10px] leading-snug text-slate-400">
+        Optimisation fiscale — usage pro. Consultez votre expert-comptable.
+      </div>
+    </aside>
   );
 }

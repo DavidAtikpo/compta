@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
 import Tesseract from "tesseract.js";
+import { InvoicePhotoCropModal } from "@/components/InvoicePhotoCropModal";
 import { MAX_PDF_INVOICES } from "../../../lib/pdf-export";
 
 const regionOptions = [
@@ -278,6 +279,8 @@ export default function InvoicesPage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  /** Photo caméra en attente de recadrage (URL object + fichier source) */
+  const [photoCrop, setPhotoCrop] = useState<{ src: string; file: File } | null>(null);
 
   useEffect(() => {
     const savedToken = window.localStorage.getItem("compta-token");
@@ -299,6 +302,14 @@ export default function InvoicesPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, [createOpen]);
+
+  useEffect(() => {
+    if (createOpen) return;
+    setPhotoCrop((pc) => {
+      if (pc?.src) URL.revokeObjectURL(pc.src);
+      return null;
+    });
   }, [createOpen]);
 
   useEffect(() => {
@@ -526,6 +537,30 @@ export default function InvoicesPage() {
     }
     // Permet de reprendre une photo / le même fichier sur mobile
     e.target.value = "";
+  };
+
+  /** Après capture caméra : recadrage obligatoire avant OCR / Cloudinary */
+  const handleCameraInput = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      void handleFiles([file]);
+      return;
+    }
+    const src = URL.createObjectURL(file);
+    setPhotoCrop({ src, file });
+  };
+
+  const cancelPhotoCrop = () => {
+    if (photoCrop?.src) URL.revokeObjectURL(photoCrop.src);
+    setPhotoCrop(null);
+  };
+
+  const confirmPhotoCrop = async (cropped: File) => {
+    if (photoCrop?.src) URL.revokeObjectURL(photoCrop.src);
+    setPhotoCrop(null);
+    await handleFiles([cropped]);
   };
 
   const handleSaveInvoices = async () => {
@@ -949,6 +984,10 @@ export default function InvoicesPage() {
   };
 
   const handleClearAll = () => {
+    setPhotoCrop((pc) => {
+      if (pc?.src) URL.revokeObjectURL(pc.src);
+      return null;
+    });
     setFiles([]); setExtractedTexts([]); setUploadedUrls([]);
     setOcrStatus(""); setUploadResult(""); setSendResult("");
     setAmount(""); setCategory(""); setMessage("");
@@ -1045,6 +1084,14 @@ export default function InvoicesPage() {
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col px-4 py-3 sm:px-6 lg:px-8">
       {/* Document preview modal — plein écran */}
+      <InvoicePhotoCropModal
+        open={!!photoCrop}
+        imageSrc={photoCrop?.src ?? null}
+        sourceFile={photoCrop?.file ?? null}
+        onCancel={cancelPhotoCrop}
+        onConfirm={confirmPhotoCrop}
+      />
+
       {previewOpen && previewUrl && (
         <div className="fixed inset-0 z-[60] flex flex-col bg-slate-900/80">
           <div className="flex h-full w-full flex-col overflow-hidden bg-white">
@@ -1699,7 +1746,7 @@ export default function InvoicesPage() {
                   className="flex min-h-[3.25rem] flex-col items-center justify-center gap-0.5 rounded-lg border-2 border-dashed border-slate-400 bg-slate-50 px-3 py-3 text-slate-800 transition active:bg-slate-100 sm:min-h-0 sm:border sm:border-slate-300 sm:bg-white sm:py-3 sm:text-slate-600 sm:hover:border-slate-400 sm:hover:bg-slate-50"
                 >
                   <span className="text-xs font-semibold sm:text-[11px]">Prendre une photo</span>
-                  <span className="text-[10px] text-slate-500">Caméra · mobile</span>
+                  <span className="text-[10px] text-slate-500">Puis recadrage</span>
                 </button>
                 <button
                   type="button"
@@ -1720,7 +1767,7 @@ export default function InvoicesPage() {
                 type="file"
                 accept="image/*"
                 capture="environment"
-                onChange={handleFileInput}
+                onChange={handleCameraInput}
                 className="hidden"
                 aria-label="Prendre une photo avec la caméra"
               />
