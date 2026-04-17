@@ -27,6 +27,53 @@ function ensureFileNameWithExt(filename: string, contentType: string): string {
   return `${filename}.bin`;
 }
 
+function isLikelyInvoiceAttachment(
+  a: {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+  },
+  emailContext = ""
+): boolean {
+  const filename = (a.filename || "").toLowerCase();
+  const ct = (a.contentType || "").toLowerCase();
+  const size = a.content?.length || 0;
+
+  const isPdf = ct.includes("pdf") || filename.endsWith(".pdf");
+  const isImage =
+    ct.includes("image") || /\.(jpg|jpeg|png|webp|gif|heic|heif)$/i.test(filename);
+
+  if (!isPdf && !isImage) return false;
+
+  // Block common email decoration assets
+  const blockedNamePatterns = [
+    /logo/i,
+    /icon/i,
+    /signature/i,
+    /warning_triangle/i,
+    /spacer/i,
+    /facebook|instagram|linkedin|twitter/i,
+    /banner/i,
+  ];
+  if (blockedNamePatterns.some((p) => p.test(filename))) return false;
+
+  // PDFs are usually relevant unless extremely tiny
+  if (isPdf) return size >= 2_000;
+
+  // Images: require larger files OR invoice-like filename
+  const invoiceLikeName =
+    /facture|invoice|receipt|recu|ticket|achat|purchase|bill|quittance/i.test(filename);
+  const invoiceLikeContext =
+    /facture|invoice|receipt|recu|ticket|achat|purchase|bill|quittance|payment/i.test(
+      emailContext
+    );
+  if (invoiceLikeName) return size >= 3_000;
+  if (invoiceLikeContext) return size >= 8_000;
+
+  // Generic images from emails are often tiny icons/signatures
+  return size >= 25_000;
+}
+
 function imapFetchEmails(config: {
   user: string;
   password: string;
@@ -52,60 +99,100 @@ function imapFetchEmails(config: {
       imap.openBox("INBOX", false, (err) => {
         if (err) { imap.end(); reject(err); return; }
 
-        // Fetch emails from the last 7 days with attachments
+        // Search all emails from the last 90 days
         const since = new Date();
-        since.setDate(since.getDate() - 7);
+        since.setDate(since.getDate() - 90);
 
-        imap.search(["UNSEEN", ["SINCE", since]], (err, uids) => {
-          if (err || !uids || uids.length === 0) {
+        console.log(`IMAP: searching emails since ${since.toDateString()}`);
+
+        imap.search([["SINCE", since]], (searchErr, uids) => {
+          if (searchErr) {
+            console.error("IMAP search error:", searchErr);
+            imap.end();
+            resolve([]);
+            return;
+          }
+          console.log(`IMAP: found ${uids?.length ?? 0} emails total`);
+          if (!uids || uids.length === 0) {
             imap.end();
             resolve([]);
             return;
           }
 
-          const fetch = imap.fetch(uids.slice(0, 20), { bodies: "", struct: true });
+          // Limit to 200 most recent to avoid memory issues
+          const toFetch = uids.slice(-200);
+          console.log(`IMAP: fetching ${toFetch.length} most recent emails`);
+          const fetchHandle = imap.fetch(toFetch, { bodies: "", struct: true });
 
-          fetch.on("message", (msg) => {
+          // Collect all parse promises so we can await them before resolving
+          const parsePromises: Promise<void>[] = [];
+
+          fetchHandle.on("message", (msg) => {
             const buffers: Buffer[] = [];
-            msg.on("body", (stream) => {
-              stream.on("data", (chunk) => buffers.push(chunk));
-              stream.once("end", async () => {
-                try {
-                  const parsed = await simpleParser(Buffer.concat(buffers));
-                  const attachments = (parsed.attachments ?? [])
-                    .filter((a) => {
-                      const ct = a.contentType ?? "";
-                      return (
-                        ct.includes("pdf") ||
-                        ct.includes("image") ||
-                        (a.filename ?? "").match(/\.(pdf|jpg|jpeg|png|webp)$/i)
-                      );
-                    })
-                    .map((a) => ({
-                      filename: a.filename ?? "pièce_jointe",
-                      content: a.content as Buffer,
-                      contentType: a.contentType ?? "application/octet-stream",
-                    }));
-
-                  if (attachments.length > 0) {
-                    emails.push({
-                      subject: parsed.subject ?? "(sans objet)",
-                      from: parsed.from?.text ?? "",
-                      attachments,
-                    });
-                  }
-                } catch {
-                  // Skip parse errors
-                }
+            const p = new Promise<void>((resMsg) => {
+              msg.on("body", (stream) => {
+                stream.on("data", (chunk: Buffer) => buffers.push(chunk));
+                stream.once("end", () => resMsg());
               });
+              // Some messages may have no body events
+              msg.once("end", () => resMsg());
+            }).then(async () => {
+              if (!buffers.length) return;
+              try {
+                const parsed = await simpleParser(Buffer.concat(buffers));
+                const allAtts = (parsed.attachments ?? []).map((a) => ({
+                  filename: a.filename ?? "pièce_jointe",
+                  content: a.content as Buffer,
+                  contentType: a.contentType ?? "application/octet-stream",
+                }));
+
+                const candidateAtts = allAtts.filter((a) => {
+                  const ct = a.contentType ?? "";
+                  return (
+                    ct.includes("pdf") ||
+                    ct.includes("image") ||
+                    (a.filename ?? "").match(/\.(pdf|jpg|jpeg|png|webp)$/i)
+                  );
+                });
+
+                console.log(
+                  `IMAP msg: subject="${parsed.subject}" from="${parsed.from?.text}" ` +
+                  `allAtts=${allAtts.length} candidateAtts=${candidateAtts.length} ` +
+                  `names=[${candidateAtts.map(a => `${a.filename}(${a.content?.length}B)`).join(", ")}]`
+                );
+
+                const context = `${parsed.subject ?? ""} ${parsed.from?.text ?? ""}`.toLowerCase();
+                const relevantAttachments = candidateAtts.filter((att) =>
+                  isLikelyInvoiceAttachment(att, context)
+                );
+
+                console.log(`IMAP msg: relevantAtts=${relevantAttachments.length}`);
+
+                if (relevantAttachments.length > 0) {
+                  emails.push({
+                    subject: parsed.subject ?? "(sans objet)",
+                    from: parsed.from?.text ?? "",
+                    attachments: relevantAttachments,
+                  });
+                }
+              } catch (parseErr) {
+                console.error("IMAP parse error:", parseErr);
+              }
             });
+
+            parsePromises.push(p);
           });
 
-          fetch.once("end", () => {
+          fetchHandle.once("end", async () => {
+            // Wait for ALL async parsing to complete before resolving
+            await Promise.allSettled(parsePromises);
+            console.log(`IMAP: done — ${emails.length} emails with relevant attachments`);
             imap.end();
           });
 
-          fetch.once("error", () => {
+          fetchHandle.once("error", async (fetchErr: Error) => {
+            console.error("IMAP fetch error:", fetchErr);
+            await Promise.allSettled(parsePromises);
             imap.end();
             resolve(emails);
           });

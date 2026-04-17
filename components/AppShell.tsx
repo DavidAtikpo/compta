@@ -42,7 +42,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           userEmail={userEmail}
           onLogout={handleLogout}
         />
-        <main className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">{children}</main>
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-y-contain">{children}</main>
         <footer className="shrink-0 border-t border-slate-200 bg-white py-2.5">
           <p className="px-4 text-center text-[11px] text-slate-400 lg:px-6">
             Compta IA — Optimisation fiscale basée sur la législation française &amp; internationale. Pour usage

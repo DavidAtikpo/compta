@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useState, type ChangeEvent } from "react";
+import { MAX_PDF_INVOICES } from "../../../lib/pdf-export";
 
 const regionOptions = [
   { value: "france", label: "France", flag: "🇫🇷" },
@@ -494,7 +495,7 @@ export default function SettingsPage() {
                 <li>✅ OCR automatique (Tesseract.js) + extraction IA structurée (GPT-4o Vision)</li>
                 <li>✅ Stockage cloud Cloudinary (PDF & images)</li>
                 <li>✅ Lien de partage public par facture</li>
-                <li>✅ Export FEC (Fichier des Écritures Comptables)</li>
+                <li>{`✅ Export PDF sur sélection (cases à cocher, max. ${MAX_PDF_INVOICES} par fichier)`}</li>
                 <li>✅ Alertes Légifrance / Journal Officiel en temps réel</li>
                 <li>✅ Import factures par email (IMAP)</li>
                 <li>✅ Multi-structures / Multi-pays</li>
