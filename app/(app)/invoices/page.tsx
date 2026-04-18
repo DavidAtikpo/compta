@@ -3,140 +3,16 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
 import Tesseract from "tesseract.js";
 import { InvoicePhotoCropModal } from "@/components/InvoicePhotoCropModal";
+import {
+  IMAP_REGION_OPTIONS_SORTED,
+  imapCountryFilterMatch,
+  regionDisplayLabel,
+} from "@/lib/country-regions";
 import { MAX_PDF_INVOICES } from "../../../lib/pdf-export";
-
-const regionOptions = [
-  { value: "france", label: "France", flag: "🇫🇷" },
-  { value: "togo", label: "Togo", flag: "🇹🇬" },
-  { value: "vietnam", label: "Vietnam", flag: "🇻🇳" },
-  { value: "autre", label: "Autre", flag: "🌍" },
-];
 
 /** Réglages IMAP Gmail recommandés (identiques pour tous les comptes Gmail). */
 const IMAP_DEFAULT_HOST = "imap.gmail.com";
 const IMAP_DEFAULT_PORT = "993";
-
-/** Pays / zones pour rattacher les factures importées (valeur stockée en base). */
-const IMAP_COUNTRY_GROUPS: { groupName: string; options: { value: string; label: string }[] }[] = [
-  {
-    groupName: "Europe",
-    options: [
-      { value: "france", label: "🇫🇷 France" },
-      { value: "belgique", label: "🇧🇪 Belgique" },
-      { value: "suisse", label: "🇨🇭 Suisse" },
-      { value: "luxembourg", label: "🇱🇺 Luxembourg" },
-      { value: "allemagne", label: "🇩🇪 Allemagne" },
-      { value: "espagne", label: "🇪🇸 Espagne" },
-      { value: "italie", label: "🇮🇹 Italie" },
-      { value: "portugal", label: "🇵🇹 Portugal" },
-      { value: "pays_bas", label: "🇳🇱 Pays-Bas" },
-      { value: "autriche", label: "🇦🇹 Autriche" },
-      { value: "pologne", label: "🇵🇱 Pologne" },
-      { value: "roumanie", label: "🇷🇴 Roumanie" },
-      { value: "grece", label: "🇬🇷 Grèce" },
-      { value: "irlande", label: "🇮🇪 Irlande" },
-      { value: "royaume_uni", label: "🇬🇧 Royaume-Uni" },
-      { value: "suede", label: "🇸🇪 Suède" },
-      { value: "norvege", label: "🇳🇴 Norvège" },
-      { value: "danemark", label: "🇩🇰 Danemark" },
-      { value: "finlande", label: "🇫🇮 Finlande" },
-      { value: "republique_tcheque", label: "🇨🇿 République tchèque" },
-      { value: "hongrie", label: "🇭🇺 Hongrie" },
-      { value: "croatie", label: "🇭🇷 Croatie" },
-    ],
-  },
-  {
-    groupName: "Afrique",
-    options: [
-      { value: "maroc", label: "🇲🇦 Maroc" },
-      { value: "algerie", label: "🇩🇿 Algérie" },
-      { value: "tunisie", label: "🇹🇳 Tunisie" },
-      { value: "senegal", label: "🇸🇳 Sénégal" },
-      { value: "cote_ivoire", label: "🇨🇮 Côte d'Ivoire" },
-      { value: "cameroun", label: "🇨🇲 Cameroun" },
-      { value: "togo", label: "🇹🇬 Togo" },
-      { value: "benin", label: "🇧🇯 Bénin" },
-      { value: "mali", label: "🇲🇱 Mali" },
-      { value: "burkina", label: "🇧🇫 Burkina Faso" },
-      { value: "nigeria", label: "🇳🇬 Nigeria" },
-      { value: "kenya", label: "🇰🇪 Kenya" },
-      { value: "afrique_sud", label: "🇿🇦 Afrique du Sud" },
-      { value: "egypte", label: "🇪🇬 Égypte" },
-    ],
-  },
-  {
-    groupName: "Amériques",
-    options: [
-      { value: "canada", label: "🇨🇦 Canada" },
-      { value: "usa", label: "🇺🇸 États-Unis" },
-      { value: "mexique", label: "🇲🇽 Mexique" },
-      { value: "bresil", label: "🇧🇷 Brésil" },
-      { value: "argentine", label: "🇦🇷 Argentine" },
-      { value: "chili", label: "🇨🇱 Chili" },
-      { value: "colombie", label: "🇨🇴 Colombie" },
-      { value: "perou", label: "🇵🇪 Pérou" },
-    ],
-  },
-  {
-    groupName: "Asie & Océanie",
-    options: [
-      { value: "vietnam", label: "🇻🇳 Vietnam" },
-      { value: "chine", label: "🇨🇳 Chine" },
-      { value: "japon", label: "🇯🇵 Japon" },
-      { value: "coree_sud", label: "🇰🇷 Corée du Sud" },
-      { value: "inde", label: "🇮🇳 Inde" },
-      { value: "singapour", label: "🇸🇬 Singapour" },
-      { value: "thailande", label: "🇹🇭 Thaïlande" },
-      { value: "indonesie", label: "🇮🇩 Indonésie" },
-      { value: "philippines", label: "🇵🇭 Philippines" },
-      { value: "australie", label: "🇦🇺 Australie" },
-      { value: "nouvelle_zelande", label: "🇳🇿 Nouvelle-Zélande" },
-    ],
-  },
-  {
-    groupName: "Moyen-Orient",
-    options: [
-      { value: "emirats", label: "🇦🇪 Émirats arabes unis" },
-      { value: "arabie_saoudite", label: "🇸🇦 Arabie saoudite" },
-      { value: "israel", label: "🇮🇱 Israël" },
-      { value: "turquie", label: "🇹🇷 Turquie" },
-      { value: "qatar", label: "🇶🇦 Qatar" },
-    ],
-  },
-  {
-    groupName: "Autre",
-    options: [{ value: "autre", label: "🌍 Autre / non listé" }],
-  },
-];
-
-const IMAP_REGION_OPTIONS_FLAT = IMAP_COUNTRY_GROUPS.flatMap((g) => g.options);
-
-const IMAP_REGION_OPTIONS_SORTED = [...IMAP_REGION_OPTIONS_FLAT].sort((a, b) =>
-  a.label.localeCompare(b.label, "fr", { sensitivity: "base" }),
-);
-
-function regionDisplayLabel(regionValue: string): string {
-  return (
-    IMAP_REGION_OPTIONS_FLAT.find((o) => o.value === regionValue)?.label ??
-    regionOptions.find((r) => r.value === regionValue)?.label ??
-    regionValue
-  );
-}
-
-/** Filtre pays : insensible à la casse et aux accents ; cherche dans le libellé et le code (ex. pays_bas). */
-function imapCountryFilterMatch(query: string, label: string, value: string): boolean {
-  const q = query
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{M}/gu, "");
-  if (!q) return true;
-  const hay = `${label} ${value.replace(/_/g, " ")}`
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{M}/gu, "");
-  return hay.includes(q);
-}
 
 /** URLs image : aperçu en balise img (évite l’iframe qui affiche la photo trop zoomée sur mobile). */
 function isLikelyImagePreviewUrl(url: string): boolean {
@@ -216,6 +92,22 @@ function extractPaidAmount(ocrText: string | null): number | null {
   return null;
 }
 
+function buildInvoiceContextForAi(inv: Invoice): string {
+  const lines = [
+    `Pièce : ${inv.originalName}`,
+    inv.fournisseur ? `Fournisseur : ${inv.fournisseur}` : null,
+    inv.numeroFacture ? `N° facture : ${inv.numeroFacture}` : null,
+    inv.invoiceDate ? `Date facture : ${inv.invoiceDate}` : null,
+    inv.category ? `Catégorie : ${inv.category}` : null,
+    inv.montantHT != null ? `Montant HT : ${inv.montantHT}` : null,
+    inv.montantTVA != null ? `TVA : ${inv.montantTVA}` : null,
+    inv.montantTTC != null ? `Montant TTC : ${inv.montantTTC}` : null,
+    inv.tauxTVA != null ? `Taux TVA : ${inv.tauxTVA}%` : null,
+    inv.amount != null ? `Montant enregistré : ${inv.amount}` : null,
+  ].filter(Boolean) as string[];
+  return lines.join("\n");
+}
+
 type Tab = "invoices" | "email";
 
 /** Largeur minimale du menu actions (aligné avec min-w-[11rem]) */
@@ -253,6 +145,8 @@ export default function InvoicesPage() {
   // Action states
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
+  const [fiscalAiAnalyzingId, setFiscalAiAnalyzingId] = useState<string | null>(null);
+  const [fiscalAiModal, setFiscalAiModal] = useState<{ title: string; body: string } | null>(null);
   const [sendingInvoiceId, setSendingInvoiceId] = useState<string | null>(null);
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [shareLinks, setShareLinks] = useState<Record<string, string>>({});
@@ -282,6 +176,8 @@ export default function InvoicesPage() {
   const [imapShowPassword, setImapShowPassword] = useState(false);
   const [imapCountryFilter, setImapCountryFilter] = useState("");
   const [createCountryFilter, setCreateCountryFilter] = useState("");
+  const [showImapCountryPicker, setShowImapCountryPicker] = useState(false);
+  const [showCreateCountryPicker, setShowCreateCountryPicker] = useState(false);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -703,6 +599,45 @@ export default function InvoicesPage() {
     } finally {
       setExtractingId(null);
       setTimeout(() => setExtractResults((prev) => { const n = { ...prev }; delete n[id]; return n; }), 6000);
+    }
+  };
+
+  const handleFiscalAiAnalyze = async (inv: Invoice) => {
+    setFiscalAiAnalyzingId(inv.id);
+    try {
+      const contextExtra = buildInvoiceContextForAi(inv);
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          region: inv.region || "france",
+          businessType: "eurl",
+          invoiceId: inv.id,
+          ocrText: inv.ocrText || undefined,
+          context: contextExtra,
+          prompt:
+            "Analyse cette facture sous l'angle fiscal et comptable : déductibilité TVA et charges, qualification des dépenses, risques, cohérence des montants. Propose des actions concrètes et les points de vigilance pour l'entreprise dans la région indiquée.",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFiscalAiModal({
+          title: `Analyse fiscale — ${inv.originalName}`,
+          body: typeof data.error === "string" ? data.error : `Erreur ${res.status}`,
+        });
+        return;
+      }
+      setFiscalAiModal({
+        title: `Analyse fiscale — ${inv.originalName}`,
+        body: typeof data.answer === "string" ? data.answer : "Aucune réponse.",
+      });
+    } catch {
+      setFiscalAiModal({
+        title: `Analyse fiscale — ${inv.originalName}`,
+        body: "Erreur réseau ou service indisponible.",
+      });
+    } finally {
+      setFiscalAiAnalyzingId(null);
     }
   };
 
@@ -1377,7 +1312,9 @@ export default function InvoicesPage() {
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Règlé</th>
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant TTC</th>
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Statut</th>
-                      <th className="px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right w-12">Actions</th>
+                      <th className="min-w-[8.5rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">
+                        Actions
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -1450,25 +1387,36 @@ export default function InvoicesPage() {
                               {inv.status === "sent" ? "Envoyé" : inv.status === "archived" ? "Archivé" : "En attente"}
                             </span>
                           </td>
-                          <td className="relative px-1 py-1.5 whitespace-nowrap text-right align-top">
+                          <td className="relative px-1 py-1.5 text-right align-top">
                             <div
-                              className="relative inline-flex flex-col items-end gap-0.5"
+                              className="relative inline-flex flex-col items-end gap-1"
                               data-invoice-action-menu={inv.id}
                             >
-                              <button
-                                type="button"
-                                data-invoice-menu-button={inv.id}
-                                aria-expanded={openActionMenuId === inv.id}
-                                aria-haspopup="menu"
-                                aria-label="Actions sur la facture"
-                                onClick={() =>
-                                  setOpenActionMenuId((prev) => (prev === inv.id ? null : inv.id))
-                                }
-                                className="inline-flex h-7 min-w-[1.75rem] shrink-0 items-center justify-center rounded border border-slate-200 bg-white px-0.5 text-base leading-none text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
-                                title="Actions"
-                              >
-                                ⋮
-                              </button>
+                              <div className="flex flex-wrap items-center justify-end gap-1">
+                                <button
+                                  type="button"
+                                  disabled={fiscalAiAnalyzingId === inv.id}
+                                  onClick={() => void handleFiscalAiAnalyze(inv)}
+                                  className="inline-flex shrink-0 items-center rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-[10px] font-semibold text-blue-900 shadow-sm transition hover:border-blue-300 hover:bg-blue-100 disabled:cursor-wait disabled:opacity-60"
+                                  title="Envoyer cette facture au conseiller fiscal IA (OCR + données extraites)"
+                                >
+                                  {fiscalAiAnalyzingId === inv.id ? "Analyse…" : "Analyse IA"}
+                                </button>
+                                <button
+                                  type="button"
+                                  data-invoice-menu-button={inv.id}
+                                  aria-expanded={openActionMenuId === inv.id}
+                                  aria-haspopup="menu"
+                                  aria-label="Autres actions"
+                                  onClick={() =>
+                                    setOpenActionMenuId((prev) => (prev === inv.id ? null : inv.id))
+                                  }
+                                  className="inline-flex h-7 min-w-[1.75rem] shrink-0 items-center justify-center rounded border border-slate-200 bg-white px-0.5 text-base leading-none text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
+                                  title="Plus d’actions"
+                                >
+                                  ⋮
+                                </button>
+                              </div>
                               {extractResults[inv.id]?.msg && (
                                 <span
                                   className={`max-w-[120px] truncate text-left text-[9px] leading-tight ${
@@ -1645,52 +1593,71 @@ export default function InvoicesPage() {
                 </div>
 
                 <div>
-                  <label className="mb-1.5 block text-xs font-bold text-slate-800" htmlFor="imap-country-filter">
+                  <span className="mb-1.5 block text-xs font-bold text-slate-800">
                     Pays / région des factures importées
-                  </label>
-                  <p className="mb-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-sm font-semibold text-slate-900">
-                    Sélection : {regionDisplayLabel(imapRegion)}
-                  </p>
-                  <input
-                    id="imap-country-filter"
-                    type="search"
-                    value={imapCountryFilter}
-                    onChange={(e) => setImapCountryFilter(e.target.value)}
-                    placeholder="Tapez des lettres pour filtrer les pays (ex. bel, maroc, usa…)"
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="w-full max-w-2xl rounded-lg border-2 border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
-                  />
-                  <ul
-                    role="listbox"
-                    aria-label="Pays filtrés"
-                    className="mt-2 max-h-52 max-w-2xl overflow-y-auto rounded-lg border-2 border-slate-200 bg-white shadow-inner"
+                  </span>
+                  <button
+                    type="button"
+                    aria-expanded={showImapCountryPicker}
+                    aria-haspopup="listbox"
+                    onClick={() => setShowImapCountryPicker((v) => !v)}
+                    className="mb-2 flex w-full max-w-2xl items-center justify-between gap-2 rounded-lg border-2 border-slate-300 bg-slate-50 px-3 py-2.5 text-left text-sm font-semibold text-slate-900 shadow-sm transition hover:border-slate-400 hover:bg-slate-100"
                   >
-                    {IMAP_REGION_OPTIONS_SORTED.filter((o) =>
-                      imapCountryFilterMatch(imapCountryFilter, o.label, o.value),
-                    ).map((o) => (
-                      <li key={o.value} role="none">
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={imapRegion === o.value}
-                          onClick={() => {
-                            setImapRegion(o.value);
-                            setImapCountryFilter("");
-                          }}
-                          className={`flex w-full items-center px-3 py-2 text-left text-sm transition hover:bg-slate-100 ${
-                            imapRegion === o.value ? "bg-slate-900 font-semibold text-white hover:bg-slate-800" : "text-slate-800"
-                          }`}
-                        >
-                          {o.label}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                  {IMAP_REGION_OPTIONS_SORTED.every(
-                    (o) => !imapCountryFilterMatch(imapCountryFilter, o.label, o.value),
-                  ) && (
-                    <p className="mt-1.5 text-[11px] text-amber-800">Aucun pays ne correspond. Essayez un autre mot-clé.</p>
+                    <span>Sélection : {regionDisplayLabel(imapRegion)}</span>
+                    <span className="shrink-0 text-slate-400" aria-hidden>{showImapCountryPicker ? "▲" : "▼"}</span>
+                  </button>
+                  {showImapCountryPicker && (
+                    <>
+                      <input
+                        id="imap-country-filter"
+                        type="search"
+                        value={imapCountryFilter}
+                        onChange={(e) => setImapCountryFilter(e.target.value)}
+                        placeholder="Tapez des lettres pour filtrer les pays (ex. bel, maroc, usa…)"
+                        autoComplete="off"
+                        spellCheck={false}
+                        className="w-full max-w-2xl rounded-lg border-2 border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-200"
+                      />
+                      <ul
+                        role="listbox"
+                        aria-label="Pays filtrés"
+                        className="mt-2 max-h-52 max-w-2xl overflow-y-auto rounded-lg border-2 border-slate-200 bg-white shadow-inner"
+                      >
+                        {IMAP_REGION_OPTIONS_SORTED.filter((o) =>
+                          imapCountryFilterMatch(imapCountryFilter, o.label, o.value),
+                        ).map((o) => (
+                          <li key={o.value} role="none">
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={imapRegion === o.value}
+                              onClick={() => {
+                                setImapRegion(o.value);
+                                setImapCountryFilter("");
+                                setShowImapCountryPicker(false);
+                              }}
+                              className={`flex w-full items-center px-3 py-2 text-left text-sm transition hover:bg-slate-100 ${
+                                imapRegion === o.value ? "bg-slate-900 font-semibold text-white hover:bg-slate-800" : "text-slate-800"
+                              }`}
+                            >
+                              {o.label}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                      {IMAP_REGION_OPTIONS_SORTED.every(
+                        (o) => !imapCountryFilterMatch(imapCountryFilter, o.label, o.value),
+                      ) && (
+                        <p className="mt-1.5 text-[11px] text-amber-800">Aucun pays ne correspond. Essayez un autre mot-clé.</p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setShowImapCountryPicker(false)}
+                        className="mt-2 text-xs font-medium text-slate-600 hover:text-slate-900"
+                      >
+                        Fermer la liste
+                      </button>
+                    </>
                   )}
                   <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
                     Chaque pièce importée sera enregistrée avec ce pays (filtres de la liste, envoi au cabinet).
@@ -1803,52 +1770,71 @@ export default function InvoicesPage() {
               />
 
               <div>
-                <label className="mb-1.5 block text-[11px] font-medium text-slate-600" htmlFor="create-country-filter">
+                <span className="mb-1.5 block text-[11px] font-medium text-slate-600">
                   Pays / région
-                </label>
-                <p className="mb-1.5 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-900">
-                  Sélection : {regionDisplayLabel(region)}
-                </p>
-                <input
-                  id="create-country-filter"
-                  type="search"
-                  value={createCountryFilter}
-                  onChange={(e) => setCreateCountryFilter(e.target.value)}
-                  placeholder="Tapez pour filtrer (ex. bel, maroc…)"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="mb-1.5 w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-[11px] text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
-                />
-                <ul
-                  role="listbox"
-                  aria-label="Pays filtrés"
-                  className="max-h-36 overflow-y-auto rounded border border-slate-200 bg-white shadow-inner sm:max-h-40"
+                </span>
+                <button
+                  type="button"
+                  aria-expanded={showCreateCountryPicker}
+                  aria-haspopup="listbox"
+                  onClick={() => setShowCreateCountryPicker((v) => !v)}
+                  className="mb-1.5 flex w-full items-center justify-between gap-2 rounded border border-slate-200 bg-slate-50 px-2 py-2 text-left text-[11px] font-semibold text-slate-900 transition hover:border-slate-300 hover:bg-slate-100"
                 >
-                  {IMAP_REGION_OPTIONS_SORTED.filter((o) =>
-                    imapCountryFilterMatch(createCountryFilter, o.label, o.value),
-                  ).map((o) => (
-                    <li key={o.value} role="none">
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected={region === o.value}
-                        onClick={() => {
-                          setRegion(o.value);
-                          setCreateCountryFilter("");
-                        }}
-                        className={`flex w-full items-center px-2 py-1.5 text-left text-[11px] transition hover:bg-slate-100 ${
-                          region === o.value ? "bg-slate-900 font-semibold text-white hover:bg-slate-800" : "text-slate-800"
-                        }`}
-                      >
-                        {o.label}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-                {IMAP_REGION_OPTIONS_SORTED.every(
-                  (o) => !imapCountryFilterMatch(createCountryFilter, o.label, o.value),
-                ) && (
-                  <p className="mt-1 text-[10px] text-amber-800">Aucun pays ne correspond.</p>
+                  <span>Sélection : {regionDisplayLabel(region)}</span>
+                  <span className="shrink-0 text-slate-400" aria-hidden>{showCreateCountryPicker ? "▲" : "▼"}</span>
+                </button>
+                {showCreateCountryPicker && (
+                  <>
+                    <input
+                      id="create-country-filter"
+                      type="search"
+                      value={createCountryFilter}
+                      onChange={(e) => setCreateCountryFilter(e.target.value)}
+                      placeholder="Tapez pour filtrer (ex. bel, maroc…)"
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="mb-1.5 w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-[11px] text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
+                    />
+                    <ul
+                      role="listbox"
+                      aria-label="Pays filtrés"
+                      className="max-h-36 overflow-y-auto rounded border border-slate-200 bg-white shadow-inner sm:max-h-40"
+                    >
+                      {IMAP_REGION_OPTIONS_SORTED.filter((o) =>
+                        imapCountryFilterMatch(createCountryFilter, o.label, o.value),
+                      ).map((o) => (
+                        <li key={o.value} role="none">
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={region === o.value}
+                            onClick={() => {
+                              setRegion(o.value);
+                              setCreateCountryFilter("");
+                              setShowCreateCountryPicker(false);
+                            }}
+                            className={`flex w-full items-center px-2 py-1.5 text-left text-[11px] transition hover:bg-slate-100 ${
+                              region === o.value ? "bg-slate-900 font-semibold text-white hover:bg-slate-800" : "text-slate-800"
+                            }`}
+                          >
+                            {o.label}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                    {IMAP_REGION_OPTIONS_SORTED.every(
+                      (o) => !imapCountryFilterMatch(createCountryFilter, o.label, o.value),
+                    ) && (
+                      <p className="mt-1 text-[10px] text-amber-800">Aucun pays ne correspond.</p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateCountryPicker(false)}
+                      className="mt-1 text-[10px] font-medium text-slate-500 hover:text-slate-800"
+                    >
+                      Fermer la liste
+                    </button>
+                  </>
                 )}
                 <p className="mt-1 text-[10px] text-slate-500">Même liste que l&apos;import email IMAP (filtres et envoi cabinet).</p>
               </div>
@@ -2097,6 +2083,42 @@ export default function InvoicesPage() {
               </button>
             </li>
           </ul>
+        </div>
+      )}
+
+      {fiscalAiModal && (
+        <div
+          className="fixed inset-0 z-[200] flex items-end justify-center bg-black/40 p-3 sm:items-center"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="fiscal-ai-modal-title"
+          onClick={() => setFiscalAiModal(null)}
+        >
+          <div
+            className="flex max-h-[min(88dvh,720px)] w-full max-w-2xl flex-col rounded-xl border border-slate-200 bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-2 border-b border-slate-100 px-4 py-3">
+              <h2 id="fiscal-ai-modal-title" className="text-sm font-semibold text-slate-900">
+                {fiscalAiModal.title}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setFiscalAiModal(null)}
+                className="shrink-0 rounded-lg px-2 py-1 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              >
+                Fermer
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+              <pre className="whitespace-pre-wrap break-words font-sans text-[11px] leading-relaxed text-slate-800 sm:text-xs">
+                {fiscalAiModal.body}
+              </pre>
+            </div>
+            <div className="border-t border-slate-100 px-4 py-2 text-[10px] text-slate-500">
+              Réponse indicative — validez avec votre expert-comptable. La synthèse est aussi enregistrée côté serveur avec la facture.
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -79,7 +79,7 @@ async function fetchFromFranceAPI(): Promise<Partial<TaxRules> | null> {
   if (!apiKey) return null;
 
   try {
-    // Try DGFIP / AIFE API for current fiscal year parameters
+    // AIFE unireso (accès souvent limité ; la plupart des déploiements n’ont pas de clé → données statiques uniquement)
     const response = await fetch(
       "https://api.aife.economie.gouv.fr/unireso/1.0/api/annuaire",
       {

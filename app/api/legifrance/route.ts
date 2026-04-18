@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { pool } from "../../../lib/postgres";
+import { fetchJudilibreFiscalHits } from "../../../lib/piste-judilibre";
 
 export const runtime = "nodejs";
 
@@ -16,6 +17,8 @@ interface JOEntry {
   description: string;
   link: string;
   pubDate: string;
+  /** Source affichée en base (ex. Judilibre, flux JO). */
+  source?: string;
 }
 
 async function fetchJOFeed(): Promise<JOEntry[]> {
@@ -43,7 +46,13 @@ async function fetchJOFeed(): Promise<JOEntry[]> {
         const text = `${title} ${desc}`.toLowerCase();
         const relevant = feed.keywords.some((kw) => text.includes(kw));
         if (relevant || entries.length < 5) {
-          entries.push({ title, description: desc.slice(0, 300), link, pubDate: date });
+          entries.push({
+            title,
+            description: desc.slice(0, 300),
+            link,
+            pubDate: date,
+            source: "legifrance.gouv.fr",
+          });
         }
       }
     } catch {
@@ -52,6 +61,25 @@ async function fetchJOFeed(): Promise<JOEntry[]> {
   }
 
   return entries.slice(0, 20);
+}
+
+async function fetchJudilibreEntries(): Promise<JOEntry[]> {
+  const keyId = process.env.PISTE_JUDILIBRE_KEY_ID?.trim();
+  if (!keyId) return [];
+
+  try {
+    const hits = await fetchJudilibreFiscalHits(keyId, 14);
+    return hits.map((h) => ({
+      title: h.title,
+      description: h.description,
+      link: h.link,
+      pubDate: h.pubDate,
+      source: h.source || "judilibre",
+    }));
+  } catch (e) {
+    console.error("Judilibre:", e);
+    return [];
+  }
 }
 
 async function fetchDataGouvFiscal(): Promise<JOEntry[]> {
@@ -67,6 +95,7 @@ async function fetchDataGouvFiscal(): Promise<JOEntry[]> {
       description: item.description?.slice(0, 300) ?? "",
       link: item.url,
       pubDate: item.created_at,
+      source: "data.gouv.fr",
     }));
   } catch {
     return [];
@@ -76,12 +105,13 @@ async function fetchDataGouvFiscal(): Promise<JOEntry[]> {
 export async function GET() {
   try {
     // Fetch from JO RSS + data.gouv.fr
-    const [joEntries, gouvEntries] = await Promise.all([
+    const [joEntries, gouvEntries, judilibreEntries] = await Promise.all([
       fetchJOFeed(),
       fetchDataGouvFiscal(),
+      fetchJudilibreEntries(),
     ]);
 
-    const allEntries = [...joEntries, ...gouvEntries].slice(0, 25);
+    const allEntries = [...judilibreEntries, ...joEntries, ...gouvEntries].slice(0, 35);
 
     // Save new entries to DB (deduplicate by title+pubDate)
     let newCount = 0;
@@ -99,7 +129,13 @@ export async function GET() {
           await pool.query(
             `INSERT INTO legal_alerts (id, title, description, source, url, "pubDate", region, seen, "createdAt")
              VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'france', false, NOW())`,
-            [entry.title, entry.description, "legifrance.gouv.fr", entry.link, pubDate]
+            [
+              entry.title,
+              entry.description,
+              entry.source ?? "legifrance.gouv.fr",
+              entry.link,
+              pubDate,
+            ]
           );
           newCount++;
         }
