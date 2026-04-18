@@ -143,6 +143,12 @@ export default function InvoicesPage() {
   const [loadingList, setLoadingList] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
 
+  useEffect(() => {
+    if (!createOpen || typeof window === "undefined") return;
+    const v = window.localStorage.getItem("compta-default-invoice-region");
+    if (v?.trim()) setRegion(v.trim().toLowerCase());
+  }, [createOpen]);
+
   // Action states
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
@@ -973,9 +979,13 @@ export default function InvoicesPage() {
     setExportingPdf(true);
     setMessage("");
     try {
+      const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
       const res = await fetch("/api/export/pdf", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(t ? { Authorization: `Bearer ${t}` } : {}),
+        },
         body: JSON.stringify({ ids: selectedIds }),
       });
       if (!res.ok) {

@@ -10,19 +10,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
+  const [userImageUrl, setUserImageUrl] = useState("");
 
   useEffect(() => {
-    const token = window.localStorage.getItem("compta-token");
-    if (!token) return;
-    fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.email) {
-          setUserEmail(d.email);
-          setUserName(d.name || "");
-        }
-      })
-      .catch(() => {});
+    const load = () => {
+      const token = window.localStorage.getItem("compta-token");
+      if (!token) return;
+      fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.email) {
+            setUserEmail(d.email);
+            setUserName(typeof d.name === "string" ? d.name : "");
+            setUserImageUrl(typeof d.imageUrl === "string" ? d.imageUrl : "");
+          }
+        })
+        .catch(() => {});
+    };
+    load();
+    window.addEventListener("compta-profile-updated", load);
+    return () => window.removeEventListener("compta-profile-updated", load);
   }, []);
 
   const handleLogout = () => {
@@ -34,7 +41,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex h-dvh max-h-dvh overflow-hidden bg-slate-50">
       <Sidebar />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <Header userName={userName} userEmail={userEmail} onLogout={handleLogout} />
+        <Header
+          userName={userName}
+          userEmail={userEmail}
+          userImageUrl={userImageUrl || undefined}
+          onLogout={handleLogout}
+        />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-y-contain pb-[calc(3.75rem+env(safe-area-inset-bottom,0px))] lg:pb-0">
           {children}
         </main>

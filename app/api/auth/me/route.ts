@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
+import { prisma } from "../../../../lib/prisma";
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 
@@ -16,9 +17,59 @@ export async function GET(request: Request) {
   }
 
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as unknown as { email: string; name?: string };
-    return NextResponse.json({ email: payload.email, name: payload.name || "" });
-  } catch (error) {
+    const payload = jwt.verify(token, JWT_SECRET) as unknown as {
+      sub?: string;
+      email: string;
+      name?: string | null;
+    };
+    const userId = typeof payload.sub === "string" ? payload.sub : null;
+    if (userId) {
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          email: true,
+          name: true,
+          imageUrl: true,
+          pdfHeaderText: true,
+          pdfFooterText: true,
+          pdfHeaderImageUrl: true,
+          pdfFooterImageUrl: true,
+          pdfLogoUrl: true,
+          pdfHeaderTitle: true,
+          pdfHeaderAddress: true,
+          pdfHeaderTableJson: true,
+        },
+      });
+      if (user) {
+        return NextResponse.json({
+          email: user.email,
+          name: user.name || "",
+          imageUrl: user.imageUrl || "",
+          pdfHeaderText: user.pdfHeaderText || "",
+          pdfFooterText: user.pdfFooterText || "",
+          pdfHeaderImageUrl: user.pdfHeaderImageUrl || "",
+          pdfFooterImageUrl: user.pdfFooterImageUrl || "",
+          pdfLogoUrl: user.pdfLogoUrl || "",
+          pdfHeaderTitle: user.pdfHeaderTitle || "",
+          pdfHeaderAddress: user.pdfHeaderAddress || "",
+          pdfHeaderTableJson: user.pdfHeaderTableJson || "",
+        });
+      }
+    }
+    return NextResponse.json({
+      email: payload.email,
+      name: payload.name || "",
+      imageUrl: "",
+      pdfHeaderText: "",
+      pdfFooterText: "",
+      pdfHeaderImageUrl: "",
+      pdfFooterImageUrl: "",
+      pdfLogoUrl: "",
+      pdfHeaderTitle: "",
+      pdfHeaderAddress: "",
+      pdfHeaderTableJson: "",
+    });
+  } catch {
     return NextResponse.json({ error: "Token invalide." }, { status: 401 });
   }
 }

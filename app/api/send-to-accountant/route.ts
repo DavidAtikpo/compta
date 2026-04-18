@@ -4,22 +4,19 @@ import { pool } from "../../../lib/postgres";
 
 export const runtime = "nodejs";
 
-async function resolveRecipientEmail(region: string): Promise<string> {
-  // Only use user-configured accountants stored in DB.
-  // No fallback to env variables anymore.
+async function resolveRecipientEmails(region: string): Promise<string[]> {
   try {
     const result = await pool.query(
-      "SELECT email FROM accountants WHERE region = $1",
+      `SELECT email FROM accountants WHERE region = $1 ORDER BY "createdAt" ASC`,
       [region]
     );
-    if (result.rows.length > 0 && result.rows[0].email) {
-      return result.rows[0].email as string;
-    }
+    return result.rows
+      .map((r: { email: string }) => String(r.email || "").trim())
+      .filter(Boolean);
   } catch (err) {
     console.error("DB lookup failed:", err);
   }
-
-  return "";
+  return [];
 }
 
 export async function POST(request: Request) {
@@ -49,15 +46,16 @@ export async function POST(request: Request) {
     );
   }
 
-  const recipientEmail = await resolveRecipientEmail(region);
-  if (!recipientEmail) {
+  const recipientEmails = await resolveRecipientEmails(region);
+  if (recipientEmails.length === 0) {
     return NextResponse.json(
       {
-        error: `Aucune adresse email configurée pour la région "${region}". Allez dans Paramètres pour configurer le cabinet.`,
+        error: `Aucune adresse email configurée pour la région "${region}". Allez dans Paramètres pour ajouter au moins un cabinet.`,
       },
       { status: 400 }
     );
   }
+  const recipientEmail = recipientEmails.join(", ");
 
   const transporter = nodemailer.createTransport({
     host: smtpHost,
@@ -95,7 +93,7 @@ export async function POST(request: Request) {
   try {
     await transporter.sendMail({
       from: `${senderName} <${fromEmail}>`,
-      to: recipientEmail,
+      to: recipientEmails,
       subject: `[Compta IA] Transmission pièces justificatives – ${regionLabel}`,
       text: `${message}\n\nRégion : ${regionLabel}\nExpéditeur : ${senderName}\nFichiers joints : ${filteredAttachments.length}`,
       html: `

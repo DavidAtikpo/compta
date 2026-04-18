@@ -8,12 +8,24 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  name         String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  email               String   @unique
+  passwordHash        String
+  name                String?
+  imageUrl            String?
+  /// Texte libre sous la zone structurée (si pas d’image d’en-tête pleine largeur)
+  pdfHeaderText       String?
+  pdfFooterText       String?
+  /// Image d’en-tête / pied de page : si renseignées, remplacent la mise en page texte correspondante
+  pdfHeaderImageUrl   String?
+  pdfFooterImageUrl   String?
+  pdfLogoUrl          String?
+  pdfHeaderTitle      String?
+  pdfHeaderAddress    String?
+  /// JSON : tableau 2 lignes × 4 colonnes de chaînes
+  pdfHeaderTableJson  String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }
 
 model Structure {
@@ -44,13 +56,15 @@ model LegalAlert {
 
 model Accountant {
   id        String   @id @default(cuid())
-  region    String   @unique
+  region    String
   email     String
+  label     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   invoices Invoice[]
 
+  @@unique([region, email])
   @@map("accountants")
 }
 

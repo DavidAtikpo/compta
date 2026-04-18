@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
 
     // Try to find accountant for region
     const accountantResult = await pool.query(
-      "SELECT id FROM accountants WHERE region = $1",
+      `SELECT id FROM accountants WHERE region = $1 ORDER BY "createdAt" ASC LIMIT 1`,
       [region]
     );
     const accountantId =
