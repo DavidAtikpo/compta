@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
 import Tesseract from "tesseract.js";
 import { InvoicePhotoCropModal } from "@/components/InvoicePhotoCropModal";
+import { UploadRingSpinner } from "@/components/UploadRingSpinner";
 import {
   IMAP_REGION_OPTIONS_SORTED,
   imapCountryFilterMatch,
@@ -163,6 +164,8 @@ export default function InvoicesPage() {
   const [previewImageMode, setPreviewImageMode] = useState(false);
   /** Upload Cloudinary (OCR + envoi) en cours pour les fichiers du modal nouvelle facture */
   const [draftUploading, setDraftUploading] = useState(false);
+  const [draftUploadMessage, setDraftUploadMessage] = useState("");
+  const [currentUploadingFileName, setCurrentUploadingFileName] = useState<string | null>(null);
 
   // Email import states
   const [imapHost, setImapHost] = useState("imap.gmail.com");
@@ -401,6 +404,8 @@ export default function InvoicesPage() {
       return;
     }
     setDraftUploading(true);
+    setDraftUploadMessage("Préparation…");
+    setCurrentUploadingFileName(null);
     try {
       setFiles((prev) => [...prev, ...validFiles]);
       setUploadResult("");
@@ -409,6 +414,7 @@ export default function InvoicesPage() {
       const imageFiles = validFiles.filter((f) => f.type.startsWith("image/"));
       const pdfFiles = validFiles.filter((f) => f.type === "application/pdf");
       if (imageFiles.length > 0) {
+        setDraftUploadMessage("Analyse du texte sur l’appareil (OCR)…");
         const texts = await runOcr(imageFiles);
         setExtractedTexts((prev) => [...prev, ...texts]);
         setOcrStatus(`OCR terminé — ${texts.length} image(s) analysée(s).`);
@@ -416,10 +422,12 @@ export default function InvoicesPage() {
       if (pdfFiles.length > 0) {
         setOcrStatus((s) => `${s} ${pdfFiles.length} PDF(s) prêt(s) — texte extrait via IA après enregistrement.`);
       }
+      setDraftUploadMessage("Enregistrement sécurisé sur Cloudinary…");
       setOcrStatus((s) => `${s} Enregistrement sur Cloudinary…`);
       const urls: { name: string; url: string }[] = [];
       const uploadErrors: string[] = [];
       for (const file of validFiles) {
+        setCurrentUploadingFileName(file.name);
         const result = await uploadToCloudinary(file);
         if ("url" in result) urls.push({ name: file.name, url: result.url });
         else {
@@ -427,6 +435,7 @@ export default function InvoicesPage() {
           console.error("Upload Cloudinary échoué:", file.name, result.error);
         }
       }
+      setCurrentUploadingFileName(null);
       setUploadedUrls((prev) => [...prev, ...urls]);
       if (uploadErrors.length > 0) {
         setUploadResult(`⚠️ Erreur upload Cloudinary : ${uploadErrors.join(" | ")}`);
@@ -436,6 +445,8 @@ export default function InvoicesPage() {
       }
     } finally {
       setDraftUploading(false);
+      setCurrentUploadingFileName(null);
+      setDraftUploadMessage("");
     }
   };
 
@@ -1718,30 +1729,48 @@ export default function InvoicesPage() {
       {/* Modal — nouvelle facture */}
       {createOpen && (
         <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true">
-          <button type="button" className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" aria-label="Fermer" onClick={() => setCreateOpen(false)} />
-          <div className="relative z-10 flex max-h-[min(92vh,900px)] w-full max-w-lg flex-col rounded-t-lg border border-slate-200 bg-white shadow-2xl sm:max-h-[85vh] sm:rounded-lg">
-            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-2.5">
-              <h2 className="text-sm font-semibold text-slate-900">Nouvelle facture</h2>
-              <button type="button" onClick={() => setCreateOpen(false)} className="rounded px-2 py-0.5 text-xs text-slate-500 transition hover:bg-slate-100 hover:text-slate-800">
+          <button type="button" className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" aria-label="Fermer" onClick={() => !draftUploading && setCreateOpen(false)} disabled={draftUploading} />
+          <div className="relative z-10 flex max-h-[min(96dvh,920px)] w-full max-w-[min(100%,26rem)] flex-col rounded-t-2xl border border-slate-200 bg-white shadow-2xl sm:max-h-[min(85vh,880px)] sm:max-w-lg sm:rounded-xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-3 max-sm:py-3.5">
+              <h2 className="text-base font-semibold text-slate-900 max-sm:text-[1.05rem]">Nouvelle facture</h2>
+              <button type="button" onClick={() => setCreateOpen(false)} disabled={draftUploading} className="rounded px-2 py-0.5 text-xs text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-40">
                 Fermer
               </button>
             </div>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+            <div className="relative min-h-0 flex-1 space-y-3 overflow-y-auto p-4 max-sm:space-y-3.5 max-sm:p-5 max-sm:pb-6">
+              {draftUploading && (
+                <div
+                  className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 rounded-lg bg-white/90 px-6 backdrop-blur-[2px]"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <UploadRingSpinner className="h-14 w-14" aria-label="Envoi vers Cloudinary en cours" />
+                  <div className="max-w-xs text-center">
+                    <p className="text-sm font-semibold text-slate-900">{draftUploadMessage || "Traitement…"}</p>
+                    {currentUploadingFileName && (
+                      <p className="mt-1 break-all text-[11px] leading-snug text-slate-600">{currentUploadingFileName}</p>
+                    )}
+                    <p className="mt-2 text-[10px] text-slate-500">Ne fermez pas cette fenêtre pendant l’envoi.</p>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <button
                   type="button"
                   onClick={() => cameraInputRef.current?.click()}
+                  disabled={draftUploading}
                   title="Sur téléphone ou tablette : ouvre l’appareil photo (caméra arrière si disponible)."
-                  className="flex min-h-[3.25rem] flex-col items-center justify-center gap-0.5 rounded-lg border-2 border-dashed border-slate-400 bg-slate-50 px-3 py-3 text-slate-800 transition active:bg-slate-100 sm:min-h-0 sm:border sm:border-slate-300 sm:bg-white sm:py-3 sm:text-slate-600 sm:hover:border-slate-400 sm:hover:bg-slate-50"
+                  className="flex min-h-[3.5rem] flex-col items-center justify-center gap-0.5 rounded-lg border-2 border-dashed border-slate-400 bg-slate-50 px-3 py-3.5 text-slate-800 transition active:bg-slate-100 max-sm:text-[13px] sm:min-h-0 sm:border sm:border-slate-300 sm:bg-white sm:py-3 sm:text-slate-600 sm:hover:border-slate-400 sm:hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <span className="text-xs font-semibold sm:text-[11px]">Prendre une photo</span>
-                  <span className="text-[10px] text-slate-500">Puis recadrage</span>
+                  <span className="text-[10px] text-slate-500 sm:text-[10px]">Puis recadrage</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
+                  disabled={draftUploading}
                   title="Choisir une image ou un PDF dans vos fichiers."
-                  className="flex min-h-[3.25rem] flex-col items-center justify-center gap-0.5 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-3 text-slate-600 transition hover:border-slate-400 hover:bg-slate-50 sm:min-h-0"
+                  className="flex min-h-[3.5rem] flex-col items-center justify-center gap-0.5 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-3.5 text-slate-600 transition hover:border-slate-400 hover:bg-slate-50 max-sm:text-[13px] sm:min-h-0 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <span className="text-[11px] font-medium">Fichiers</span>
                   <span className="text-[10px] text-slate-400">Image ou PDF</span>
@@ -1890,8 +1919,12 @@ export default function InvoicesPage() {
                               >
                                 <img src={cloud.url} alt={file.name} className="h-full w-full object-cover" />
                               </button>
+                            ) : draftUploading && currentUploadingFileName === file.name ? (
+                              <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white shadow-sm max-sm:h-[4.5rem] max-sm:w-[4.5rem] sm:h-14 sm:w-14">
+                                <UploadRingSpinner className="h-10 w-10 sm:h-9 sm:w-9" aria-label="Téléchargement vers Cloudinary" />
+                              </span>
                             ) : (
-                              <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded border border-dashed border-slate-200 bg-slate-50 text-[10px] font-medium text-slate-500">
+                              <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded border border-dashed border-slate-200 bg-slate-50 text-[10px] font-medium text-slate-500 max-sm:h-16 max-sm:w-16 sm:h-14 sm:w-14">
                                 {file.type.includes("pdf") ? "PDF" : "IMG"}
                               </span>
                             )}

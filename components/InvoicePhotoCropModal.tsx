@@ -4,6 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import Cropper from "react-easy-crop";
 import type { Area } from "react-easy-crop";
 import { getCroppedImageFile } from "@/lib/crop-image";
+import "react-easy-crop/react-easy-crop.css";
+
+/** Ratio type facture / reçu (éviter le ratio naturel très haut qui coupe les côtés au zoom). */
+const CROP_ASPECT = 4 / 5;
 
 type InvoicePhotoCropModalProps = {
   open: boolean;
@@ -22,7 +26,6 @@ export function InvoicePhotoCropModal({
 }: InvoicePhotoCropModalProps) {
   const [crop, setCrop] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
-  const [aspect, setAspect] = useState(3 / 4);
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -34,13 +37,6 @@ export function InvoicePhotoCropModal({
     setCroppedAreaPixels(null);
     setErr("");
     setBusy(false);
-    const img = new Image();
-    img.onload = () => {
-      const w = img.naturalWidth;
-      const h = img.naturalHeight;
-      if (w > 0 && h > 0) setAspect(w / h);
-    };
-    img.src = imageSrc;
   }, [open, imageSrc]);
 
   useEffect(() => {
@@ -87,8 +83,8 @@ export function InvoicePhotoCropModal({
       aria-modal="true"
       aria-labelledby="crop-modal-title"
     >
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-700 px-3 py-2">
-        <h2 id="crop-modal-title" className="text-sm font-semibold text-white">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-700 px-3 py-2.5 sm:px-4">
+        <h2 id="crop-modal-title" className="text-sm font-semibold text-white sm:text-base">
           Recadrer la photo
         </h2>
         <button
@@ -101,44 +97,63 @@ export function InvoicePhotoCropModal({
         </button>
       </div>
 
-      <p className="shrink-0 px-3 py-1.5 text-[11px] leading-snug text-slate-400">
-        Déplacez et zoomez, puis validez pour enregistrer sur Cloudinary comme une facture.
+      <p className="shrink-0 px-3 py-2 text-[11px] leading-snug text-slate-400 sm:px-4 sm:text-xs">
+        Pincez ou utilisez le curseur pour zoomer. Déplacez l’image pour garder toute la facture visible
+        — le cadre garde un format document (4:5) pour limiter les bords coupés.
       </p>
 
-      <div className="relative min-h-0 w-full flex-1">
+      {/* Zone plus haute sur mobile pour mieux voir le recadrage */}
+      <div className="relative min-h-[min(68dvh,620px)] w-full flex-1 sm:min-h-0 sm:flex-1 sm:max-h-[min(58vh,560px)]">
         <Cropper
           image={imageSrc}
           crop={crop}
           zoom={zoom}
-          aspect={aspect}
+          rotation={0}
+          aspect={CROP_ASPECT}
+          minZoom={0.75}
+          maxZoom={5}
+          zoomSpeed={0.45}
           onCropChange={setCrop}
           onZoomChange={setZoom}
           onCropComplete={onCropComplete}
           cropShape="rect"
           showGrid
-          restrictPosition={false}
+          restrictPosition
+          objectFit="contain"
+          style={{
+            containerStyle: {
+              width: "100%",
+              height: "100%",
+              position: "relative",
+            },
+          }}
         />
       </div>
 
-      <div className="shrink-0 space-y-2 border-t border-slate-700 bg-slate-900 px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))]">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Zoom</span>
+      <div className="shrink-0 space-y-2 border-t border-slate-700 bg-slate-900 px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] sm:px-4">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+            Zoom
+          </span>
           <input
             type="range"
-            min={1}
-            max={4}
+            min={0.75}
+            max={5}
             step={0.05}
             value={zoom}
             onChange={(e) => setZoom(Number(e.target.value))}
             className="min-w-0 flex-1 accent-white"
           />
+          <span className="w-8 shrink-0 text-right text-[10px] text-slate-500">
+            {zoom.toFixed(1)}×
+          </span>
         </div>
         {err && <p className="text-center text-[11px] text-amber-300">{err}</p>}
         <button
           type="button"
           onClick={() => void handleConfirm()}
           disabled={busy || !croppedAreaPixels}
-          className="w-full rounded-xl bg-white py-2.5 text-sm font-bold text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+          className="w-full rounded-xl bg-white py-2.5 text-sm font-bold text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 sm:py-3"
         >
           {busy ? "Traitement…" : "Valider le recadrage"}
         </button>
