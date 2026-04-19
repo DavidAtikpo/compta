@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   IMAP_REGION_OPTIONS_SORTED,
   imapCountryFilterMatch,
@@ -97,11 +97,34 @@ export default function OptimizePage() {
   const [loadingAlerts, setLoadingAlerts] = useState(false);
   /** Sur lg+ : un seul panneau gauche ouvert à la fois (Contexte ou Questions rapides). */
   const [desktopLeftPanel, setDesktopLeftPanel] = useState<"context" | "questions">("context");
+  const alertsWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadTaxRules();
     loadAlerts();
   }, []);
+
+  /** Fermer « Alertes loi » : clic / toucher hors panneau (desktop) + Échap. Sur mobile le fond assombri gère le tap. */
+  useEffect(() => {
+    if (!showAlerts) return;
+    const closeIfOutside = (e: MouseEvent | TouchEvent) => {
+      const root = alertsWrapRef.current;
+      if (!root) return;
+      const t = e.target;
+      if (t instanceof Node && !root.contains(t)) setShowAlerts(false);
+    };
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowAlerts(false);
+    };
+    document.addEventListener("mousedown", closeIfOutside, true);
+    document.addEventListener("touchstart", closeIfOutside, true);
+    window.addEventListener("keydown", onEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeIfOutside, true);
+      document.removeEventListener("touchstart", closeIfOutside, true);
+      window.removeEventListener("keydown", onEscape);
+    };
+  }, [showAlerts]);
 
   const loadTaxRules = async () => {
     setLoadingRules(true);
@@ -271,17 +294,30 @@ export default function OptimizePage() {
   };
 
   return (
-    <div className="px-3 py-4 sm:px-4 sm:py-6 lg:px-6 lg:py-6">
-      <div className="mx-auto w-full max-w-7xl space-y-4 sm:space-y-6">
-        <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
-          <div className="min-w-0">
-            <h1 className="text-lg font-bold tracking-tight text-slate-900 sm:text-2xl">Optimisation fiscale IA</h1>
-            <p className="mt-0.5 text-[11px] leading-snug text-slate-500 sm:mt-1 sm:text-sm">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 sm:py-6 lg:px-6 lg:py-6">
+      <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col lg:min-h-0 lg:space-y-6">
+        {/* Mobile : bandeau toujours visible (sticky) — Conseiller fiscal IA + Alertes. Desktop : titre complet + alertes. */}
+        <div className="sticky top-0 z-30 -mx-3 flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white/95 px-3 py-2.5 backdrop-blur supports-[backdrop-filter]:bg-white/90 sm:-mx-4 sm:px-4 lg:static lg:z-auto lg:mx-0 lg:mb-0 lg:items-start lg:justify-between lg:gap-4 lg:border-0 lg:bg-transparent lg:px-0 lg:py-0 lg:backdrop-blur-none">
+          <div className="min-w-0 flex-1 lg:flex-1">
+            <h1 className="max-lg:truncate text-base font-bold tracking-tight text-slate-900 lg:text-2xl">
+              <span className="lg:hidden">Conseiller fiscal IA</span>
+              <span className="hidden lg:inline">Optimisation fiscale IA</span>
+            </h1>
+            <p className="mt-0.5 hidden text-[11px] leading-snug text-slate-500 sm:mt-1 sm:text-sm lg:block">
               IA spécialisée en fiscalité — barèmes et dispositifs ; alertes JO, data.gouv et Judilibre (PISTE) si configuré
             </p>
           </div>
+          {conversation.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setConversation([])}
+              className="shrink-0 text-[10px] font-medium text-slate-500 hover:text-slate-800 lg:hidden"
+            >
+              Effacer
+            </button>
+          )}
           {/* Alertes Légifrance */}
-          <div className="relative shrink-0 self-start sm:self-auto">
+          <div ref={alertsWrapRef} className="relative shrink-0 self-center sm:self-auto lg:self-start">
             <button
               type="button"
               onClick={() => { setShowAlerts(!showAlerts); if (!showAlerts) loadAlerts(); }}
@@ -298,7 +334,15 @@ export default function OptimizePage() {
               )}
             </button>
             {showAlerts && (
-              <div className="fixed inset-x-2 top-14 z-50 max-h-[min(75dvh,560px)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl sm:absolute sm:inset-x-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-96 sm:max-h-80 sm:rounded-2xl">
+              <>
+                {/* Mobile / tablette : zone plein écran sous le panneau pour fermer au tap (le panneau est au-dessus, z-50) */}
+                <button
+                  type="button"
+                  aria-label="Fermer les alertes"
+                  className="fixed inset-0 z-[45] cursor-default touch-manipulation bg-slate-900/25 lg:hidden"
+                  onClick={() => setShowAlerts(false)}
+                />
+                <div className="fixed inset-x-2 top-14 z-50 max-h-[min(75dvh,560px)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl sm:absolute sm:inset-x-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-96 sm:max-h-80 sm:rounded-2xl">
                 <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-2.5 py-2 sm:px-4 sm:py-3">
                   <h3 className="text-xs font-semibold text-slate-900 sm:text-sm">Alertes veille juridique</h3>
                   <div className="flex shrink-0 gap-1.5 sm:gap-2">
@@ -351,34 +395,14 @@ export default function OptimizePage() {
                   )}
                 </div>
               </div>
+              </>
             )}
           </div>
         </div>
 
-        {/* Mobile : ordre de lecture 1 → 2 → 3 (sur grand écran la grille replace le chat au centre-droit) */}
-        <nav
-          className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-2.5 py-2 text-[10px] text-slate-600 sm:gap-x-3 sm:px-3 sm:py-2.5 sm:text-xs lg:hidden"
-          aria-label="Étapes d'utilisation"
-        >
-          <span className="inline-flex items-center gap-1 font-medium text-slate-800">
-            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[10px] text-white">1</span>
-            Contexte
-          </span>
-          <span className="text-slate-300" aria-hidden>→</span>
-          <span className="inline-flex items-center gap-1 font-medium text-slate-800">
-            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[10px] text-white">2</span>
-            Conseiller IA
-          </span>
-          <span className="text-slate-300" aria-hidden>→</span>
-          <span className="inline-flex items-center gap-1 font-medium text-slate-800">
-            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[10px] text-white">3</span>
-            Questions rapides
-          </span>
-        </nav>
-
-        <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-[minmax(0,320px)_1fr] lg:items-start">
-          {/* Colonne gauche (desktop) : un seul panneau ouvert à la fois (Contexte ou Questions rapides) */}
-          <div className="flex flex-col gap-4 sm:gap-6 lg:col-start-1 lg:row-start-1">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-[minmax(0,320px)_1fr] lg:items-stretch lg:space-y-0">
+          {/* Colonne gauche : contexte, prompts, dispositifs — masquée sur téléphone ; desktop : scroll interne (pas de scroll de la page) */}
+          <div className="hidden min-h-0 flex-col gap-4 overflow-y-auto sm:gap-6 lg:col-start-1 lg:row-start-1 lg:max-h-full lg:flex">
             {/* 1 — Contexte ; sur lg un seul panneau gauche ouvert à la fois avec Questions rapides */}
             <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:space-y-4 sm:rounded-2xl sm:p-5">
               <button
@@ -569,9 +593,9 @@ export default function OptimizePage() {
             </div>
           </div>
 
-          {/* 2 — Conseiller fiscal IA (sur mobile : après le contexte ; sur desktop : colonne droite) */}
-          <div className="flex min-h-[min(62dvh,520px)] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm sm:min-h-[600px] sm:rounded-2xl lg:col-start-2 lg:row-start-1 lg:min-h-[min(56dvh,600px)]">
-            <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2.5 sm:px-6 sm:py-4">
+          {/* Conseiller fiscal IA — sur mobile : occupe l’espace sous le bandeau (scroll interne au chat) */}
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm max-lg:min-h-0 lg:col-start-2 lg:row-start-1 lg:h-full lg:min-h-0 lg:rounded-2xl">
+            <div className="hidden items-center justify-between gap-2 border-b border-slate-100 px-3 py-2.5 sm:px-6 sm:py-4 lg:flex">
               <div className="min-w-0">
                 <h2 className="text-xs font-semibold text-slate-900 sm:text-base">Conseiller fiscal IA</h2>
                 <p className="text-[10px] text-slate-400 sm:text-xs">
