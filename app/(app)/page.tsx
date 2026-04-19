@@ -88,9 +88,9 @@ export default function DashboardPage() {
       if (t) headers.Authorization = `Bearer ${t}`;
       const [invoicesRes, historyRes, allInvoicesRes, allHistoryRes] = await Promise.all([
         fetch("/api/invoices?limit=5", { headers }),
-        fetch("/api/history?limit=5"),
+        fetch("/api/history?limit=5", { headers }),
         fetch("/api/invoices?limit=1000", { headers }),
-        fetch("/api/history?limit=1000"),
+        fetch("/api/history?limit=1000", { headers }),
       ]);
 
       const invoices: RecentInvoice[] = invoicesRes.ok ? await invoicesRes.json() : [];

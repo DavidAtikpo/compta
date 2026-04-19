@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-function getAuthHeaders(): HeadersInit {
-  if (typeof window === "undefined") return {};
+function getAuthHeaders(): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (typeof window === "undefined") return h;
   const t = window.localStorage.getItem("compta-token");
-  return t ? { Authorization: `Bearer ${t}` } : {};
+  if (t) h.Authorization = `Bearer ${t}`;
+  return h;
 }
 
 const regionOptions = [
@@ -52,7 +54,7 @@ export default function HistoryPage() {
     try {
       let url = "/api/history?limit=200";
       if (region) url += `&region=${region}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: getAuthHeaders() });
       if (res.ok) setRecords(await res.json());
     } catch (err) {
       console.error("Erreur chargement historique:", err);

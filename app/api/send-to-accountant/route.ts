@@ -142,12 +142,20 @@ export async function POST(request: Request) {
     console.error("Erreur envoi email:", error);
   }
 
-  // Log to send_history
+  // Log to send_history (lié au compte utilisateur)
   try {
     await pool.query(
-      `INSERT INTO send_history (id, region, "recipientEmail", message, "filesCount", "sentAt", success, error)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW(), $5, $6)`,
-      [region, recipientEmail, message, filteredAttachments.length, sendSuccess, sendError || null]
+      `INSERT INTO send_history (id, "userId", region, "recipientEmail", message, "filesCount", "sentAt", success, error)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW(), $6, $7)`,
+      [
+        userId,
+        region,
+        recipientEmail,
+        message,
+        filteredAttachments.length,
+        sendSuccess,
+        sendError || null,
+      ]
     );
   } catch (dbError) {
     console.error("Erreur sauvegarde historique:", dbError);

@@ -30,6 +30,7 @@ model User {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   invoices            Invoice[]
+  sendHistory         SendHistory[]
 }
 
 model Structure {
@@ -124,6 +125,8 @@ model AiOptimization {
 
 model SendHistory {
   id             String   @id @default(cuid())
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   region         String
   recipientEmail String
   message        String
@@ -132,5 +135,6 @@ model SendHistory {
   success        Boolean  @default(true)
   error          String?
 
+  @@index([userId])
   @@map("send_history")
 }
