@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
 import { prisma } from "../../../../lib/prisma";
-import { parsePdfTable } from "../../../../lib/pdf-invoice-export";
+import { parsePdfTable, PDF_HEADER_LAYOUT_LOGO_TABLE_ROW } from "../../../../lib/pdf-invoice-export";
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 
@@ -98,6 +98,18 @@ export async function PATCH(request: Request) {
       data.pdfHeaderAddress = t;
     }
   }
+  if ("pdfHeaderLayout" in body) {
+    const v = body.pdfHeaderLayout;
+    if (v === null || v === "") {
+      data.pdfHeaderLayout = "stacked";
+    } else if (typeof v === "string") {
+      const t = v.trim();
+      if (t !== "stacked" && t !== PDF_HEADER_LAYOUT_LOGO_TABLE_ROW) {
+        return NextResponse.json({ error: "Disposition d’en-tête inconnue." }, { status: 400 });
+      }
+      data.pdfHeaderLayout = t;
+    }
+  }
   if ("pdfHeaderTableJson" in body) {
     const t = body.pdfHeaderTableJson;
     if (t === null || t === "") {
@@ -155,6 +167,7 @@ export async function PATCH(request: Request) {
       pdfHeaderTitle: true,
       pdfHeaderAddress: true,
       pdfHeaderTableJson: true,
+      pdfHeaderLayout: true,
     },
   });
 
@@ -177,5 +190,6 @@ export async function PATCH(request: Request) {
     pdfHeaderTitle: user.pdfHeaderTitle || "",
     pdfHeaderAddress: user.pdfHeaderAddress || "",
     pdfHeaderTableJson: user.pdfHeaderTableJson || "",
+    pdfHeaderLayout: user.pdfHeaderLayout || "stacked",
   });
 }

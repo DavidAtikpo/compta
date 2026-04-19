@@ -136,6 +136,32 @@ export default function DashboardPage() {
           </p>
         </div>
 
+        {/* Raccourcis mobile : Fichiers & Historique (absents de la barre du bas) */}
+        <div className="grid grid-cols-2 gap-2 lg:hidden">
+          <Link
+            href="/fichiers"
+            className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-800 shadow-sm transition active:scale-[0.99] hover:border-slate-300 hover:bg-slate-50"
+          >
+            <svg className="h-5 w-5 shrink-0 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+              />
+            </svg>
+            Fichiers
+          </Link>
+          <Link
+            href="/history"
+            className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-800 shadow-sm transition active:scale-[0.99] hover:border-slate-300 hover:bg-slate-50"
+          >
+            <svg className="h-5 w-5 shrink-0 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Historique
+          </Link>
+        </div>
+
         {/* Stats */}
         {loadingStats ? (
           <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">

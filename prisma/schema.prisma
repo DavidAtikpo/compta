@@ -13,6 +13,7 @@ model User {
   passwordHash        String
   name                String?
   imageUrl            String?
+  aiOptimizations     AiOptimization[]
   /// Texte libre sous la zone structurée (si pas d’image d’en-tête pleine largeur)
   pdfHeaderText       String?
   pdfFooterText       String?
@@ -24,6 +25,8 @@ model User {
   pdfHeaderAddress    String?
   /// JSON : tableau 2 lignes × 4 colonnes de chaînes
   pdfHeaderTableJson  String?
+  /// stacked = logo+titre puis tableau pleine largeur ; logo_table_row = titre/adresse puis logo et tableau côte à côte
+  pdfHeaderLayout     String   @default("stacked")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
@@ -102,6 +105,8 @@ model Invoice {
 
 model AiOptimization {
   id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   invoiceId String?
   invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
   prompt    String
@@ -109,6 +114,7 @@ model AiOptimization {
   region    String
   createdAt DateTime @default(now())
 
+  @@index([userId])
   @@map("ai_optimizations")
 }
 

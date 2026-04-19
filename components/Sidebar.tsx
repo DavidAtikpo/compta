@@ -4,6 +4,21 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+const settingsItem = {
+  href: "/settings",
+  label: "Paramètres",
+  icon: (
+    <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+      />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  ),
+} as const;
+
 const nav = [
   {
     href: "/",
@@ -24,6 +39,15 @@ const nav = [
     ),
   },
   {
+    href: "/fichiers",
+    label: "Fichiers",
+    icon: (
+      <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+      </svg>
+    ),
+  },
+  {
     href: "/optimize",
     label: "Optimisation IA",
     icon: (
@@ -38,16 +62,6 @@ const nav = [
     icon: (
       <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
-    ),
-  },
-  {
-    href: "/settings",
-    label: "Paramètres",
-    icon: (
-      <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
       </svg>
     ),
   },
@@ -70,24 +84,39 @@ export function Sidebar() {
           <span className="truncate text-sm font-semibold text-slate-900">Compta IA</span>
         </Link>
       </div>
-      <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
-        {nav.map((item) => {
-          const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition ${
-                active
-                  ? "bg-slate-900 text-white shadow-sm"
-                  : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-              }`}
-            >
-              {item.icon}
-              {item.label}
-            </Link>
-          );
-        })}
+      <nav className="flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
+          {nav.map((item) => {
+            const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition ${
+                  active
+                    ? "bg-slate-900 text-white shadow-sm"
+                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                }`}
+              >
+                {item.icon}
+                {item.label}
+              </Link>
+            );
+          })}
+        </div>
+        <div className="shrink-0 border-t border-slate-100 p-2">
+          <Link
+            href={settingsItem.href}
+            className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition ${
+              pathname === settingsItem.href || pathname.startsWith("/settings")
+                ? "bg-slate-900 text-white shadow-sm"
+                : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            }`}
+          >
+            {settingsItem.icon}
+            {settingsItem.label}
+          </Link>
+        </div>
       </nav>
       <div className="shrink-0 border-t border-slate-100 p-2 text-[10px] leading-snug text-slate-400">
         Optimisation fiscale — usage pro. Consultez votre expert-comptable.

@@ -19,6 +19,8 @@ async function resolveRecipientEmails(region: string): Promise<string[]> {
   return [];
 }
 
+const SIMPLE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export async function POST(request: Request) {
   const formData = await request.formData();
   const region = formData.get("region")?.toString() || "france";
@@ -29,6 +31,8 @@ export async function POST(request: Request) {
     formData.get("senderName")?.toString() || "Client Compta IA";
   const files = formData.getAll("files");
   const invoiceIds = formData.getAll("invoiceIds");
+  /** Si renseigné, envoi uniquement à cette adresse (choix utilisateur sur l’interface). */
+  const recipientEmailOverride = formData.get("recipientEmail")?.toString().trim() ?? "";
 
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = Number(process.env.SMTP_PORT ?? 587);
@@ -46,14 +50,25 @@ export async function POST(request: Request) {
     );
   }
 
-  const recipientEmails = await resolveRecipientEmails(region);
-  if (recipientEmails.length === 0) {
-    return NextResponse.json(
-      {
-        error: `Aucune adresse email configurée pour la région "${region}". Allez dans Paramètres pour ajouter au moins un cabinet.`,
-      },
-      { status: 400 }
-    );
+  let recipientEmails: string[];
+  if (recipientEmailOverride) {
+    if (!SIMPLE_EMAIL.test(recipientEmailOverride)) {
+      return NextResponse.json(
+        { error: "Adresse email du cabinet invalide." },
+        { status: 400 }
+      );
+    }
+    recipientEmails = [recipientEmailOverride];
+  } else {
+    recipientEmails = await resolveRecipientEmails(region);
+    if (recipientEmails.length === 0) {
+      return NextResponse.json(
+        {
+          error: `Aucune adresse email configurée pour la région "${region}". Saisissez une adresse ou ajoutez un cabinet dans Paramètres.`,
+        },
+        { status: 400 }
+      );
+    }
   }
   const recipientEmail = recipientEmails.join(", ");
 

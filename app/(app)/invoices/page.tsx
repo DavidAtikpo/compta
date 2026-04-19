@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
+import Link from "next/link";
 import Tesseract from "tesseract.js";
 import { InvoicePhotoCropModal } from "@/components/InvoicePhotoCropModal";
 import { UploadRingSpinner } from "@/components/UploadRingSpinner";
@@ -114,6 +115,16 @@ type Tab = "invoices" | "email";
 /** Largeur minimale du menu actions (aligné avec min-w-[11rem]) */
 const ACTION_MENU_WIDTH_PX = 176;
 
+type AccountantRow = { id: string; region: string; email: string; label: string | null };
+
+type CabinetModalState =
+  | null
+  | { kind: "single"; invoice: Invoice }
+  | { kind: "draft" }
+  | { kind: "bulk"; byRegion: Record<string, Invoice[]> };
+
+const CABINET_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export default function InvoicesPage() {
   const [token, setToken] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState("");
@@ -192,6 +203,13 @@ export default function InvoicesPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [bulkSending, setBulkSending] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [cabinetModal, setCabinetModal] = useState<CabinetModalState>(null);
+  const [cabinetEmailByRegion, setCabinetEmailByRegion] = useState<Record<string, string>>({});
+  const [cabinetAccountantsList, setCabinetAccountantsList] = useState<AccountantRow[]>([]);
+  /** Envoi au cabinet en cours (modale ouverte jusqu’à la fin de la requête). */
+  const [cabinetSendPending, setCabinetSendPending] = useState(false);
+  const [sendSuccessToast, setSendSuccessToast] = useState<string | null>(null);
+  const sendSuccessToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectAllHeaderRef = useRef<HTMLInputElement>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -220,6 +238,33 @@ export default function InvoicesPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [createOpen]);
+
+  useEffect(() => {
+    if (!cabinetModal) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape" && !cabinetSendPending) setCabinetModal(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cabinetModal, cabinetSendPending]);
+
+  const showSendSuccessToast = (text: string) => {
+    if (sendSuccessToastTimerRef.current) {
+      clearTimeout(sendSuccessToastTimerRef.current);
+      sendSuccessToastTimerRef.current = null;
+    }
+    setSendSuccessToast(text);
+    sendSuccessToastTimerRef.current = setTimeout(() => {
+      setSendSuccessToast(null);
+      sendSuccessToastTimerRef.current = null;
+    }, 6000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (sendSuccessToastTimerRef.current) clearTimeout(sendSuccessToastTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (createOpen) return;
@@ -556,7 +601,17 @@ export default function InvoicesPage() {
     }
   };
 
-  const handleSendToAccountant = async () => {
+  const loadAccountants = async (): Promise<AccountantRow[]> => {
+    try {
+      const res = await fetch("/api/accountants");
+      if (!res.ok) return [];
+      return (await res.json()) as AccountantRow[];
+    } catch {
+      return [];
+    }
+  };
+
+  const openDraftCabinetModal = async () => {
     if (files.length === 0) {
       setSendResult("Aucun fichier à envoyer.");
       return;
@@ -566,12 +621,21 @@ export default function InvoicesPage() {
       setSendResult("Toutes les pièces doivent être uploadées sur Cloudinary avant l’envoi au cabinet.");
       return;
     }
+    const rows = await loadAccountants();
+    setCabinetAccountantsList(rows);
+    const first = rows.find((a) => a.region === region)?.email ?? "";
+    setCabinetEmailByRegion({ [region]: first });
+    setCabinetModal({ kind: "draft" });
+  };
+
+  const handleSendToAccountantWithEmail = async (recipientEmail: string) => {
     setSending(true);
     setSendResult("");
     const formData = new FormData();
     formData.append("region", region);
     formData.append("message", message || `Transmission de ${files.length} pièce(s).\nRégion : ${region}`);
     formData.append("senderName", userEmail || "Utilisateur Compta IA");
+    formData.append("recipientEmail", recipientEmail);
     files.forEach((file) => formData.append("files", file));
     try {
       const res = await fetch("/api/send-to-accountant", {
@@ -582,7 +646,12 @@ export default function InvoicesPage() {
       const data = await res.json();
       if (!res.ok) setSendResult(data.error || "Erreur lors de l'envoi.");
       else {
-        setSendResult(data.message || "Envoyé avec succès.");
+        setSendResult("");
+        showSendSuccessToast(
+          typeof data.message === "string" && data.message.trim()
+            ? data.message
+            : "Document envoyé au cabinet avec succès."
+        );
         await handleSaveInvoices();
       }
     } catch {
@@ -702,7 +771,7 @@ export default function InvoicesPage() {
     }
   };
 
-  const handleBulkSend = async () => {
+  const openBulkCabinetModal = async () => {
     const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
     if (!t) {
       setMessage("Connectez-vous pour envoyer au cabinet.");
@@ -722,17 +791,38 @@ export default function InvoicesPage() {
       byRegion.set(inv.region, list);
     }
 
+    const rows = await loadAccountants();
+    setCabinetAccountantsList(rows);
+    const init: Record<string, string> = {};
+    for (const r of byRegion.keys()) {
+      init[r] = rows.find((a) => a.region === r)?.email ?? "";
+    }
+    setCabinetEmailByRegion(init);
+    setCabinetModal({ kind: "bulk", byRegion: Object.fromEntries(byRegion) });
+  };
+
+  const handleBulkSendWithEmails = async (
+    emailsByRegion: Record<string, string>,
+    byRegionRecord: Record<string, Invoice[]>
+  ) => {
+    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+    if (!t) return;
+
     setBulkSending(true);
     setMessage("");
     try {
       const parts: string[] = [];
-      for (const [region, list] of byRegion) {
+      let anyFail = false;
+      const byRegion = new Map(Object.entries(byRegionRecord));
+      for (const [reg, list] of byRegion) {
+        const recipientEmail = (emailsByRegion[reg] ?? "").trim();
         const formData = new FormData();
-        formData.append("region", region);
+        formData.append("region", reg);
         formData.append("senderName", userEmail || "Utilisateur Compta IA");
+        formData.append("recipientEmail", recipientEmail);
         formData.append(
           "message",
-          `Transmission groupée de ${list.length} facture(s).\nRégion : ${region}`
+          `Transmission groupée de ${list.length} facture(s).\nRégion : ${reg}`
         );
         let attached = 0;
         for (const inv of list) {
@@ -748,7 +838,8 @@ export default function InvoicesPage() {
           attached++;
         }
         if (attached === 0) {
-          parts.push(`${region}: aucun fichier récupéré`);
+          parts.push(`${reg}: aucun fichier récupéré`);
+          anyFail = true;
           continue;
         }
         const sendRes = await fetch("/api/send-to-accountant", {
@@ -758,9 +849,10 @@ export default function InvoicesPage() {
         });
         const sendJson = await sendRes.json().catch(() => ({}));
         if (!sendRes.ok) {
-          parts.push(`${region}: ${sendJson.error || "erreur"}`);
+          parts.push(`${reg}: ${sendJson.error || "erreur"}`);
+          anyFail = true;
         } else {
-          parts.push(`${region}: ${sendJson.message || "OK"}`);
+          parts.push(`${reg}: ${sendJson.message || "OK"}`);
         }
       }
       setSelectedIds([]);
@@ -771,7 +863,15 @@ export default function InvoicesPage() {
         filterDateFrom || undefined,
         filterDateTo || undefined
       );
-      setMessage(parts.join(" · "));
+      if (!anyFail) {
+        showSendSuccessToast(
+          parts.length <= 1
+            ? (parts[0]?.replace(/^[^:]+:\s*/, "").trim() || "Documents envoyés au cabinet avec succès.")
+            : "Tous les envois au cabinet ont été effectués avec succès."
+        );
+      } else {
+        setMessage(parts.join(" · "));
+      }
     } catch {
       setMessage("Erreur réseau lors de l'envoi groupé.");
     } finally {
@@ -798,9 +898,26 @@ export default function InvoicesPage() {
     }
   };
 
-  const handleSendSingleInvoice = async (inv: Invoice) => {
+  const openSingleCabinetModal = async (inv: Invoice) => {
+    if (!inv.fileUrl) return;
     const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
-    if (!t) { setMessage("Connectez-vous pour envoyer la facture."); return; }
+    if (!t) {
+      setMessage("Connectez-vous pour envoyer la facture.");
+      return;
+    }
+    const rows = await loadAccountants();
+    setCabinetAccountantsList(rows);
+    const first = rows.find((a) => a.region === inv.region)?.email ?? "";
+    setCabinetEmailByRegion({ [inv.region]: first });
+    setCabinetModal({ kind: "single", invoice: inv });
+  };
+
+  const handleSendSingleInvoice = async (inv: Invoice, recipientEmail: string) => {
+    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+    if (!t) {
+      setMessage("Connectez-vous pour envoyer la facture.");
+      return;
+    }
     setSendingInvoiceId(inv.id);
     setMessage("");
     try {
@@ -809,11 +926,15 @@ export default function InvoicesPage() {
         setMessage("Impossible de récupérer le fichier.");
         return;
       }
-      if (fileBlob.size === 0) { setMessage("Fichier vide ou inaccessible."); return; }
+      if (fileBlob.size === 0) {
+        setMessage("Fichier vide ou inaccessible.");
+        return;
+      }
       const formData = new FormData();
       formData.append("region", inv.region);
       formData.append("senderName", userEmail || "Utilisateur Compta IA");
       formData.append("message", `Transmission facture ${inv.numeroFacture ?? inv.originalName}.\nRégion : ${inv.region}`);
+      formData.append("recipientEmail", recipientEmail);
       formData.append("invoiceIds", inv.id);
       formData.append("files", new File([fileBlob], inv.originalName || "facture.pdf", { type: fileBlob.type || "application/pdf" }));
       const sendRes = await fetch("/api/send-to-accountant", {
@@ -822,13 +943,58 @@ export default function InvoicesPage() {
         body: formData,
       });
       const sendJson = await sendRes.json().catch(() => ({}));
-      if (!sendRes.ok) { setMessage(sendJson.error || "Erreur lors de l'envoi au cabinet."); return; }
-      setMessage(sendJson.message || "Facture envoyée au cabinet.");
+      if (!sendRes.ok) {
+        setMessage(sendJson.error || "Erreur lors de l'envoi au cabinet.");
+        return;
+      }
+      setMessage("");
+      showSendSuccessToast(
+        typeof sendJson.message === "string" && sendJson.message.trim()
+          ? sendJson.message
+          : "Facture envoyée au cabinet avec succès."
+      );
       await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined);
     } catch {
       setMessage("Erreur réseau lors de l'envoi.");
     } finally {
       setSendingInvoiceId(null);
+    }
+  };
+
+  const confirmCabinetSend = async () => {
+    if (!cabinetModal || cabinetSendPending) return;
+
+    const regions =
+      cabinetModal.kind === "bulk"
+        ? Object.keys(cabinetModal.byRegion)
+        : cabinetModal.kind === "single"
+          ? [cabinetModal.invoice.region]
+          : [region];
+
+    for (const r of regions) {
+      const em = (cabinetEmailByRegion[r] ?? "").trim();
+      if (!CABINET_EMAIL_RE.test(em)) {
+        const err = `Adresse email invalide pour ${regionDisplayLabel(r)}.`;
+        if (cabinetModal.kind === "draft") setSendResult(err);
+        else setMessage(err);
+        return;
+      }
+    }
+
+    const snapshot = cabinetModal;
+    const emailsSnapshot = { ...cabinetEmailByRegion };
+    setCabinetSendPending(true);
+    try {
+      if (snapshot.kind === "single") {
+        await handleSendSingleInvoice(snapshot.invoice, emailsSnapshot[snapshot.invoice.region].trim());
+      } else if (snapshot.kind === "draft") {
+        await handleSendToAccountantWithEmail(emailsSnapshot[region].trim());
+      } else {
+        await handleBulkSendWithEmails(emailsSnapshot, snapshot.byRegion);
+      }
+    } finally {
+      setCabinetSendPending(false);
+      setCabinetModal(null);
     }
   };
 
@@ -1251,10 +1417,17 @@ export default function InvoicesPage() {
                 <button
                   type="button"
                   disabled={bulkSending}
-                  onClick={() => void handleBulkSend()}
-                  className="rounded border border-slate-300 bg-white px-2 py-1 font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                  onClick={() => void openBulkCabinetModal()}
+                  className="inline-flex items-center gap-1.5 rounded border border-slate-300 bg-white px-2 py-1 font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
                 >
-                  {bulkSending ? "Envoi…" : "Envoyer au cabinet"}
+                  {bulkSending ? (
+                    <>
+                      <UploadRingSpinner className="h-3.5 w-3.5" aria-hidden />
+                      Envoi…
+                    </>
+                  ) : (
+                    "Envoyer au cabinet"
+                  )}
                 </button>
                 <button
                   type="button"
@@ -2015,11 +2188,21 @@ export default function InvoicesPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={handleSendToAccountant}
+                  onClick={() => void openDraftCabinetModal()}
                   disabled={sending || draftUploading || files.length === 0 || !draftAllOnCloudinary}
-                  className="rounded-lg bg-slate-900 px-3 py-2.5 text-[11px] font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 py-2.5 text-[11px] font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {sending ? "Envoi…" : "Envoyer au cabinet"}
+                  {sending ? (
+                    <>
+                      <span
+                        className="inline-block h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-white/35 border-t-white"
+                        aria-hidden
+                      />
+                      Envoi en cours…
+                    </>
+                  ) : (
+                    "Envoyer au cabinet"
+                  )}
                 </button>
               </div>
 
@@ -2103,11 +2286,18 @@ export default function InvoicesPage() {
                 disabled={sendingInvoiceId === actionMenuInvoice.id || !actionMenuInvoice.fileUrl}
                 onClick={() => {
                   setOpenActionMenuId(null);
-                  void handleSendSingleInvoice(actionMenuInvoice);
+                  void openSingleCabinetModal(actionMenuInvoice);
                 }}
-                className="w-full px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {sendingInvoiceId === actionMenuInvoice.id ? "Envoi…" : "Envoyer au cabinet"}
+                {sendingInvoiceId === actionMenuInvoice.id ? (
+                  <>
+                    <UploadRingSpinner className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    Envoi…
+                  </>
+                ) : (
+                  "Envoyer au cabinet"
+                )}
               </button>
             </li>
             <li className="pointer-events-none mx-1.5 list-none border-t border-slate-100 py-0" role="separator" />
@@ -2126,6 +2316,128 @@ export default function InvoicesPage() {
               </button>
             </li>
           </ul>
+        </div>
+      )}
+
+      {cabinetModal && (
+        <div
+          className="fixed inset-0 z-[210] flex items-end justify-center bg-black/45 p-3 sm:items-center"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cabinet-send-title"
+          aria-busy={cabinetSendPending}
+          onClick={() => {
+            if (!cabinetSendPending) setCabinetModal(null);
+          }}
+        >
+          <div
+            className="relative w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {cabinetSendPending && (
+              <div
+                className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-xl bg-white/90 px-6 py-8 backdrop-blur-[2px]"
+                role="status"
+                aria-live="polite"
+              >
+                <UploadRingSpinner className="h-12 w-12" aria-label="Envoi en cours" />
+                <p className="text-sm font-semibold text-slate-900">Envoi en cours…</p>
+                <p className="max-w-[260px] text-center text-[11px] leading-snug text-slate-500">
+                  Transmission du message et des pièces jointes vers le cabinet.
+                </p>
+              </div>
+            )}
+            <div className="border-b border-slate-100 px-4 py-3">
+              <h2 id="cabinet-send-title" className="text-sm font-semibold text-slate-900">
+                Envoyer au cabinet
+              </h2>
+              <p className="mt-1 text-[11px] leading-snug text-slate-500">
+                Sélectionnez une adresse déjà enregistrée (suggestions) ou saisissez l&apos;e-mail du destinataire.
+              </p>
+            </div>
+            <div className="max-h-[min(60dvh,420px)] space-y-3 overflow-y-auto px-4 py-3">
+              {(cabinetModal.kind === "bulk"
+                ? Object.keys(cabinetModal.byRegion)
+                : cabinetModal.kind === "single"
+                  ? [cabinetModal.invoice.region]
+                  : [region]
+              ).map((r) => {
+                const suggestions = cabinetAccountantsList.filter((a) => a.region === r);
+                const listId = `cabinet-datalist-${r.replace(/[^a-z0-9_-]/gi, "-")}`;
+                return (
+                  <div key={r}>
+                    <label className="mb-1 block text-[11px] font-medium text-slate-700">
+                      {regionDisplayLabel(r)}
+                      {cabinetModal.kind === "bulk" && (
+                        <span className="font-normal text-slate-400">
+                          {" "}
+                          ({cabinetModal.byRegion[r]?.length ?? 0} facture(s))
+                        </span>
+                      )}
+                    </label>
+                    <input
+                      type="email"
+                      autoComplete="email"
+                      enterKeyHint="send"
+                      disabled={cabinetSendPending}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:opacity-70"
+                      list={listId}
+                      value={cabinetEmailByRegion[r] ?? ""}
+                      onChange={(e) =>
+                        setCabinetEmailByRegion((prev) => ({ ...prev, [r]: e.target.value }))
+                      }
+                      placeholder="cabinet@exemple.fr"
+                    />
+                    <datalist id={listId}>
+                      {suggestions.map((a) => (
+                        <option key={a.id} value={a.email}>
+                          {a.label ? `${a.label} · ` : ""}
+                          {a.email}
+                        </option>
+                      ))}
+                    </datalist>
+                    {suggestions.length === 0 && (
+                      <p className="mt-1 text-[10px] text-amber-800">
+                        Aucun cabinet enregistré pour ce pays.{" "}
+                        <Link href="/settings" className="font-medium underline hover:text-amber-950">
+                          Paramètres (Cabinets)
+                        </Link>{" "}
+                        ou saisissez l&apos;adresse ci-dessus.
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
+              <button
+                type="button"
+                disabled={cabinetSendPending}
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => setCabinetModal(null)}
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={cabinetSendPending}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-90"
+                onClick={() => void confirmCabinetSend()}
+              >
+                {cabinetSendPending ? (
+                  <>
+                    <span
+                      className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-white/35 border-t-white"
+                      aria-hidden
+                    />
+                    Envoi…
+                  </>
+                ) : (
+                  "Envoyer"
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -2161,6 +2473,43 @@ export default function InvoicesPage() {
             <div className="border-t border-slate-100 px-4 py-2 text-[10px] text-slate-500">
               Réponse indicative — validez avec votre expert-comptable. La synthèse est aussi enregistrée côté serveur avec la facture.
             </div>
+          </div>
+        </div>
+      )}
+
+      {sendSuccessToast && (
+        <div
+          className="pointer-events-none fixed inset-x-0 bottom-[max(5.5rem,env(safe-area-inset-bottom,0px))] z-[320] flex justify-center px-4 sm:bottom-8 lg:bottom-8"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <div className="pointer-events-auto flex w-full max-w-md items-start gap-3 rounded-2xl border border-emerald-200 bg-white px-4 py-3.5 shadow-lg shadow-emerald-900/10 ring-1 ring-emerald-500/15">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </span>
+            <div className="min-w-0 flex-1 pt-0.5">
+              <p className="text-sm font-semibold text-emerald-900">Envoi réussi</p>
+              <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-slate-600">{sendSuccessToast}</p>
+            </div>
+            <button
+              type="button"
+              aria-label="Fermer la notification"
+              onClick={() => {
+                if (sendSuccessToastTimerRef.current) {
+                  clearTimeout(sendSuccessToastTimerRef.current);
+                  sendSuccessToastTimerRef.current = null;
+                }
+                setSendSuccessToast(null);
+              }}
+              className="shrink-0 rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+            >
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
         </div>
       )}

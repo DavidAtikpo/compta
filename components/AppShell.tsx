@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
+import { SessionExpiredRedirect } from "@/components/SessionExpiredRedirect";
 import { Sidebar } from "@/components/Sidebar";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -17,8 +18,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const token = window.localStorage.getItem("compta-token");
       if (!token) return;
       fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
-        .then((r) => r.json())
-        .then((d) => {
+        .then(async (r) => {
+          if (r.status === 401) return;
+          const d = await r.json();
           if (d.email) {
             setUserEmail(d.email);
             setUserName(typeof d.name === "string" ? d.name : "");
@@ -38,7 +40,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="flex h-dvh max-h-dvh overflow-hidden bg-slate-50">
+    <div className="flex h-dvh max-h-dvh overflow-hidden bg-slate-50 text-slate-900">
+      <SessionExpiredRedirect />
       <Sidebar />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <Header

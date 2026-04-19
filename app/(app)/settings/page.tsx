@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { IMAP_REGION_OPTIONS_SORTED } from "@/lib/country-regions";
-import { parsePdfTable } from "@/lib/pdf-invoice-export";
+import { PdfHeaderPreview } from "@/components/PdfHeaderPreview";
+import {
+  normalizePdfHeaderLayout,
+  parsePdfTable,
+  PDF_HEADER_LAYOUT_LOGO_TABLE_ROW,
+  PDF_HEADER_LAYOUT_STACKED,
+  type PdfHeaderLayoutId,
+} from "@/lib/pdf-invoice-export";
 
 const emptyPdfTable = (): string[][] => [
   ["", "", "", ""],
@@ -97,6 +104,7 @@ export default function SettingsPage() {
   const [pdfHeaderTitle, setPdfHeaderTitle] = useState("");
   const [pdfHeaderAddress, setPdfHeaderAddress] = useState("");
   const [pdfTable, setPdfTable] = useState<string[][]>(emptyPdfTable);
+  const [pdfHeaderLayout, setPdfHeaderLayout] = useState<PdfHeaderLayoutId>(PDF_HEADER_LAYOUT_STACKED);
   const [pdfAssetUploading, setPdfAssetUploading] = useState<"logo" | "headerImg" | "footerImg" | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -129,6 +137,9 @@ export default function SettingsPage() {
         const tj = typeof d.pdfHeaderTableJson === "string" ? d.pdfHeaderTableJson : "";
         const parsed = parsePdfTable(tj || null);
         setPdfTable(parsed ?? emptyPdfTable());
+        setPdfHeaderLayout(
+          normalizePdfHeaderLayout(typeof d.pdfHeaderLayout === "string" ? d.pdfHeaderLayout : null),
+        );
       }
     } catch {
       /* silent */
@@ -304,6 +315,7 @@ export default function SettingsPage() {
           pdfHeaderTitle: pdfHeaderTitle.trim() || null,
           pdfHeaderAddress: pdfHeaderAddress.trim() || null,
           pdfHeaderTableJson: tableAllEmpty ? null : JSON.stringify(pdfTable),
+          pdfHeaderLayout,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -312,6 +324,9 @@ export default function SettingsPage() {
         return;
       }
       applyAuthPayload(data);
+      if (typeof data.pdfHeaderLayout === "string") {
+        setPdfHeaderLayout(normalizePdfHeaderLayout(data.pdfHeaderLayout));
+      }
       setPdfMsg("En-tête et pied de page enregistrés.");
     } catch {
       setPdfMsg("Erreur réseau.");
@@ -482,8 +497,8 @@ export default function SettingsPage() {
     setStructMsg("");
     try {
       const res = await fetch("/api/structures", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newStruct),
       });
       if (res.ok) {
@@ -676,7 +691,7 @@ export default function SettingsPage() {
                   type="password"
                   value={currentPassword}
                   onChange={(e) => setCurrentPassword(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
                   placeholder="Mot de passe actuel"
                   autoComplete="current-password"
                 />
@@ -684,7 +699,7 @@ export default function SettingsPage() {
                   type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
                   placeholder="Nouveau mot de passe"
                   autoComplete="new-password"
                 />
@@ -692,18 +707,18 @@ export default function SettingsPage() {
                   type="password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
                   placeholder="Confirmer le nouveau mot de passe"
                   autoComplete="new-password"
                 />
-                <button
+            <button
                   type="button"
                   disabled={passwordSaving || !currentPassword || !newPassword}
                   onClick={() => void handleChangePassword()}
                   className="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-800 hover:bg-slate-100 disabled:opacity-50"
                 >
                   {passwordSaving ? "Mise à jour…" : "Mettre à jour le mot de passe"}
-                </button>
+            </button>
                 {passwordMsg && (
                   <p
                     className={`text-sm ${
@@ -713,10 +728,10 @@ export default function SettingsPage() {
                     }`}
                   >
                     {passwordMsg}
-                  </p>
-                )}
-              </div>
-            </div>
+              </p>
+            )}
+          </div>
+        </div>
           </div>
         )}
 
@@ -825,10 +840,84 @@ export default function SettingsPage() {
 
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
               <div className="border-b border-slate-100 px-6 py-4">
+                <h2 className="font-semibold text-slate-900">Disposition de l’en-tête & aperçu</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Choisissez comment le logo et le tableau sont disposés (sauf si vous utilisez une image d’en-tête
+                  pleine largeur).
+                </p>
+              </div>
+              <div className="space-y-4 p-6">
+                <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+                  <label
+                    className={`flex cursor-pointer items-start gap-2 rounded-xl border p-3 ${
+                      pdfHeaderLayout === PDF_HEADER_LAYOUT_STACKED
+                        ? "border-slate-800 bg-white shadow-sm"
+                        : "border-slate-200 bg-slate-50/80"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="pdf-header-layout"
+                      checked={pdfHeaderLayout === PDF_HEADER_LAYOUT_STACKED}
+                      onChange={() => setPdfHeaderLayout(PDF_HEADER_LAYOUT_STACKED)}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      <span className="text-sm font-medium text-slate-900">Classique</span>
+                      <span className="mt-0.5 block text-xs text-slate-600">
+                        Logo à gauche, titre et adresse à droite, tableau sur toute la largeur en dessous.
+                      </span>
+                    </span>
+                  </label>
+                  <label
+                    className={`flex cursor-pointer items-start gap-2 rounded-xl border p-3 ${
+                      pdfHeaderLayout === PDF_HEADER_LAYOUT_LOGO_TABLE_ROW
+                        ? "border-slate-800 bg-white shadow-sm"
+                        : "border-slate-200 bg-slate-50/80"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="pdf-header-layout"
+                      checked={pdfHeaderLayout === PDF_HEADER_LAYOUT_LOGO_TABLE_ROW}
+                      onChange={() => setPdfHeaderLayout(PDF_HEADER_LAYOUT_LOGO_TABLE_ROW)}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      <span className="text-sm font-medium text-slate-900">Logo + tableau sur une ligne</span>
+                      <span className="mt-0.5 block text-xs text-slate-600">
+                        Titre et adresse au-dessus, puis logo et tableau côte à côte (alignés en bas, comme une ligne
+                        flex).
+                      </span>
+                    </span>
+                  </label>
+                </div>
+                {pdfHeaderLayout === PDF_HEADER_LAYOUT_LOGO_TABLE_ROW &&
+                  (!pdfLogoUrl.trim() ||
+                    !pdfTable.some((row) => row.some((c) => String(c).trim()))) && (
+                    <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      Pour ce mode dans le PDF, il faut un <strong>logo</strong> et au moins une cellule du{" "}
+                      <strong>tableau</strong> remplie — sinon l’export repasse en disposition classique.
+                    </p>
+                  )}
+                <PdfHeaderPreview
+                  layout={pdfHeaderLayout}
+                  headerImageUrl={pdfHeaderImageUrl}
+                  logoUrl={pdfLogoUrl}
+                  title={pdfHeaderTitle}
+                  address={pdfHeaderAddress}
+                  table={pdfTable}
+                  extraText={pdfHeader}
+                />
+              </div>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="border-b border-slate-100 px-6 py-4">
                 <h2 className="font-semibold text-slate-900">Logo, titre, adresse & tableau</h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Ignoré pour l’en-tête si une <strong>image d’en-tête</strong> est définie ci-dessus. Le logo apparaît à
-                  gauche, le titre et l’adresse à droite ; le tableau 4×2 s’affiche en dessous.
+                  Ignoré pour l’en-tête si une <strong>image d’en-tête</strong> est définie ci-dessus. La disposition
+                  (classique ou logo + tableau sur une ligne) est réglée dans la section précédente.
                 </p>
               </div>
               <div className="space-y-5 p-6">
@@ -881,7 +970,7 @@ export default function SettingsPage() {
                         type="text"
                         value={pdfHeaderTitle}
                         onChange={(e) => setPdfHeaderTitle(e.target.value)}
-                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm"
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
                         placeholder="Nom commercial / raison sociale"
                       />
                     </div>
@@ -891,7 +980,7 @@ export default function SettingsPage() {
                         value={pdfHeaderAddress}
                         onChange={(e) => setPdfHeaderAddress(e.target.value)}
                         rows={3}
-                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm"
+                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
                         placeholder={"Lignes d’adresse, téléphone, email…"}
                       />
                     </div>
@@ -937,7 +1026,7 @@ export default function SettingsPage() {
                     value={pdfHeader}
                     onChange={(e) => setPdfHeader(e.target.value)}
                     rows={3}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
                     placeholder="Texte additionnel sous le tableau (facultatif)."
                   />
                 </div>
@@ -951,7 +1040,7 @@ export default function SettingsPage() {
                     value={pdfFooter}
                     onChange={(e) => setPdfFooter(e.target.value)}
                     rows={3}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
                     placeholder="Mentions légales, RCS, contact…"
                   />
                 </div>
@@ -1227,9 +1316,9 @@ export default function SettingsPage() {
                     {structMsg}
                   </p>
                 )}
-              </div>
             </div>
           </div>
+        </div>
         )}
       </div>
     </div>

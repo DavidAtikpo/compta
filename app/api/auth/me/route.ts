@@ -38,6 +38,7 @@ export async function GET(request: Request) {
           pdfHeaderTitle: true,
           pdfHeaderAddress: true,
           pdfHeaderTableJson: true,
+          pdfHeaderLayout: true,
         },
       });
       if (user) {
@@ -53,6 +54,7 @@ export async function GET(request: Request) {
           pdfHeaderTitle: user.pdfHeaderTitle || "",
           pdfHeaderAddress: user.pdfHeaderAddress || "",
           pdfHeaderTableJson: user.pdfHeaderTableJson || "",
+          pdfHeaderLayout: user.pdfHeaderLayout || "stacked",
         });
       }
     }
@@ -68,6 +70,7 @@ export async function GET(request: Request) {
       pdfHeaderTitle: "",
       pdfHeaderAddress: "",
       pdfHeaderTableJson: "",
+      pdfHeaderLayout: "stacked",
     });
   } catch {
     return NextResponse.json({ error: "Token invalide." }, { status: 401 });

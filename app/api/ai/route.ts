@@ -1,5 +1,6 @@
 ﻿import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { getAuthenticatedUserId } from "../../../lib/auth-request";
 import { pool } from "../../../lib/postgres";
 
 export async function POST(request: NextRequest) {
@@ -101,12 +102,14 @@ Donne-moi TOUTES les optimisations fiscales possibles, les ficelles légales, le
   const answer =
     payload?.choices?.[0]?.message?.content || "Aucune réponse reçue.";
 
+  const userId = getAuthenticatedUserId(request);
+
   if (invoiceId) {
     try {
       await pool.query(
-        `INSERT INTO ai_optimizations (id, "invoiceId", prompt, response, region, "createdAt")
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW())`,
-        [invoiceId, prompt, answer, region]
+        `INSERT INTO ai_optimizations (id, "userId", "invoiceId", prompt, response, region, "createdAt")
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW())`,
+        [userId, invoiceId, prompt, answer, region]
       );
     } catch (dbError) {
       console.error("Erreur sauvegarde optimisation IA:", dbError);
@@ -114,9 +117,9 @@ Donne-moi TOUTES les optimisations fiscales possibles, les ficelles légales, le
   } else {
     try {
       await pool.query(
-        `INSERT INTO ai_optimizations (id, "invoiceId", prompt, response, region, "createdAt")
-         VALUES (gen_random_uuid(), NULL, $1, $2, $3, NOW())`,
-        [prompt, answer, region]
+        `INSERT INTO ai_optimizations (id, "userId", "invoiceId", prompt, response, region, "createdAt")
+         VALUES (gen_random_uuid(), $1, NULL, $2, $3, $4, NOW())`,
+        [userId, prompt, answer, region]
       );
     } catch (dbError) {
       console.error("Erreur sauvegarde optimisation IA (sans facture):", dbError);

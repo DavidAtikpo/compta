@@ -29,6 +29,7 @@ export async function POST(request: NextRequest) {
         pdfHeaderTitle: true,
         pdfHeaderAddress: true,
         pdfHeaderTableJson: true,
+        pdfHeaderLayout: true,
       },
     });
 
@@ -92,6 +93,7 @@ export async function POST(request: NextRequest) {
         pdfHeaderTitle: user?.pdfHeaderTitle ?? null,
         pdfHeaderAddress: user?.pdfHeaderAddress ?? null,
         pdfHeaderTableJson: user?.pdfHeaderTableJson ?? null,
+        pdfHeaderLayout: user?.pdfHeaderLayout ?? null,
       },
     );
 

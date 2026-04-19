@@ -3,11 +3,24 @@ import { PDFDocument, PDFPage, StandardFonts, rgb, type PDFFont, type PDFImage }
 export const PAGE_W = 595;
 export const PAGE_H = 842;
 const MARGIN = 40;
+/** Marge depuis le bord supérieur de la page (plus d’air qu’en bas / côtés). */
+const MARGIN_TOP = 58;
 const LINE_H = 11;
 const FONT_SIZE = 8;
 const MAX_CHARS_LINE = 92;
 const MAX_EXTRA_HEADER_LINES = 8;
 const MAX_FOOTER_LINES = 10;
+
+export const PDF_HEADER_LAYOUT_STACKED = "stacked" as const;
+export const PDF_HEADER_LAYOUT_LOGO_TABLE_ROW = "logo_table_row" as const;
+export type PdfHeaderLayoutId =
+  | typeof PDF_HEADER_LAYOUT_STACKED
+  | typeof PDF_HEADER_LAYOUT_LOGO_TABLE_ROW;
+
+export function normalizePdfHeaderLayout(v: string | null | undefined): PdfHeaderLayoutId {
+  if (v === PDF_HEADER_LAYOUT_LOGO_TABLE_ROW) return PDF_HEADER_LAYOUT_LOGO_TABLE_ROW;
+  return PDF_HEADER_LAYOUT_STACKED;
+}
 
 export type UserPdfBranding = {
   pdfHeaderText: string | null;
@@ -18,6 +31,7 @@ export type UserPdfBranding = {
   pdfHeaderTitle: string | null;
   pdfHeaderAddress: string | null;
   pdfHeaderTableJson: string | null;
+  pdfHeaderLayout: string | null;
 };
 
 function safePdfText(s: string, maxLen: number): string {
@@ -25,6 +39,30 @@ function safePdfText(s: string, maxLen: number): string {
     .replace(/\r|\n|\t/g, " ")
     .trim();
   return t.length > maxLen ? `${t.slice(0, maxLen - 1)}…` : t;
+}
+
+/** Tronque avec « … » seulement si le texte dépasse la largeur disponible (évite les … abusifs à N caractères fixes). */
+function fitTextToWidth(raw: string, font: PDFFont, size: number, maxWidthPt: number): string {
+  const t = String(raw ?? "")
+    .replace(/\r|\n|\t/g, " ")
+    .trim();
+  if (!t) return "—";
+  if (maxWidthPt <= 6) return "…";
+  try {
+    if (font.widthOfTextAtSize(t, size) <= maxWidthPt) return t;
+  } catch {
+    return safePdfText(t, 200);
+  }
+  const ell = "…";
+  for (let n = t.length; n >= 1; n--) {
+    const s = n === t.length ? t : `${t.slice(0, n - 1)}${ell}`;
+    try {
+      if (font.widthOfTextAtSize(s, size) <= maxWidthPt) return s;
+    } catch {
+      break;
+    }
+  }
+  return ell;
 }
 
 export function formatDisplayDate(d: Date | string | null): string {
@@ -96,6 +134,41 @@ async function fetchEmbedImage(
   }
 }
 
+function drawPdfTable(
+  page: PDFPage,
+  table: string[][],
+  tableLeftX: number,
+  tableBottomY: number,
+  totalWidth: number,
+  font: PDFFont,
+  cellFs: number,
+  rowH: number,
+) {
+  const cw = totalWidth / 4;
+  for (let r = 0; r < 2; r++) {
+    for (let c = 0; c < 4; c++) {
+      const x0 = tableLeftX + c * cw;
+      const y0 = tableBottomY + (1 - r) * rowH;
+      page.drawRectangle({
+        x: x0,
+        y: y0,
+        width: cw - 0.2,
+        height: rowH,
+        borderColor: rgb(0.78, 0.78, 0.82),
+        borderWidth: 0.55,
+      });
+      const cell = table[r]?.[c] ?? "";
+      page.drawText(fitTextToWidth(cell, font, cellFs, cw - 7), {
+        x: x0 + 3,
+        y: y0 + 5,
+        size: cellFs,
+        font,
+        color: rgb(0.2, 0.2, 0.22),
+      });
+    }
+  }
+}
+
 type MeasureResult = {
   headerDrawH: number;
   footerReserved: number;
@@ -142,7 +215,7 @@ async function measureAndPrepareHeaderFooter(
 
     const drawHeader = (page: PDFPage) => {
       const x = (PAGE_W - drawW) / 2;
-      const yBottom = PAGE_H - MARGIN - drawH;
+      const yBottom = PAGE_H - MARGIN_TOP - drawH;
       page.drawImage(headerImgEmb!.image, {
         x,
         y: yBottom,
@@ -209,7 +282,7 @@ async function measureAndPrepareHeaderFooter(
   }
 
   const title = (b.pdfHeaderTitle || "").trim();
-  const titleLines = title ? [safePdfText(title, 80)] : [];
+  const titleLines = title ? [title] : [];
   const addressLines = expandLines(b.pdfHeaderAddress ?? null, 6);
   const table = parsePdfTable(b.pdfHeaderTableJson);
   const hasTable =
@@ -221,12 +294,31 @@ async function measureAndPrepareHeaderFooter(
   const ROW_H = 18;
   const TABLE_GAP = 8;
   const tableH = hasTable ? ROW_H * 2 + 10 : 0;
+  const titleBlockH = titleLines.length * 15 + addressLines.length * LINE_H;
 
-  let blockH =
-    Math.max(logoDrawH, titleLines.length * 14 + addressLines.length * LINE_H) +
-    (hasTable ? TABLE_GAP + tableH : 0) +
-    (extraHeaderLines.length > 0 ? TABLE_GAP + extraHeaderLines.length * LINE_H : 0) +
-    8;
+  const layout = normalizePdfHeaderLayout(b.pdfHeaderLayout);
+  const useLogoTableRow =
+    layout === PDF_HEADER_LAYOUT_LOGO_TABLE_ROW &&
+    logoEmb !== null &&
+    hasTable &&
+    table !== null;
+
+  let blockH: number;
+  if (useLogoTableRow) {
+    const flexH = Math.max(logoDrawH, ROW_H * 2 + 8);
+    blockH =
+      titleBlockH +
+      TABLE_GAP +
+      flexH +
+      (extraHeaderLines.length > 0 ? TABLE_GAP + extraHeaderLines.length * LINE_H : 0) +
+      8;
+  } else {
+    blockH =
+      Math.max(logoDrawH, titleLines.length * 14 + addressLines.length * LINE_H) +
+      (hasTable ? TABLE_GAP + tableH : 0) +
+      (extraHeaderLines.length > 0 ? TABLE_GAP + extraHeaderLines.length * LINE_H : 0) +
+      8;
+  }
 
   if (!logoEmb && titleLines.length === 0 && addressLines.length === 0 && !hasTable && extraHeaderLines.length === 0) {
     blockH = 0;
@@ -236,7 +328,57 @@ async function measureAndPrepareHeaderFooter(
 
   const drawComposedHeader = (page: PDFPage) => {
     if (blockH === 0) return;
-    let y = PAGE_H - MARGIN;
+
+    if (useLogoTableRow && logoEmb && table) {
+      let y = PAGE_H - MARGIN_TOP;
+      let textY = y;
+      const titleWRow = PAGE_W - 2 * MARGIN - 4;
+      for (const tl of titleLines) {
+        page.drawText(fitTextToWidth(tl, fontBold, 12, titleWRow), {
+          x: MARGIN,
+          y: textY,
+          size: 12,
+          font: fontBold,
+          color: rgb(0.08, 0.08, 0.1),
+        });
+        textY -= 15;
+      }
+      const addrWRow = PAGE_W - 2 * MARGIN - 4;
+      for (const al of addressLines) {
+        page.drawText(fitTextToWidth(al, font, FONT_SIZE, addrWRow), {
+          x: MARGIN,
+          y: textY,
+          size: FONT_SIZE,
+          font,
+          color: rgb(0.25, 0.25, 0.28),
+        });
+        textY -= LINE_H;
+      }
+      const flexBottom = textY - TABLE_GAP;
+      page.drawImage(logoEmb.image, {
+        x: MARGIN,
+        y: flexBottom,
+        width: logoDrawW,
+        height: logoDrawH,
+      });
+      const tableLeft = MARGIN + logoDrawW + 8;
+      const tableW = PAGE_W - MARGIN - tableLeft;
+      drawPdfTable(page, table, tableLeft, flexBottom, tableW, font, CELL_FS, ROW_H);
+      let cursorY = flexBottom - 10;
+      for (const ex of extraHeaderLines) {
+        page.drawText(fitTextToWidth(ex, font, FONT_SIZE, addrWRow), {
+          x: MARGIN,
+          y: cursorY,
+          size: FONT_SIZE,
+          font,
+          color: rgb(0.15, 0.15, 0.18),
+        });
+        cursorY -= LINE_H;
+      }
+      return;
+    }
+
+    let y = PAGE_H - MARGIN_TOP;
     const leftText = MARGIN + (logoDrawW > 0 ? logoDrawW + 10 : 0);
 
     if (logoEmb) {
@@ -250,8 +392,9 @@ async function measureAndPrepareHeaderFooter(
     }
 
     let textY = y;
+    const titleWStack = PAGE_W - leftText - MARGIN - 4;
     for (const tl of titleLines) {
-      page.drawText(tl, {
+      page.drawText(fitTextToWidth(tl, fontBold, 12, titleWStack), {
         x: leftText,
         y: textY,
         size: 12,
@@ -260,8 +403,9 @@ async function measureAndPrepareHeaderFooter(
       });
       textY -= 15;
     }
+    const addrWStack = PAGE_W - leftText - MARGIN - 4;
     for (const al of addressLines) {
-      page.drawText(safePdfText(al, 85), {
+      page.drawText(fitTextToWidth(al, font, FONT_SIZE, addrWStack), {
         x: leftText,
         y: textY,
         size: FONT_SIZE,
@@ -282,35 +426,14 @@ async function measureAndPrepareHeaderFooter(
     if (hasTable && table) {
       cursorY -= 4;
       const tw = PAGE_W - 2 * MARGIN;
-      const cw = tw / 4;
       const tableBottom = cursorY - TABLE_GAP;
-      for (let r = 0; r < 2; r++) {
-        for (let c = 0; c < 4; c++) {
-          const x0 = MARGIN + c * cw;
-          const y0 = tableBottom + (1 - r) * ROW_H;
-          page.drawRectangle({
-            x: x0,
-            y: y0,
-            width: cw - 0.2,
-            height: ROW_H,
-            borderColor: rgb(0.78, 0.78, 0.82),
-            borderWidth: 0.55,
-          });
-          const cell = table[r]?.[c] ?? "";
-          page.drawText(safePdfText(cell, 28), {
-            x: x0 + 3,
-            y: y0 + 5,
-            size: CELL_FS,
-            font,
-            color: rgb(0.2, 0.2, 0.22),
-          });
-        }
-      }
+      drawPdfTable(page, table, MARGIN, tableBottom, tw, font, CELL_FS, ROW_H);
       cursorY = tableBottom - 6;
     }
 
+    const extraW = PAGE_W - 2 * MARGIN - 4;
     for (const ex of extraHeaderLines) {
-      page.drawText(safePdfText(ex, MAX_CHARS_LINE + 8), {
+      page.drawText(fitTextToWidth(ex, font, FONT_SIZE, extraW), {
         x: MARGIN,
         y: cursorY,
         size: FONT_SIZE,
@@ -386,7 +509,9 @@ export async function pdfBufferFromInvoices(
   const { headerDrawH, footerReserved, drawPageHeader, drawFooterSecondPass } =
     await measureAndPrepareHeaderFooter(pdfDoc, branding, font, fontBold);
 
-  const startContentY = () => PAGE_H - MARGIN - headerDrawH;
+  /** Espace sous l’en-tête personnalisé ; sans en-tête, marge supplémentaire sous le haut de page. */
+  const startContentY = () =>
+    PAGE_H - MARGIN_TOP - headerDrawH - (headerDrawH > 0 ? 10 : 18);
 
   let page = pdfDoc.addPage([PAGE_W, PAGE_H]);
   drawPageHeader(page);
@@ -403,7 +528,8 @@ export async function pdfBufferFromInvoices(
   y -= 22;
 
   const sub = subtitleLines.filter(Boolean).join(" · ");
-  page.drawText(safePdfText(sub, 130), {
+  const subMaxW = PAGE_W - 2 * MARGIN - 4;
+  page.drawText(fitTextToWidth(sub, font, FONT_SIZE, subMaxW), {
     x: MARGIN,
     y,
     size: FONT_SIZE,
@@ -413,6 +539,8 @@ export async function pdfBufferFromInvoices(
   y -= LINE_H * 2;
 
   const col = { d: MARGIN, n: 86, f: 124, r: 228, c: 348, t: 468 };
+  const colPad = 4;
+  const colW = (left: number, right: number) => Math.max(16, right - left - colPad);
   const headerY = y;
   page.drawText("Date", { x: col.d, y: headerY, size: FONT_SIZE, font: fontBold });
   page.drawText("N°", { x: col.n, y: headerY, size: FONT_SIZE, font: fontBold });
@@ -459,34 +587,38 @@ export async function pdfBufferFromInvoices(
 
   let sumTtc = 0;
 
+  const wD = colW(col.d, col.n);
+  const wN = colW(col.n, col.f);
+  const wF = colW(col.f, col.r);
+  const wR = colW(col.r, col.c);
+  const wC = colW(col.c, col.t);
+  const wT = Math.max(28, PAGE_W - MARGIN - col.t - colPad);
+
   for (const inv of invoices) {
     ensureSpace();
     const invoiceDate = (inv.invoiceDate ?? inv.createdAt) as string | Date | null;
     const d = formatDisplayDate(invoiceDate);
-    const num = safePdfText(String(inv.numeroFacture ?? "—"), 12);
-    const four = safePdfText(String(inv.fournisseur ?? inv.originalName ?? "—"), 16);
+    const num = String(inv.numeroFacture ?? "—");
+    const four = String(inv.fournisseur ?? inv.originalName ?? "—");
     const refName = String(inv.originalName ?? "—");
     const refEmail = String(inv.accountant_email ?? "").trim();
-    const ref = safePdfText(
-      refEmail ? `${refName} · ${refEmail}` : refName,
-      28,
-    );
-    const cat = safePdfText(String(inv.category ?? "—"), 16);
+    const refRaw = refEmail ? `${refName} · ${refEmail}` : refName;
+    const cat = String(inv.category ?? "—");
     const montantTTC = (inv.montantTTC ?? inv.amount ?? 0) as number;
     const ttc =
       typeof montantTTC === "number" && !Number.isNaN(montantTTC)
-        ? montantTTC.toFixed(2)
+        ? `${montantTTC.toFixed(2)} €`
         : "—";
     if (typeof montantTTC === "number" && !Number.isNaN(montantTTC)) {
       sumTtc += montantTTC;
     }
 
-    page.drawText(safePdfText(d, 14), { x: col.d, y, size: FONT_SIZE, font });
-    page.drawText(num, { x: col.n, y, size: FONT_SIZE, font });
-    page.drawText(four, { x: col.f, y, size: FONT_SIZE, font });
-    page.drawText(ref, { x: col.r, y, size: FONT_SIZE, font });
-    page.drawText(cat, { x: col.c, y, size: FONT_SIZE, font });
-    page.drawText(ttc, { x: col.t, y, size: FONT_SIZE, font });
+    page.drawText(fitTextToWidth(d, font, FONT_SIZE, wD), { x: col.d, y, size: FONT_SIZE, font });
+    page.drawText(fitTextToWidth(num, font, FONT_SIZE, wN), { x: col.n, y, size: FONT_SIZE, font });
+    page.drawText(fitTextToWidth(four, font, FONT_SIZE, wF), { x: col.f, y, size: FONT_SIZE, font });
+    page.drawText(fitTextToWidth(refRaw, font, FONT_SIZE, wR), { x: col.r, y, size: FONT_SIZE, font });
+    page.drawText(fitTextToWidth(cat, font, FONT_SIZE, wC), { x: col.c, y, size: FONT_SIZE, font });
+    page.drawText(fitTextToWidth(ttc, font, FONT_SIZE, wT), { x: col.t, y, size: FONT_SIZE, font });
     y -= LINE_H;
   }
 

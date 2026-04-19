@@ -74,6 +74,7 @@ async function createTables() {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ai_optimizations (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "userId" TEXT,
         "invoiceId" UUID REFERENCES invoices(id),
         prompt TEXT,
         response TEXT,

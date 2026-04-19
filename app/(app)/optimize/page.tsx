@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   IMAP_REGION_OPTIONS_SORTED,
   imapCountryFilterMatch,
@@ -95,6 +95,8 @@ export default function OptimizePage() {
   const [alertsUnread, setAlertsUnread] = useState(0);
   const [showAlerts, setShowAlerts] = useState(false);
   const [loadingAlerts, setLoadingAlerts] = useState(false);
+  /** Sur lg+ : un seul panneau gauche ouvert à la fois (Contexte ou Questions rapides). */
+  const [desktopLeftPanel, setDesktopLeftPanel] = useState<"context" | "questions">("context");
 
   useEffect(() => {
     loadTaxRules();
@@ -151,9 +153,13 @@ export default function OptimizePage() {
     setLoading(true);
 
     try {
+      const token = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           region,
           businessType,
@@ -181,46 +187,93 @@ export default function OptimizePage() {
     }
   };
 
-  const formatAnswer = (text: string) => {
-    return text
-      .split("\n")
-      .map((line, i) => {
-        if (line.startsWith("## ")) {
-          return <h3 key={i} className="mt-3 mb-1.5 text-sm font-bold text-slate-900 sm:mt-4 sm:mb-2 sm:text-base">{line.slice(3)}</h3>;
-        }
-        if (line.startsWith("### ")) {
-          return <h4 key={i} className="mt-2 mb-1 text-xs font-bold text-slate-800 sm:mt-3 sm:text-sm">{line.slice(4)}</h4>;
-        }
-        if (line.startsWith("**") && line.endsWith("**")) {
-          return <p key={i} className="mt-1.5 text-xs font-semibold text-slate-900 sm:mt-2 sm:text-sm">{line.slice(2, -2)}</p>;
-        }
-        if (line.startsWith("- ") || line.startsWith("• ")) {
-          return (
-            <li key={i} className="ml-3 list-disc text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">
-              {line.slice(2).replace(/\*\*(.+?)\*\*/g, "$1")}
-            </li>
-          );
-        }
-        if (line.match(/^\d+\./)) {
-          return (
-            <li key={i} className="ml-3 list-decimal text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">
-              {line.replace(/^\d+\.\s*/, "").replace(/\*\*(.+?)\*\*/g, "$1")}
-            </li>
-          );
-        }
-        if (line.trim() === "") return <div key={i} className="h-1.5 sm:h-2" />;
+  /** Gras inline **…**, italique *…*, astérisques orphelins et # en trop. */
+  const renderInlineMarkdown = (s: string): ReactNode => {
+    const parts = s.split(/(\*\*[^*]+\*\*)/g);
+    return parts.map((part, j) => {
+      const bold = part.match(/^\*\*([^*]+)\*\*$/);
+      if (bold) {
         return (
-          <p key={i} className="text-xs leading-5 text-slate-700 sm:text-sm sm:leading-6">
-            {line.replace(/\*\*(.+?)\*\*/g, "$1")}
+          <strong key={j} className="font-semibold text-slate-900">
+            {bold[1]}
+          </strong>
+        );
+      }
+      let t = part.replace(/\*([^*]+)\*/g, "$1");
+      t = t.replace(/\*\*/g, "");
+      t = t.replace(/(^|\n)\s*#{1,6}\s*/g, "$1");
+      return <span key={j}>{t}</span>;
+    });
+  };
+
+  const formatAnswer = (text: string) => {
+    return text.split("\n").map((line, i) => {
+      const trimmed = line.trimEnd();
+      const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        const level = heading[1].length;
+        const body = heading[2].replace(/^#+\s*/, "").trim();
+        if (level <= 2) {
+          return (
+            <h3 key={i} className="mt-3 mb-1.5 text-sm font-bold text-slate-900 sm:mt-4 sm:mb-2 sm:text-base">
+              {renderInlineMarkdown(body)}
+            </h3>
+          );
+        }
+        return (
+          <h4 key={i} className="mt-2 mb-1 text-xs font-bold text-slate-800 sm:mt-3 sm:text-sm">
+            {renderInlineMarkdown(body)}
+          </h4>
+        );
+      }
+      if (trimmed.startsWith("## ")) {
+        return (
+          <h3 key={i} className="mt-3 mb-1.5 text-sm font-bold text-slate-900 sm:mt-4 sm:mb-2 sm:text-base">
+            {renderInlineMarkdown(trimmed.slice(3))}
+          </h3>
+        );
+      }
+      if (trimmed.startsWith("### ")) {
+        return (
+          <h4 key={i} className="mt-2 mb-1 text-xs font-bold text-slate-800 sm:mt-3 sm:text-sm">
+            {renderInlineMarkdown(trimmed.slice(4))}
+          </h4>
+        );
+      }
+      if (trimmed.startsWith("**") && trimmed.endsWith("**") && trimmed.length > 4) {
+        return (
+          <p key={i} className="mt-1.5 text-xs font-semibold text-slate-900 sm:mt-2 sm:text-sm">
+            {renderInlineMarkdown(trimmed.slice(2, -2))}
           </p>
         );
-      });
+      }
+      if (trimmed.startsWith("- ") || trimmed.startsWith("• ")) {
+        return (
+          <li key={i} className="ml-3 list-disc text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">
+            {renderInlineMarkdown(trimmed.slice(2))}
+          </li>
+        );
+      }
+      if (trimmed.match(/^\d+\./)) {
+        return (
+          <li key={i} className="ml-3 list-decimal text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">
+            {renderInlineMarkdown(trimmed.replace(/^\d+\.\s*/, ""))}
+          </li>
+        );
+      }
+      if (trimmed === "") return <div key={i} className="h-1.5 sm:h-2" />;
+      return (
+        <p key={i} className="text-xs leading-5 text-slate-700 sm:text-sm sm:leading-6">
+          {renderInlineMarkdown(trimmed)}
+        </p>
+      );
+    });
   };
 
   return (
-    <div className="px-3 py-4 sm:px-4 sm:py-6 lg:px-6 lg:py-8">
-      <div className="mx-auto max-w-7xl space-y-4 sm:space-y-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+    <div className="px-3 py-4 sm:px-4 sm:py-6 lg:px-6 lg:py-6">
+      <div className="mx-auto w-full max-w-7xl space-y-4 sm:space-y-6">
+        <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           <div className="min-w-0">
             <h1 className="text-lg font-bold tracking-tight text-slate-900 sm:text-2xl">Optimisation fiscale IA</h1>
             <p className="mt-0.5 text-[11px] leading-snug text-slate-500 sm:mt-1 sm:text-sm">
@@ -304,7 +357,7 @@ export default function OptimizePage() {
 
         {/* Mobile : ordre de lecture 1 → 2 → 3 (sur grand écran la grille replace le chat au centre-droit) */}
         <nav
-          className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-2.5 py-2 text-[10px] text-slate-600 sm:gap-x-3 sm:px-3 sm:py-2.5 sm:text-xs lg:hidden"
+          className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-2.5 py-2 text-[10px] text-slate-600 sm:gap-x-3 sm:px-3 sm:py-2.5 sm:text-xs lg:hidden"
           aria-label="Étapes d'utilisation"
         >
           <span className="inline-flex items-center gap-1 font-medium text-slate-800">
@@ -323,12 +376,24 @@ export default function OptimizePage() {
           </span>
         </nav>
 
-        <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-[minmax(0,320px)_1fr]">
-          {/* 1 — Contexte (colonne gauche, ligne 1 sur desktop) */}
-          <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:space-y-4 sm:rounded-2xl sm:p-5 lg:col-start-1 lg:row-start-1">
-              <h2 className="text-xs font-semibold text-slate-900 sm:text-sm">Contexte</h2>
+        <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-[minmax(0,320px)_1fr] lg:items-start">
+          {/* Colonne gauche (desktop) : un seul panneau ouvert à la fois (Contexte ou Questions rapides) */}
+          <div className="flex flex-col gap-4 sm:gap-6 lg:col-start-1 lg:row-start-1">
+            {/* 1 — Contexte ; sur lg un seul panneau gauche ouvert à la fois avec Questions rapides */}
+            <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:space-y-4 sm:rounded-2xl sm:p-5">
+              <button
+                type="button"
+                onClick={() => setDesktopLeftPanel("context")}
+                className="flex w-full items-center justify-between gap-2 rounded-lg text-left lg:-mx-1 lg:px-1 lg:py-0.5 lg:hover:bg-slate-50"
+              >
+                <h2 className="text-xs font-semibold text-slate-900 sm:text-sm">Contexte</h2>
+                <span className="hidden text-[10px] font-normal text-slate-400 lg:inline">
+                  {desktopLeftPanel === "context" ? "▼" : "▶"}
+                </span>
+              </button>
 
-              <div>
+              <div className={desktopLeftPanel !== "context" ? "space-y-3 sm:space-y-4 lg:hidden" : "space-y-3 sm:space-y-4"}>
+                <div>
                 <span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-500 sm:mb-2 sm:text-xs sm:normal-case sm:tracking-normal">
                   Pays / région fiscal
                 </span>
@@ -428,10 +493,84 @@ export default function OptimizePage() {
                   placeholder="Ex. texte issu d'un outil OCR ou du PDF de la facture…"
                 />
               </div>
+              </div>
+            </div>
+
+            {/* 3 — Questions rapides + dispositifs (sous le chat sur mobile ; desktop : sous Contexte, mais ne prend pas de hauteur quand fermé) */}
+            <div className="space-y-3 sm:space-y-5">
+              <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:rounded-2xl sm:p-5">
+                <button
+                  type="button"
+                  onClick={() => setDesktopLeftPanel("questions")}
+                  className="mb-2 flex w-full items-center justify-between gap-2 rounded-lg text-left sm:mb-3 lg:-mx-1 lg:px-1 lg:py-0.5 lg:hover:bg-slate-50"
+                >
+                  <h2 className="text-xs font-semibold text-slate-900 sm:text-sm">Questions rapides</h2>
+                  <span className="hidden text-[10px] font-normal text-slate-400 lg:inline">
+                    {desktopLeftPanel === "questions" ? "▼" : "▶"}
+                  </span>
+                </button>
+                <div className={desktopLeftPanel !== "questions" ? "lg:hidden" : ""}>
+                  <p className="mb-2 text-[10px] leading-snug text-slate-500 sm:mb-3 sm:text-xs">
+                    Raccourcis vers l&apos;IA (étape 2). Complétez d&apos;abord le contexte si besoin.
+                  </p>
+                  <div className="space-y-1.5 sm:space-y-2">
+                    {quickPrompts.map((qp) => (
+                      <button
+                        type="button"
+                        key={qp.title}
+                        onClick={() => handleOptimize(qp.prompt)}
+                        disabled={loading}
+                        className="flex w-full items-center rounded-lg border border-slate-200 px-2 py-2 text-left text-[11px] text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50 sm:rounded-xl sm:px-3 sm:py-2.5 sm:text-xs"
+                      >
+                        <span className="font-medium">{qp.title}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm sm:rounded-2xl">
+                <button
+                  type="button"
+                  onClick={() => setShowRules(!showRules)}
+                  className="flex w-full items-center justify-between px-3 py-3 text-xs font-semibold text-slate-900 transition hover:bg-slate-50 sm:px-5 sm:py-4 sm:text-sm"
+                >
+                  <span>Dispositifs fiscaux 2024/2025</span>
+                  <svg className={`h-3.5 w-3.5 shrink-0 transition-transform sm:h-4 sm:w-4 ${showRules ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {showRules && (
+                  <div className="max-h-72 space-y-2 overflow-y-auto border-t border-slate-100 px-3 pb-3 sm:max-h-96 sm:space-y-3 sm:px-5 sm:pb-5">
+                    {loadingRules ? (
+                      <p className="pt-2 text-[11px] text-slate-400 sm:pt-3 sm:text-xs">Chargement…</p>
+                    ) : taxRules.length === 0 ? (
+                      <p className="pt-2 text-[11px] text-slate-400 sm:pt-3 sm:text-xs">Aucun dispositif chargé.</p>
+                    ) : (
+                      taxRules.map((rule, i) => (
+                        <div key={i} className="pt-2 sm:pt-3">
+                          <p className="text-[11px] font-bold text-slate-900 sm:text-xs">{rule.nom}</p>
+                          <p className="mt-0.5 text-[10px] text-slate-600 sm:text-xs">{rule.description}</p>
+                          <p className="mt-0.5 text-[10px] font-medium text-emerald-700 sm:text-xs">{rule.avantage}</p>
+                          {rule.plafond && <p className="text-[10px] text-slate-400 sm:text-xs">Plafond : {rule.plafond}</p>}
+                          <button
+                            type="button"
+                            onClick={() => handleOptimize(`Explique-moi en détail le dispositif "${rule.nom}" et comment l'optimiser pour mon cas (${businessType}, région ${region}).`)}
+                            className="mt-1 text-[10px] text-blue-600 hover:text-blue-700 sm:mt-1.5 sm:text-xs"
+                          >
+                            Analyser pour mon cas →
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
-          {/* 2 — Conseiller fiscal IA (sur mobile : après le contexte ; sur desktop : colonne droite sur 2 lignes) */}
-          <div className="flex min-h-[min(62dvh,520px)] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm sm:min-h-[600px] sm:rounded-2xl lg:col-start-2 lg:row-start-1 lg:row-span-2">
+          {/* 2 — Conseiller fiscal IA (sur mobile : après le contexte ; sur desktop : colonne droite) */}
+          <div className="flex min-h-[min(62dvh,520px)] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm sm:min-h-[600px] sm:rounded-2xl lg:col-start-2 lg:row-start-1 lg:min-h-[min(56dvh,600px)]">
             <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2.5 sm:px-6 sm:py-4">
               <div className="min-w-0">
                 <h2 className="text-xs font-semibold text-slate-900 sm:text-base">Conseiller fiscal IA</h2>
@@ -451,9 +590,9 @@ export default function OptimizePage() {
             </div>
 
             {/* Messages */}
-            <div className="flex-1 space-y-4 overflow-y-auto p-3 sm:space-y-6 sm:p-6">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:space-y-6 sm:p-6">
               {conversation.length === 0 ? (
-                <div className="flex h-full flex-col items-center justify-center py-8 text-center sm:py-12">
+                <div className="flex min-h-[min(40dvh,320px)] flex-col items-center justify-center py-8 text-center sm:py-12">
                   <h3 className="mb-1.5 text-sm font-semibold text-slate-900 sm:mb-2 sm:text-lg">
                     Expert fiscal IA à votre service
                   </h3>
@@ -542,67 +681,6 @@ export default function OptimizePage() {
               <p className="mt-1.5 text-[10px] text-slate-400 sm:mt-2 sm:text-xs">
                 Entrée pour envoyer • Maj+Entrée pour nouvelle ligne • Données fiscales France 2024/2025
               </p>
-            </div>
-          </div>
-
-          {/* 3 — Questions rapides + dispositifs (sous le chat sur mobile ; colonne gauche ligne 2 sur desktop) */}
-          <div className="space-y-3 sm:space-y-5 lg:col-start-1 lg:row-start-2">
-            <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:rounded-2xl sm:p-5">
-              <h2 className="mb-2 text-xs font-semibold text-slate-900 sm:mb-3 sm:text-sm">Questions rapides</h2>
-              <p className="mb-2 text-[10px] leading-snug text-slate-500 sm:mb-3 sm:text-xs">
-                Raccourcis vers l&apos;IA (étape 2). Complétez d&apos;abord le contexte si besoin.
-              </p>
-              <div className="space-y-1.5 sm:space-y-2">
-                {quickPrompts.map((qp) => (
-                  <button
-                    type="button"
-                    key={qp.title}
-                    onClick={() => handleOptimize(qp.prompt)}
-                    disabled={loading}
-                    className="flex w-full items-center rounded-lg border border-slate-200 px-2 py-2 text-left text-[11px] text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50 sm:rounded-xl sm:px-3 sm:py-2.5 sm:text-xs"
-                  >
-                    <span className="font-medium">{qp.title}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm sm:rounded-2xl">
-              <button
-                type="button"
-                onClick={() => setShowRules(!showRules)}
-                className="flex w-full items-center justify-between px-3 py-3 text-xs font-semibold text-slate-900 transition hover:bg-slate-50 sm:px-5 sm:py-4 sm:text-sm"
-              >
-                <span>Dispositifs fiscaux 2024/2025</span>
-                <svg className={`h-3.5 w-3.5 shrink-0 transition-transform sm:h-4 sm:w-4 ${showRules ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-              {showRules && (
-                <div className="max-h-72 space-y-2 overflow-y-auto border-t border-slate-100 px-3 pb-3 sm:max-h-96 sm:space-y-3 sm:px-5 sm:pb-5">
-                  {loadingRules ? (
-                    <p className="pt-2 text-[11px] text-slate-400 sm:pt-3 sm:text-xs">Chargement…</p>
-                  ) : taxRules.length === 0 ? (
-                    <p className="pt-2 text-[11px] text-slate-400 sm:pt-3 sm:text-xs">Aucun dispositif chargé.</p>
-                  ) : (
-                    taxRules.map((rule, i) => (
-                      <div key={i} className="pt-2 sm:pt-3">
-                        <p className="text-[11px] font-bold text-slate-900 sm:text-xs">{rule.nom}</p>
-                        <p className="mt-0.5 text-[10px] text-slate-600 sm:text-xs">{rule.description}</p>
-                        <p className="mt-0.5 text-[10px] font-medium text-emerald-700 sm:text-xs">{rule.avantage}</p>
-                        {rule.plafond && <p className="text-[10px] text-slate-400 sm:text-xs">Plafond : {rule.plafond}</p>}
-                        <button
-                          type="button"
-                          onClick={() => handleOptimize(`Explique-moi en détail le dispositif "${rule.nom}" et comment l'optimiser pour mon cas (${businessType}, région ${region}).`)}
-                          className="mt-1 text-[10px] text-blue-600 hover:text-blue-700 sm:mt-1.5 sm:text-xs"
-                        >
-                          Analyser pour mon cas →
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
             </div>
           </div>
         </div>
