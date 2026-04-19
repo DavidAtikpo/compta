@@ -12,6 +12,23 @@ export async function POST(request: NextRequest) {
   const businessType: string = body.businessType || "entreprise";
   const context: string = body.context || "";
 
+  if (invoiceId) {
+    const uid = getAuthenticatedUserId(request);
+    if (!uid) {
+      return NextResponse.json(
+        { error: "Connexion requise pour analyser une facture." },
+        { status: 401 },
+      );
+    }
+    const own = await pool.query(
+      `SELECT id FROM invoices WHERE id = $1 AND "userId" = $2`,
+      [invoiceId, uid],
+    );
+    if (own.rows.length === 0) {
+      return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });
+    }
+  }
+
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     return NextResponse.json(

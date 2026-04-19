@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { pool } from "../../../lib/postgres";
+import { getAuthenticatedUserId } from "../../../lib/auth-request";
 import Imap from "imap";
 import { simpleParser } from "mailparser";
 import { v2 as cloudinary } from "cloudinary";
@@ -207,6 +208,11 @@ function imapFetchEmails(config: {
 }
 
 export async function POST(request: Request) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise pour importer des emails." }, { status: 401 });
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
 
@@ -262,10 +268,11 @@ export async function POST(request: Request) {
 
           // Save invoice to DB
           const inserted = await pool.query(
-            `INSERT INTO invoices (id, filename, "originalName", size, "mimeType", "fileUrl", region, status, "createdAt", "updatedAt")
-             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'pending', NOW(), NOW())
+            `INSERT INTO invoices (id, "userId", filename, "originalName", size, "mimeType", "fileUrl", region, status, "createdAt", "updatedAt")
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'pending', NOW(), NOW())
              RETURNING id`,
             [
+              userId,
               safeName,
               normalizedName,
               att.content.length,
@@ -278,7 +285,11 @@ export async function POST(request: Request) {
           // Best effort: trigger extraction automatically (same behavior as manual upload)
           if (invoiceId) {
             const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
-            fetch(`${baseUrl}/api/invoices/${invoiceId}/extract`, { method: "POST" }).catch(() => {});
+            const authHeader = request.headers.get("authorization");
+            fetch(`${baseUrl}/api/invoices/${invoiceId}/extract`, {
+              method: "POST",
+              ...(authHeader ? { headers: { Authorization: authHeader } } : {}),
+            }).catch(() => {});
           }
           imported++;
         } catch (e) {

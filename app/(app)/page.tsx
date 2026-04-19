@@ -83,10 +83,13 @@ export default function DashboardPage() {
   const loadDashboardData = async () => {
     setLoadingStats(true);
     try {
+      const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
+      const headers: Record<string, string> = {};
+      if (t) headers.Authorization = `Bearer ${t}`;
       const [invoicesRes, historyRes, allInvoicesRes, allHistoryRes] = await Promise.all([
-        fetch("/api/invoices?limit=5"),
+        fetch("/api/invoices?limit=5", { headers }),
         fetch("/api/history?limit=5"),
-        fetch("/api/invoices?limit=1000"),
+        fetch("/api/invoices?limit=1000", { headers }),
         fetch("/api/history?limit=1000"),
       ]);
 

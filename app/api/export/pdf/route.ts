@@ -64,9 +64,10 @@ export async function POST(request: NextRequest) {
       FROM invoices i
       LEFT JOIN accountants a ON i."accountantId" = a.id
       WHERE i.id = ANY($1::text[])
+        AND i."userId" = $2
         AND i.status != 'draft'
       `,
-      [cleanIds],
+      [cleanIds, userId],
     );
 
     const rowById = new Map(result.rows.map((r) => [String(r.id), r]));

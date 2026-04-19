@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { pool } from "../../../lib/postgres";
+import { getAuthenticatedUserId } from "../../../lib/auth-request";
 
 export async function GET(request: NextRequest) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
   const region = searchParams.get("region");
   const status = searchParams.get("status");
@@ -13,10 +19,10 @@ export async function GET(request: NextRequest) {
       SELECT i.*, a.email as accountant_email
       FROM invoices i
       LEFT JOIN accountants a ON i."accountantId" = a.id
-      WHERE 1=1
+      WHERE i."userId" = $1
     `;
-    const params: (string | number)[] = [];
-    let idx = 1;
+    const params: (string | number)[] = [userId];
+    let idx = 2;
 
     if (region) {
       query += ` AND i.region = $${idx++}`;
@@ -42,6 +48,11 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
+
   try {
     const body = await request.json();
     const {
@@ -75,10 +86,11 @@ export async function POST(request: NextRequest) {
         : null;
 
     const result = await pool.query(
-      `INSERT INTO invoices (id, filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, status, "invoiceDate", "fileUrl", "createdAt", "updatedAt")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, NOW(), NOW())
+      `INSERT INTO invoices (id, "userId", filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, status, "invoiceDate", "fileUrl", "createdAt", "updatedAt")
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12, NOW(), NOW())
        RETURNING *`,
       [
+        userId,
         filename || originalName,
         originalName,
         size || 0,
@@ -104,6 +116,11 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
+
   try {
     const body = await request.json();
     const { id, status, amount, category } = body;
@@ -118,9 +135,9 @@ export async function PATCH(request: NextRequest) {
         amount = COALESCE($3, amount),
         category = COALESCE($4, category),
         "updatedAt" = NOW()
-       WHERE id = $1
+       WHERE id = $1 AND "userId" = $5
        RETURNING *`,
-      [id, status || null, amount || null, category || null]
+      [id, status || null, amount || null, category || null, userId]
     );
 
     if (result.rows.length === 0) {

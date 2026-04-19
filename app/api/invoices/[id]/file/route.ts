@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import jwt from "jsonwebtoken";
 import { v2 as cloudinary } from "cloudinary";
 import { pool } from "../../../../../lib/postgres";
+import { getUserIdFromJwt } from "../../../../../lib/auth-request";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -173,15 +173,17 @@ export async function GET(
   if (!JWT_SECRET) {
     return NextResponse.json({ error: "Configuration serveur." }, { status: 500 });
   }
-  try {
-    jwt.verify(token, JWT_SECRET);
-  } catch {
+  const userId = getUserIdFromJwt(token);
+  if (!userId) {
     return NextResponse.json({ error: "Session invalide." }, { status: 401 });
   }
 
   // Get fileUrl from DB
   try {
-    const r = await pool.query(`SELECT "fileUrl", "originalName" FROM invoices WHERE id = $1`, [id]);
+    const r = await pool.query(
+      `SELECT "fileUrl", "originalName" FROM invoices WHERE id = $1 AND "userId" = $2`,
+      [id, userId]
+    );
     const row = r.rows[0] as { fileUrl: string | null; originalName: string } | undefined;
     if (!row?.fileUrl) {
       return NextResponse.json({ error: "Aucun fichier pour cette facture." }, { status: 404 });

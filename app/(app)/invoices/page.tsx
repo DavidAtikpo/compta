@@ -355,7 +355,8 @@ export default function InvoicesPage() {
       let url = "/api/invoices?limit=200";
       if (reg) url += `&region=${reg}`;
       if (status) url += `&status=${status}`;
-      const res = await fetch(url);
+      const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
+      const res = await fetch(url, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
       if (res.ok) {
         let data: Invoice[] = await res.json();
         // Client-side filters for category and date
@@ -555,9 +556,13 @@ export default function InvoicesPage() {
         const ocrText = extractedTexts[i]?.text || null;
         const fileUrl = uploadedUrls.find((u) => u.name === file.name)?.url || null;
         setOcrStatus(`Enregistrement ${i + 1}/${files.length} : ${file.name}`);
+        const authT = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
         const res = await fetch("/api/invoices", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(authT ? { Authorization: `Bearer ${authT}` } : {}),
+          },
           body: JSON.stringify({
             filename: file.name,
             originalName: file.name,
@@ -575,7 +580,10 @@ export default function InvoicesPage() {
           if (fileUrl && inv.id) {
             setOcrStatus(`Extraction IA ${i + 1}/${files.length} : ${file.name}`);
             try {
-              const exRes = await fetch(`/api/invoices/${inv.id}/extract`, { method: "POST" });
+              const exRes = await fetch(`/api/invoices/${inv.id}/extract`, {
+                method: "POST",
+                ...(authT ? { headers: { Authorization: `Bearer ${authT}` } } : {}),
+              });
               if (exRes.ok) autoExtractOk++;
               else autoExtractFail++;
             } catch { autoExtractFail++; }
@@ -665,7 +673,11 @@ export default function InvoicesPage() {
     setExtractingId(id);
     setExtractResults((prev) => ({ ...prev, [id]: { ok: true, msg: "" } }));
     try {
-      const res = await fetch(`/api/invoices/${id}/extract`, { method: "POST" });
+      const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+      const res = await fetch(`/api/invoices/${id}/extract`, {
+        method: "POST",
+        ...(t ? { headers: { Authorization: `Bearer ${t}` } } : {}),
+      });
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
         const d = json.data ?? {};
@@ -692,9 +704,13 @@ export default function InvoicesPage() {
     setFiscalAiAnalyzingId(inv.id);
     try {
       const contextExtra = buildInvoiceContextForAi(inv);
+      const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
       const res = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(t ? { Authorization: `Bearer ${t}` } : {}),
+        },
         body: JSON.stringify({
           region: inv.region || "france",
           businessType: "eurl",
@@ -756,7 +772,11 @@ export default function InvoicesPage() {
     try {
       const results = await Promise.all(
         ids.map(async (id) => {
-          const res = await fetch(`/api/invoices/${id}`, { method: "DELETE" });
+          const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+          const res = await fetch(`/api/invoices/${id}`, {
+            method: "DELETE",
+            ...(t ? { headers: { Authorization: `Bearer ${t}` } } : {}),
+          });
           return { id, ok: res.ok };
         })
       );
@@ -883,7 +903,11 @@ export default function InvoicesPage() {
     if (!window.confirm(`Supprimer la facture "${inv.fournisseur ?? inv.originalName}" ?\nCette action est irréversible.`)) return;
     setDeletingId(inv.id);
     try {
-      const res = await fetch(`/api/invoices/${inv.id}`, { method: "DELETE" });
+      const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+      const res = await fetch(`/api/invoices/${inv.id}`, {
+        method: "DELETE",
+        ...(t ? { headers: { Authorization: `Bearer ${t}` } } : {}),
+      });
       if (res.ok) {
         setInvoices((prev) => prev.filter((i) => i.id !== inv.id));
         setSelectedIds((prev) => prev.filter((id) => id !== inv.id));
@@ -1102,7 +1126,11 @@ export default function InvoicesPage() {
   const handleShare = async (id: string) => {
     setSharingId(id);
     try {
-      const res = await fetch(`/api/invoices/${id}/share`, { method: "POST" });
+      const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+      const res = await fetch(`/api/invoices/${id}/share`, {
+        method: "POST",
+        ...(t ? { headers: { Authorization: `Bearer ${t}` } } : {}),
+      });
       if (res.ok) {
         const data = await res.json();
         setShareLinks((prev) => ({ ...prev, [id]: data.url }));
@@ -1185,9 +1213,13 @@ export default function InvoicesPage() {
     setImapResult(null);
     if (imapUser) window.localStorage.setItem("imap-user", imapUser);
     try {
+      const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
       const res = await fetch("/api/email-import", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(t ? { Authorization: `Bearer ${t}` } : {}),
+        },
         body: JSON.stringify({
           host: imapHost,
           port: parseInt(imapPort),

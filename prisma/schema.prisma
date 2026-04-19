@@ -29,6 +29,7 @@ model User {
   pdfHeaderLayout     String   @default("stacked")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+  invoices            Invoice[]
 }
 
 model Structure {
@@ -73,6 +74,8 @@ model Accountant {
 
 model Invoice {
   id              String      @id @default(cuid())
+  userId          String?
+  user            User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
   filename        String
   originalName    String
   size            Int
@@ -100,6 +103,7 @@ model Invoice {
 
   aiOptimizations AiOptimization[]
 
+  @@index([userId])
   @@map("invoices")
 }
 

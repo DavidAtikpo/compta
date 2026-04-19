@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { pool } from "../../../../lib/postgres";
+import { getAuthenticatedUserId } from "../../../../lib/auth-request";
 
 export const runtime = "nodejs";
 
@@ -36,15 +37,20 @@ function formatAmount(n: number | null): string {
 }
 
 export async function GET(request: NextRequest) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
   const region = searchParams.get("region");
   const from = searchParams.get("from");
   const to = searchParams.get("to");
 
   try {
-    let query = `SELECT * FROM invoices WHERE status != 'draft'`;
-    const params: (string)[] = [];
-    let idx = 1;
+    let query = `SELECT * FROM invoices WHERE status != 'draft' AND "userId" = $1`;
+    const params: string[] = [userId];
+    let idx = 2;
 
     if (region) { query += ` AND region = $${idx++}`; params.push(region); }
     if (from)   { query += ` AND "createdAt" >= $${idx++}`; params.push(from); }

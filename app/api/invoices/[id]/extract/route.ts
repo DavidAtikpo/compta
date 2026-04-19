@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { v2 as cloudinary } from "cloudinary";
 import { pool } from "../../../../../lib/postgres";
+import { getAuthenticatedUserId } from "../../../../../lib/auth-request";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -130,12 +131,17 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
+
   const { id } = await params;
 
   try {
     const invoiceRes = await pool.query(
-      `SELECT "ocrText", "originalName", "fileUrl" FROM invoices WHERE id = $1`,
-      [id]
+      `SELECT "ocrText", "originalName", "fileUrl" FROM invoices WHERE id = $1 AND "userId" = $2`,
+      [id, userId]
     );
 
     if (invoiceRes.rows.length === 0) {

@@ -1,6 +1,7 @@
 ﻿import { NextResponse } from "next/server";
 import nodemailer from "nodemailer";
 import { pool } from "../../../lib/postgres";
+import { getAuthenticatedUserId } from "../../../lib/auth-request";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,11 @@ async function resolveRecipientEmails(region: string): Promise<string[]> {
 const SIMPLE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function POST(request: Request) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
+
   const formData = await request.formData();
   const region = formData.get("region")?.toString() || "france";
   const message =
@@ -154,8 +160,8 @@ export async function POST(request: Request) {
       if (ids.length > 0) {
         await pool.query(
           `UPDATE invoices SET status = 'sent', "sentAt" = NOW(), "updatedAt" = NOW()
-           WHERE id = ANY($1::text[])`,
-          [ids]
+           WHERE id = ANY($1::text[]) AND "userId" = $2`,
+          [ids, userId]
         );
       }
     } catch (dbError) {

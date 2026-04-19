@@ -244,7 +244,10 @@ export default function FichiersPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/invoices?limit=2000");
+      const t = getToken();
+      const res = await fetch("/api/invoices?limit=2000", {
+        headers: t ? { Authorization: `Bearer ${t}` } : {},
+      });
       if (!res.ok) return;
       const data = (await res.json()) as InvoiceRow[];
       setRows(data.filter((r) => r.fileUrl));
