@@ -435,9 +435,14 @@ export default function InvoicesPage() {
 
   const uploadToCloudinary = async (file: File): Promise<{ url: string } | { error: string }> => {
     try {
+      const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        headers: t ? { Authorization: `Bearer ${t}` } : {},
+        body: fd,
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return { error: data.error || `Erreur ${res.status}` };
       if (!data.url) return { error: "URL manquante dans la réponse Cloudinary" };
@@ -611,7 +616,10 @@ export default function InvoicesPage() {
 
   const loadAccountants = async (): Promise<AccountantRow[]> => {
     try {
-      const res = await fetch("/api/accountants");
+      const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+      const res = await fetch("/api/accountants", {
+        headers: t ? { Authorization: `Bearer ${t}` } : {},
+      });
       if (!res.ok) return [];
       return (await res.json()) as AccountantRow[];
     } catch {

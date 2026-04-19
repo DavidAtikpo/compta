@@ -31,10 +31,15 @@ model User {
   updatedAt           DateTime @updatedAt
   invoices            Invoice[]
   sendHistory         SendHistory[]
+  accountants         Accountant[]
+  structures          Structure[]
+  legalAlertReads     LegalAlertRead[]
 }
 
 model Structure {
   id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   name      String
   region    String
   type      String
@@ -42,6 +47,7 @@ model Structure {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([userId])
   @@map("structures")
 }
 
@@ -53,14 +59,30 @@ model LegalAlert {
   url         String?
   pubDate     DateTime
   region      String   @default("france")
+  /// Déprécié : l’API utilise `LegalAlertRead` pour le « lu » par compte
   seen        Boolean  @default(false)
   createdAt   DateTime @default(now())
+  reads       LegalAlertRead[]
 
   @@map("legal_alerts")
 }
 
+/// Marque « lu » par utilisateur (les alertes restent une base commune ; la confidentialité est l’état de lecture)
+model LegalAlertRead {
+  userId  String
+  alertId String
+  user    User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alert   LegalAlert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  readAt  DateTime   @default(now())
+
+  @@id([userId, alertId])
+  @@map("legal_alert_reads")
+}
+
 model Accountant {
   id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   region    String
   email     String
   label     String?
@@ -69,7 +91,8 @@ model Accountant {
 
   invoices Invoice[]
 
-  @@unique([region, email])
+  @@unique([userId, region, email])
+  @@index([userId])
   @@map("accountants")
 }
 

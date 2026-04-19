@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { pool } from "../../../lib/postgres";
 import { fetchJudilibreFiscalHits } from "../../../lib/piste-judilibre";
+import { getAuthenticatedUserId } from "../../../lib/auth-request";
 
 export const runtime = "nodejs";
 
@@ -17,7 +19,6 @@ interface JOEntry {
   description: string;
   link: string;
   pubDate: string;
-  /** Source affichée en base (ex. Judilibre, flux JO). */
   source?: string;
 }
 
@@ -34,7 +35,6 @@ async function fetchJOFeed(): Promise<JOEntry[]> {
 
       const xml = await res.text();
 
-      // Parse RSS items
       const itemMatches = xml.matchAll(/<item>([\s\S]*?)<\/item>/g);
       for (const match of itemMatches) {
         const item = match[1];
@@ -102,67 +102,108 @@ async function fetchDataGouvFiscal(): Promise<JOEntry[]> {
   }
 }
 
-export async function GET() {
-  try {
-    // Fetch from JO RSS + data.gouv.fr
-    const [joEntries, gouvEntries, judilibreEntries] = await Promise.all([
-      fetchJOFeed(),
-      fetchDataGouvFiscal(),
-      fetchJudilibreEntries(),
-    ]);
+export async function GET(request: NextRequest) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
 
-    const allEntries = [...judilibreEntries, ...joEntries, ...gouvEntries].slice(0, 35);
+  const { searchParams } = new URL(request.url);
+  const doRefresh = searchParams.get("refresh") === "1";
 
-    // Save new entries to DB (deduplicate by title+pubDate)
-    let newCount = 0;
-    for (const entry of allEntries) {
-      try {
-        const existing = await pool.query(
-          `SELECT id FROM legal_alerts WHERE title = $1 LIMIT 1`,
-          [entry.title]
-        );
-        if (existing.rows.length === 0) {
-          let pubDate: Date;
-          try { pubDate = new Date(entry.pubDate); } catch { pubDate = new Date(); }
-          if (isNaN(pubDate.getTime())) pubDate = new Date();
+  let newCount = 0;
+  let fetched = 0;
 
-          await pool.query(
-            `INSERT INTO legal_alerts (id, title, description, source, url, "pubDate", region, seen, "createdAt")
-             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'france', false, NOW())`,
-            [
-              entry.title,
-              entry.description,
-              entry.source ?? "legifrance.gouv.fr",
-              entry.link,
-              pubDate,
-            ]
+  if (doRefresh) {
+    try {
+      const [joEntries, gouvEntries, judilibreEntries] = await Promise.all([
+        fetchJOFeed(),
+        fetchDataGouvFiscal(),
+        fetchJudilibreEntries(),
+      ]);
+
+      const allEntries = [...judilibreEntries, ...joEntries, ...gouvEntries].slice(0, 35);
+      fetched = allEntries.length;
+
+      for (const entry of allEntries) {
+        try {
+          const existing = await pool.query(
+            `SELECT id FROM legal_alerts WHERE title = $1 LIMIT 1`,
+            [entry.title]
           );
-          newCount++;
-        }
-      } catch {
-        // Skip duplicates
-      }
-    }
+          if (existing.rows.length === 0) {
+            let pubDate: Date;
+            try { pubDate = new Date(entry.pubDate); } catch { pubDate = new Date(); }
+            if (isNaN(pubDate.getTime())) pubDate = new Date();
 
-    // Return all alerts (unseen first)
+            await pool.query(
+              `INSERT INTO legal_alerts (id, title, description, source, url, "pubDate", region, seen, "createdAt")
+               VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'france', false, NOW())`,
+              [
+                entry.title,
+                entry.description,
+                entry.source ?? "legifrance.gouv.fr",
+                entry.link,
+                pubDate,
+              ]
+            );
+            newCount++;
+          }
+        } catch {
+          // Skip duplicates
+        }
+      }
+    } catch (error) {
+      console.error("Erreur flux Légifrance:", error);
+    }
+  }
+
+  try {
     const alerts = await pool.query(
-      `SELECT * FROM legal_alerts ORDER BY seen ASC, "pubDate" DESC LIMIT 50`
+      `SELECT
+         la.id,
+         la.title,
+         la.description,
+         la.source,
+         la.url,
+         la."pubDate",
+         la.region,
+         (lar."userId" IS NOT NULL) AS seen
+       FROM legal_alerts la
+       LEFT JOIN legal_alert_reads lar ON lar."alertId" = la.id AND lar."userId" = $1
+       ORDER BY (lar."userId" IS NOT NULL) ASC, la."pubDate" DESC
+       LIMIT 50`,
+      [userId]
     );
 
-    return NextResponse.json({ alerts: alerts.rows, newCount, fetched: allEntries.length });
+    return NextResponse.json({ alerts: alerts.rows, newCount, fetched });
   } catch (error) {
     console.error("Erreur Légifrance:", error);
-    return NextResponse.json({ alerts: [], newCount: 0, error: String(error) });
+    return NextResponse.json({ alerts: [], newCount: 0, error: String(error) }, { status: 500 });
   }
 }
 
 export async function PATCH(request: Request) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
+
   try {
     const { id } = await request.json();
     if (id === "all") {
-      await pool.query(`UPDATE legal_alerts SET seen = true`);
+      await pool.query(
+        `INSERT INTO legal_alert_reads ("userId", "alertId")
+         SELECT $1, id FROM legal_alerts
+         ON CONFLICT ("userId", "alertId") DO NOTHING`,
+        [userId]
+      );
     } else if (id) {
-      await pool.query(`UPDATE legal_alerts SET seen = true WHERE id = $1`, [id]);
+      await pool.query(
+        `INSERT INTO legal_alert_reads ("userId", "alertId") VALUES ($1, $2)
+         ON CONFLICT ("userId", "alertId") DO NOTHING`,
+        [userId, id]
+      );
     }
     return NextResponse.json({ success: true });
   } catch (error) {

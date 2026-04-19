@@ -129,7 +129,10 @@ export default function OptimizePage() {
   const loadTaxRules = async () => {
     setLoadingRules(true);
     try {
-      const res = await fetch("/api/tax-rules");
+      const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
+      const res = await fetch("/api/tax-rules", {
+        headers: t ? { Authorization: `Bearer ${t}` } : {},
+      });
       if (res.ok) {
         const data = await res.json();
         setTaxRules(data.dispositifs || []);
@@ -141,8 +144,11 @@ export default function OptimizePage() {
   const loadAlerts = async (refresh = false) => {
     setLoadingAlerts(true);
     try {
+      const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
       const url = refresh ? "/api/legifrance?refresh=1" : "/api/legifrance";
-      const res = await fetch(url);
+      const res = await fetch(url, {
+        headers: t ? { Authorization: `Bearer ${t}` } : {},
+      });
       if (res.ok) {
         const data = await res.json();
         setLegalAlerts(data.alerts ?? []);
@@ -153,9 +159,13 @@ export default function OptimizePage() {
   };
 
   const markAlertSeen = async (id: string | "all") => {
+    const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
     await fetch("/api/legifrance", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      },
       body: JSON.stringify({ id }),
     });
     setLegalAlerts((prev) => prev.map((a) => id === "all" || a.id === id ? { ...a, seen: true } : a));

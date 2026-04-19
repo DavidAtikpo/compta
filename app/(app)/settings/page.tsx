@@ -180,7 +180,10 @@ export default function SettingsPage() {
 
   const loadAccountants = async () => {
     try {
-      const res = await fetch("/api/accountants");
+      const t = getToken();
+      const res = await fetch("/api/accountants", {
+        headers: t ? { Authorization: `Bearer ${t}` } : {},
+      });
       if (res.ok) {
         const list: AccountantRow[] = await res.json();
         setAccountants(list);
@@ -194,7 +197,10 @@ export default function SettingsPage() {
 
   const loadStructures = async () => {
     try {
-      const res = await fetch("/api/structures");
+      const t = getToken();
+      const res = await fetch("/api/structures", {
+        headers: t ? { Authorization: `Bearer ${t}` } : {},
+      });
       if (res.ok) setStructures(await res.json());
     } catch {
       /* silent */
@@ -276,9 +282,19 @@ export default function SettingsPage() {
     };
     setPdfAssetUploading(map[field]);
     try {
+      const tok = getToken();
+      if (!tok) {
+        setPdfMsg("Connexion requise.");
+        setTimeout(() => setPdfMsg(""), 5000);
+        return;
+      }
       const fd = new FormData();
       fd.set("file", file);
-      const up = await fetch("/api/upload", { method: "POST", body: fd });
+      const up = await fetch("/api/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tok}` },
+        body: fd,
+      });
       const raw = await up.json().catch(() => ({}));
       if (!up.ok || !raw.url) {
         setPdfMsg(typeof raw.error === "string" ? raw.error : "Échec de l’envoi.");
@@ -381,7 +397,11 @@ export default function SettingsPage() {
     try {
       const fd = new FormData();
       fd.set("file", file);
-      const up = await fetch("/api/upload", { method: "POST", body: fd });
+      const up = await fetch("/api/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${t}` },
+        body: fd,
+      });
       const raw = await up.json().catch(() => ({}));
       if (!up.ok || !raw.url) {
         setProfileMsg(typeof raw.error === "string" ? raw.error : "Échec de l’envoi de la photo.");
@@ -447,9 +467,14 @@ export default function SettingsPage() {
     setCabinetSaving(true);
     setCabinetMsg("");
     try {
+      const t = getToken();
+      if (!t) {
+        setCabinetMsg("Connexion requise.");
+        return;
+      }
       const res = await fetch("/api/accountants", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
         body: JSON.stringify({
           region,
           email,
@@ -476,7 +501,11 @@ export default function SettingsPage() {
   const handleDeleteCabinet = async (id: string) => {
     if (!window.confirm("Retirer ce cabinet de la liste ?")) return;
     try {
-      const res = await fetch(`/api/accountants/${id}`, { method: "DELETE" });
+      const t = getToken();
+      const res = await fetch(`/api/accountants/${id}`, {
+        method: "DELETE",
+        headers: t ? { Authorization: `Bearer ${t}` } : {},
+      });
       if (res.ok) await loadAccountants();
     } catch {
       /* silent */
@@ -496,9 +525,14 @@ export default function SettingsPage() {
     setSavingStruct(true);
     setStructMsg("");
     try {
+      const t = getToken();
+      if (!t) {
+        setStructMsg("Connexion requise.");
+        return;
+      }
       const res = await fetch("/api/structures", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
         body: JSON.stringify(newStruct),
       });
       if (res.ok) {
@@ -518,9 +552,13 @@ export default function SettingsPage() {
   };
 
   const handleDeleteStructure = async (id: string) => {
+    const t = getToken();
     await fetch("/api/structures", {
       method: "DELETE",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      },
       body: JSON.stringify({ id }),
     });
     await loadStructures();
