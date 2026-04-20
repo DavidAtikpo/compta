@@ -180,10 +180,7 @@ export default function SettingsPage() {
 
   const loadAccountants = async () => {
     try {
-      const t = getToken();
-      const res = await fetch("/api/accountants", {
-        headers: t ? { Authorization: `Bearer ${t}` } : {},
-      });
+      const res = await fetch("/api/accountants");
       if (res.ok) {
         const list: AccountantRow[] = await res.json();
         setAccountants(list);
@@ -197,10 +194,7 @@ export default function SettingsPage() {
 
   const loadStructures = async () => {
     try {
-      const t = getToken();
-      const res = await fetch("/api/structures", {
-        headers: t ? { Authorization: `Bearer ${t}` } : {},
-      });
+      const res = await fetch("/api/structures");
       if (res.ok) setStructures(await res.json());
     } catch {
       /* silent */
@@ -282,19 +276,9 @@ export default function SettingsPage() {
     };
     setPdfAssetUploading(map[field]);
     try {
-      const tok = getToken();
-      if (!tok) {
-        setPdfMsg("Connexion requise.");
-        setTimeout(() => setPdfMsg(""), 5000);
-        return;
-      }
       const fd = new FormData();
       fd.set("file", file);
-      const up = await fetch("/api/upload", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${tok}` },
-        body: fd,
-      });
+      const up = await fetch("/api/upload", { method: "POST", body: fd });
       const raw = await up.json().catch(() => ({}));
       if (!up.ok || !raw.url) {
         setPdfMsg(typeof raw.error === "string" ? raw.error : "Échec de l’envoi.");
@@ -397,11 +381,7 @@ export default function SettingsPage() {
     try {
       const fd = new FormData();
       fd.set("file", file);
-      const up = await fetch("/api/upload", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${t}` },
-        body: fd,
-      });
+      const up = await fetch("/api/upload", { method: "POST", body: fd });
       const raw = await up.json().catch(() => ({}));
       if (!up.ok || !raw.url) {
         setProfileMsg(typeof raw.error === "string" ? raw.error : "Échec de l’envoi de la photo.");
@@ -467,14 +447,9 @@ export default function SettingsPage() {
     setCabinetSaving(true);
     setCabinetMsg("");
     try {
-      const t = getToken();
-      if (!t) {
-        setCabinetMsg("Connexion requise.");
-        return;
-      }
       const res = await fetch("/api/accountants", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           region,
           email,
@@ -501,11 +476,7 @@ export default function SettingsPage() {
   const handleDeleteCabinet = async (id: string) => {
     if (!window.confirm("Retirer ce cabinet de la liste ?")) return;
     try {
-      const t = getToken();
-      const res = await fetch(`/api/accountants/${id}`, {
-        method: "DELETE",
-        headers: t ? { Authorization: `Bearer ${t}` } : {},
-      });
+      const res = await fetch(`/api/accountants/${id}`, { method: "DELETE" });
       if (res.ok) await loadAccountants();
     } catch {
       /* silent */
@@ -525,14 +496,9 @@ export default function SettingsPage() {
     setSavingStruct(true);
     setStructMsg("");
     try {
-      const t = getToken();
-      if (!t) {
-        setStructMsg("Connexion requise.");
-        return;
-      }
       const res = await fetch("/api/structures", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newStruct),
       });
       if (res.ok) {
@@ -552,17 +518,27 @@ export default function SettingsPage() {
   };
 
   const handleDeleteStructure = async (id: string) => {
-    const t = getToken();
     await fetch("/api/structures", {
       method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-        ...(t ? { Authorization: `Bearer ${t}` } : {}),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
     });
     await loadStructures();
   };
+
+  const hasProfile = profileName.trim().length > 0 || profileImageUrl.trim().length > 0;
+  const hasPdfConfig =
+    pdfHeader.trim().length > 0 ||
+    pdfFooter.trim().length > 0 ||
+    pdfHeaderImageUrl.trim().length > 0 ||
+    pdfFooterImageUrl.trim().length > 0 ||
+    pdfLogoUrl.trim().length > 0 ||
+    pdfHeaderTitle.trim().length > 0 ||
+    pdfHeaderAddress.trim().length > 0;
+  const hasCabinet = accountants.length > 0;
+  const hasStructure = structures.length > 0;
+  const setupDoneCount = [hasProfile, hasPdfConfig, hasCabinet, hasStructure].filter(Boolean).length;
+  const setupPercent = Math.round((setupDoneCount / 4) * 100);
 
   if (loading) {
     return (
@@ -609,27 +585,85 @@ export default function SettingsPage() {
         </div>
 
         {tab === "overview" && (
-          <div className="rounded-2xl border border-blue-200 bg-blue-50 p-6">
-            <h2 className="font-semibold text-blue-900">Première configuration</h2>
-            <p className="mt-1 text-xs text-blue-800">
-              Complétez ces points pour que l’envoi au cabinet et les factures soient cohérents.
-            </p>
-            <ul className="mt-3 list-inside list-decimal space-y-1.5 text-sm text-blue-900">
-              <li>Renseignez votre profil et, si besoin, l’en-tête / pied de page des exports PDF.</li>
-              <li>Ajoutez au moins une adresse de cabinet par pays utilisé (plusieurs possibles par pays).</li>
-              <li>Décrire vos structures juridiques (facultatif mais utile pour les filtres).</li>
-              <li>
-                Si l’envoi au cabinet ou l’envoi par email ne fonctionne pas, vérifiez votre connexion ou contactez la
-                personne qui gère l’application.
-              </li>
-              <li>
-                Pour importer des factures depuis une boîte mail, ouvrez{" "}
-                <Link href="/invoices" className="font-semibold underline decoration-blue-900/40 hover:text-blue-950">
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-blue-200 bg-blue-50 p-6">
+              <h2 className="font-semibold text-blue-900">Vue d’ensemble de la configuration</h2>
+              <p className="mt-1 text-xs text-blue-800">
+                Les éléments ci-dessous reflètent vos derniers enregistrements.
+              </p>
+              <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-blue-100">
+                <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${setupPercent}%` }} />
+              </div>
+              <p className="mt-1 text-xs text-blue-800">
+                {setupDoneCount}/4 sections configurées ({setupPercent}%)
+              </p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setTab("profile")}
+                className="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-slate-300 hover:bg-slate-50"
+              >
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Profil</p>
+                <p className={`mt-1 text-sm font-semibold ${hasProfile ? "text-emerald-700" : "text-amber-700"}`}>
+                  {hasProfile ? "Configure" : "A completer"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">Nom: {profileName.trim() || "non renseigne"}</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTab("pdf")}
+                className="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-slate-300 hover:bg-slate-50"
+              >
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">PDF entreprise</p>
+                <p className={`mt-1 text-sm font-semibold ${hasPdfConfig ? "text-emerald-700" : "text-amber-700"}`}>
+                  {hasPdfConfig ? "Configure" : "A completer"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {hasPdfConfig ? "En-tete/pied ou logo disponibles" : "Aucune personnalisation enregistree"}
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTab("cabinets")}
+                className="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-slate-300 hover:bg-slate-50"
+              >
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Cabinets</p>
+                <p className={`mt-1 text-sm font-semibold ${hasCabinet ? "text-emerald-700" : "text-amber-700"}`}>
+                  {hasCabinet ? "Configure" : "A completer"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">{accountants.length} cabinet(s) enregistre(s)</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTab("structures")}
+                className="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-slate-300 hover:bg-slate-50"
+              >
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Structures</p>
+                <p className={`mt-1 text-sm font-semibold ${hasStructure ? "text-emerald-700" : "text-amber-700"}`}>
+                  {hasStructure ? "Configure" : "Optionnel"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">{structures.length} structure(s) enregistree(s)</p>
+              </button>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-600">
+              <p>
+                Pays par defaut des nouvelles factures:{" "}
+                <span className="font-semibold text-slate-800">{defaultInvoiceRegion || "france"}</span>
+              </p>
+              <p className="mt-1">
+                Pour importer des factures depuis une boite mail, allez dans{" "}
+                <Link href="/invoices" className="font-semibold text-blue-700 underline decoration-blue-300 hover:text-blue-800">
                   Factures
                 </Link>{" "}
-                puis l’onglet d’import par email.
-              </li>
-            </ul>
+                puis l&apos;onglet d&apos;import email.
+              </p>
+            </div>
           </div>
         )}
 

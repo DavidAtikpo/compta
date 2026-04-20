@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { getAuthenticatedUserId } from "../../../lib/auth-request";
 
 // Cache for 1 hour to avoid hammering the API
 let cache: { data: TaxRules; timestamp: number } | null = null;
@@ -246,10 +245,6 @@ function getStaticFrenchTaxRules(): TaxRules {
 }
 
 export async function GET(request: NextRequest) {
-  if (!getAuthenticatedUserId(request)) {
-    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
-  }
-
   const { searchParams } = new URL(request.url);
   const forceRefresh = searchParams.get("refresh") === "1";
 

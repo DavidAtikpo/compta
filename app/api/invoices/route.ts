@@ -75,10 +75,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Comptable par défaut pour la région (liste personnelle de l’utilisateur)
+    // Try to find accountant for region
     const accountantResult = await pool.query(
-      `SELECT id FROM accountants WHERE region = $1 AND "userId" = $2 ORDER BY "createdAt" ASC LIMIT 1`,
-      [region, userId]
+      `SELECT id FROM accountants WHERE region = $1 ORDER BY "createdAt" ASC LIMIT 1`,
+      [region]
     );
     const accountantId =
       accountantResult.rows.length > 0

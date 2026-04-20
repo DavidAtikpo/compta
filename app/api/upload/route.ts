@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { v2 as cloudinary } from "cloudinary";
-import { getAuthenticatedUserId } from "../../../lib/auth-request";
 
 export const runtime = "nodejs";
 
@@ -15,10 +14,6 @@ cloudinary.config({
 });
 
 export async function POST(request: Request) {
-  if (!getAuthenticatedUserId(request)) {
-    return NextResponse.json({ error: "Connexion requise pour envoyer un fichier." }, { status: 401 });
-  }
-
   try {
     // Verify Cloudinary config
     const cloudName = process.env.CLOUDINARY_CLOUD_NAME;

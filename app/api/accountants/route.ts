@@ -1,20 +1,12 @@
 ﻿import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
 import { pool } from "../../../lib/postgres";
-import { getAuthenticatedUserId } from "../../../lib/auth-request";
 
-export async function GET(request: NextRequest) {
-  const userId = getAuthenticatedUserId(request);
-  if (!userId) {
-    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
-  }
+export async function GET() {
   try {
     const result = await pool.query(
       `SELECT id, region, email, label, "createdAt", "updatedAt"
        FROM accountants
-       WHERE "userId" = $1
-       ORDER BY region ASC, "createdAt" ASC`,
-      [userId]
+       ORDER BY region ASC, "createdAt" ASC`
     );
     return NextResponse.json(result.rows);
   } catch (error) {
@@ -23,12 +15,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST(request: NextRequest) {
-  const userId = getAuthenticatedUserId(request);
-  if (!userId) {
-    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
-  }
-
+export async function POST(request: Request) {
   try {
     const body = await request.json();
     const region = typeof body.region === "string" ? body.region.trim().toLowerCase() : "";
@@ -43,13 +30,13 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await pool.query(
-      `INSERT INTO accountants (id, "userId", region, email, label, "createdAt", "updatedAt")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW(), NOW())
-       ON CONFLICT ("userId", region, email) DO UPDATE SET
+      `INSERT INTO accountants (id, region, email, label, "createdAt", "updatedAt")
+       VALUES (gen_random_uuid(), $1, $2, $3, NOW(), NOW())
+       ON CONFLICT (region, email) DO UPDATE SET
          label = COALESCE(EXCLUDED.label, accountants.label),
          "updatedAt" = NOW()
        RETURNING *`,
-      [userId, region, email, label]
+      [region, email, label]
     );
 
     return NextResponse.json(result.rows[0]);
