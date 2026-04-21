@@ -55,6 +55,7 @@ interface Invoice {
   originalName: string;
   region: string;
   structureId: string | null;
+  invoiceType?: "achat" | "vente" | null;
   status: string;
   amount: number | null;
   category: string | null;
@@ -142,6 +143,7 @@ export default function InvoicesPage() {
   // Upload / OCR states
   const [files, setFiles] = useState<File[]>([]);
   const [region, setRegion] = useState("france");
+  const [invoiceType, setInvoiceType] = useState<"achat" | "vente">("achat");
   const [category, setCategory] = useState("");
   const [amount, setAmount] = useState("");
   const [selectedStructureId, setSelectedStructureId] = useState("");
@@ -162,6 +164,7 @@ export default function InvoicesPage() {
   // Invoice list states
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [filterRegion, setFilterRegion] = useState("");
+  const [filterInvoiceType, setFilterInvoiceType] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [filterCategory, setFilterCategory] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
@@ -387,7 +390,7 @@ export default function InvoicesPage() {
     } catch { /* silent */ }
   };
 
-  const loadInvoices = async (reg?: string, status?: string, categ?: string, dateFrom?: string, dateTo?: string) => {
+  const loadInvoices = async (reg?: string, status?: string, categ?: string, dateFrom?: string, dateTo?: string, invoiceTypeFilter?: string) => {
     setLoadingList(true);
     try {
       let url = "/api/invoices?limit=200";
@@ -397,6 +400,7 @@ export default function InvoicesPage() {
       const res = await fetch(url, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
       if (res.ok) {
         let data: Invoice[] = await res.json();
+        if (invoiceTypeFilter) data = data.filter((inv) => inv.invoiceType === invoiceTypeFilter);
         // Client-side filters for category and date
         if (categ) data = data.filter((inv) => inv.category === categ);
         if (dateFrom) {
@@ -428,17 +432,19 @@ export default function InvoicesPage() {
     }
   };
 
-  const applyFilters = (overrides: Partial<{ reg: string; status: string; categ: string; dateFrom: string; dateTo: string }> = {}) => {
+  const applyFilters = (overrides: Partial<{ reg: string; status: string; invoiceType: string; categ: string; dateFrom: string; dateTo: string }> = {}) => {
     const reg = overrides.reg ?? filterRegion;
     const status = overrides.status ?? filterStatus;
+    const invoiceTypeValue = overrides.invoiceType ?? filterInvoiceType;
     const categ = overrides.categ ?? filterCategory;
     const dateFrom = overrides.dateFrom ?? filterDateFrom;
     const dateTo = overrides.dateTo ?? filterDateTo;
-    loadInvoices(reg || undefined, status || undefined, categ || undefined, dateFrom || undefined, dateTo || undefined);
+    loadInvoices(reg || undefined, status || undefined, categ || undefined, dateFrom || undefined, dateTo || undefined, invoiceTypeValue || undefined);
   };
 
   const clearFilters = () => {
     setFilterRegion("");
+    setFilterInvoiceType("");
     setFilterStatus("");
     setFilterCategory("");
     setFilterDateFrom("");
@@ -610,6 +616,7 @@ export default function InvoicesPage() {
             region,
             amount: amount ? parseFloat(amount) : null,
             category: category || null,
+            invoiceType,
             structureId: selectedStructureId || null,
             fileUrl,
           }),
@@ -638,7 +645,7 @@ export default function InvoicesPage() {
         setUploadResult(`${files.length} facture(s) enregistrée(s).`);
       }
       setOcrStatus("Traitement terminé.");
-      await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined);
+      await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined, filterInvoiceType || undefined);
       handleClearAll();
       setCreateOpen(false);
     } catch {
@@ -730,7 +737,7 @@ export default function InvoicesPage() {
         if (d.numeroFacture) parts.push(`N°${d.numeroFacture}`);
         const msg = parts.length > 0 ? `✓ ${parts.join(" · ")}` : "✓ Extrait (aucune donnée trouvée)";
         setExtractResults((prev) => ({ ...prev, [id]: { ok: true, msg } }));
-        await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined);
+        await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined, filterInvoiceType || undefined);
       } else {
         setExtractResults((prev) => ({ ...prev, [id]: { ok: false, msg: `✗ ${json.error || `Erreur ${res.status}`}` } }));
       }
@@ -923,7 +930,8 @@ export default function InvoicesPage() {
         filterStatus || undefined,
         filterCategory || undefined,
         filterDateFrom || undefined,
-        filterDateTo || undefined
+        filterDateTo || undefined,
+        filterInvoiceType || undefined
       );
       if (!anyFail) {
         showSendSuccessToast(
@@ -1019,7 +1027,7 @@ export default function InvoicesPage() {
           ? sendJson.message
           : "Facture envoyée au cabinet avec succès."
       );
-      await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined);
+      await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined, filterInvoiceType || undefined);
     } catch {
       setMessage("Erreur réseau lors de l'envoi.");
     } finally {
@@ -1197,6 +1205,7 @@ export default function InvoicesPage() {
     setFiles([]); setExtractedTexts([]); setUploadedUrls([]);
     setOcrStatus(""); setUploadResult(""); setSendResult("");
     setAmount(""); setCategory(""); setMessage("");
+    setInvoiceType("achat");
     setSelectedStructureId("");
     setShowCreateStructureInline(false);
     setNewStructureInline({ name: "", type: "EURL / SASU", siret: "" });
@@ -1320,7 +1329,7 @@ export default function InvoicesPage() {
       const data = await res.json().catch(() => ({}));
       setImapResult(data);
       if (res.ok && (data.imported ?? 0) > 0) {
-        await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined);
+        await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined, filterInvoiceType || undefined);
         setActiveTab("invoices");
       }
     } catch (e) {
@@ -1330,7 +1339,7 @@ export default function InvoicesPage() {
     }
   };
 
-  const hasActiveFilters = filterRegion || filterStatus || filterCategory || filterDateFrom || filterDateTo;
+  const hasActiveFilters = filterRegion || filterInvoiceType || filterStatus || filterCategory || filterDateFrom || filterDateTo;
 
   const allVisibleSelected =
     invoices.length > 0 && invoices.every((i) => selectedIds.includes(i.id));
@@ -1481,6 +1490,20 @@ export default function InvoicesPage() {
                     <option value="pending">En attente</option>
                     <option value="sent">Envoyé</option>
                     <option value="archived">Archivé</option>
+                  </select>
+                </div>
+
+                {/* Invoice type */}
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Type</label>
+                  <select
+                    value={filterInvoiceType}
+                    onChange={(e) => { setFilterInvoiceType(e.target.value); applyFilters({ invoiceType: e.target.value }); }}
+                    className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                  >
+                    <option value="">Tous</option>
+                    <option value="achat">Achat</option>
+                    <option value="vente">Vente</option>
                   </select>
                 </div>
 
@@ -1672,6 +1695,9 @@ export default function InvoicesPage() {
                           <td className="px-2 py-1.5 max-w-[140px]">
                             <p className="truncate text-[11px] font-medium text-slate-900">
                               {inv.fournisseur ?? <span className="text-slate-400 font-normal italic">{inv.originalName}</span>}
+                            </p>
+                            <p className="truncate text-[10px] text-slate-400">
+                              {(inv.invoiceType ?? "achat") === "vente" ? "Facture de vente" : "Facture d'achat"}
                             </p>
                             {inv.category && <p className="truncate text-[10px] text-slate-400">{inv.category}</p>}
                           </td>
@@ -2171,6 +2197,13 @@ export default function InvoicesPage() {
                   </>
                 )}
                 <p className="mt-1 text-[10px] text-slate-500">Même liste que l&apos;import email IMAP (filtres et envoi cabinet).</p>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-medium text-slate-600">Type de facture</label>
+                <select value={invoiceType} onChange={(e) => setInvoiceType(e.target.value as "achat" | "vente")} className="w-full rounded border border-slate-300 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-900 focus:border-slate-500 focus:outline-none">
+                  <option value="achat">Achat</option>
+                  <option value="vente">Vente</option>
+                </select>
               </div>
               <div>
                 <label className="mb-1.5 block text-[11px] font-medium text-slate-600">Catégorie</label>

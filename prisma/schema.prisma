@@ -27,12 +27,16 @@ model User {
   pdfHeaderTableJson  String?
   /// stacked = logo+titre puis tableau pleine largeur ; logo_table_row = titre/adresse puis logo et tableau côte à côte
   pdfHeaderLayout     String   @default("stacked")
+  aiCreditsBalance    Int      @default(2000)
+  billingPlan         String   @default("starter")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   invoices            Invoice[]
   sendHistory         SendHistory[]
   accountants         Accountant[]
   structures          Structure[]
+  aiUsageLogs         AiUsageLog[]
+  billingEvents       BillingEvent[]
 }
 
 model Structure {
@@ -96,6 +100,7 @@ model Invoice {
   sentAt          DateTime?
   amount          Float?
   category        String?
+  invoiceType     String      @default("achat")
   status          String      @default("pending")
   invoiceDate     DateTime?
   fileUrl         String?
@@ -145,4 +150,38 @@ model SendHistory {
 
   @@index([userId])
   @@map("send_history")
+}
+
+model AiUsageLog {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider       String
+  model          String
+  promptChars    Int      @default(0)
+  responseChars  Int      @default(0)
+  inputTokens    Int      @default(0)
+  outputTokens   Int      @default(0)
+  estimatedCost  Float    @default(0)
+  creditsDebited Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("ai_usage_logs")
+}
+
+model BillingEvent {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type       String
+  credits    Int      @default(0)
+  amountEur  Float?
+  status     String   @default("succeeded")
+  reference  String?
+  metadata   String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("billing_events")
 }

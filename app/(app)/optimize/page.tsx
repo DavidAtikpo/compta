@@ -21,36 +21,54 @@ const businessTypes = [
 
 const quickPrompts = [
   {
+    category: "International",
+    title: "Meilleur pays dividendes",
+    prompt: "Je veux créer une holding dans un pays où : 1) la retenue à la source (WHT) depuis la France est ≤ 5%, 2) l'impôt local sur les dividendes est ≤ 10%. Analyse TOUS les pays ayant une convention fiscale avec la France et donne-moi un classement des 10 meilleures destinations avec une table comparative complète (WHT, IS local, taux dividendes locaux, avantages, risques BEPS/substance, total charge fiscale, délai et coût de mise en place).",
+  },
+  {
+    category: "International",
+    title: "Bulgarie vs Île Maurice",
+    prompt: "Compare en détail la Bulgarie et l'Île Maurice comme destinations pour une holding de remontée de dividendes depuis la France. Pour chaque pays : convention fiscale France (article et taux WHT), IS local, taux dividendes, exigences substance économique (BEPS), risques OCDE/liste grise, délai de création, coût annuel, avantages et inconvénients. Donne une recommandation finale chiffrée.",
+  },
+  {
+    category: "International",
+    title: "Cambodge - statut 2025",
+    prompt: "Quel est le statut exact en 2025 de la négociation d'une convention fiscale entre la France et le Cambodge ? Y a-t-il eu un accord signé ou un vote à l'Assemblée nationale française ? Quelle est la retenue à la source actuelle sans convention ? À partir de quand pourrait-on légalement structurer vers le Cambodge ? Quels sont les risques actuels si on crée une structure là-bas maintenant ?",
+  },
+  {
+    category: "International",
+    title: "Maghreb & Afrique - conventions",
+    prompt: "Analyse les conventions fiscales France avec les pays du Maghreb (Maroc, Tunisie, Algérie) et d'Afrique francophone (Sénégal, Côte d'Ivoire, Cameroun, Togo, Madagascar, Mauritanie). Pour chaque pays : taux WHT dividendes (article de convention), IS local, dividendes locaux, exigences, stabilité, recommandation. Quel est le meilleur pays d'Afrique pour une holding de remontée de dividendes depuis la France ?",
+  },
+  {
+    category: "International",
+    title: "Dubai & EAU - 0% total",
+    prompt: "Comment structurer une holding aux Émirats Arabes Unis (Dubai Free Zone) pour bénéficier de 0% WHT et 0% IS ? Quelles sont les exigences de substance économique (UAE ESR) ? Quels sont les risques de requalification en France (article 123 bis CGI, prix de transfert) ? Quel type de Free Zone choisir : DMCC, DIFC, ADGM ? Coût et délai de mise en place réaliste.",
+  },
+  {
+    category: "International",
+    title: "Structure holding 3 niveaux",
+    prompt: "Comment structurer une holding internationale en 3 niveaux pour optimiser la remontée de dividendes ? France (filiales opérationnelles) → Holding intermédiaire (Bulgarie ou Maurice) → Actionnaire. Détaille : capital minimum requis, délais, obligations comptables dans chaque pays, substance économique minimale, risques abus de droit article L64 LPF, coût annuel estimé de la structure, et économie fiscale annuelle estimée si dividendes = 500 000 €/an.",
+  },
+  {
+    category: "France",
     title: "Optimisation globale",
-    prompt: "Analyse ma situation complète et donne-moi TOUTES les optimisations fiscales possibles pour réduire au maximum mes impôts légalement. Inclus les dispositifs, déductions, crédits d'impôt et stratégies d'optimisation disponibles.",
+    prompt: "Analyse ma situation complète et donne-moi TOUTES les optimisations fiscales possibles pour réduire au maximum mes impôts légalement. Inclus les dispositifs, déductions, crédits d'impôt et stratégies d'optimisation disponibles avec montants précis.",
   },
   {
-    title: "TVA & Charges",
-    prompt: "Optimise ma TVA récupérable et mes charges déductibles. Quelles dépenses puis-je déduire à 100%, lesquelles partiellement ? Comment récupérer un maximum de TVA sur mes achats professionnels ?",
+    category: "France",
+    title: "Salaire vs Dividendes",
+    prompt: "Quelle est la structure de rémunération optimale pour un dirigeant : salaire vs dividendes ? Calcule la charge fiscale et sociale dans chaque cas (cotisations TNS, flat tax, IR). À partir de quel montant les dividendes sont-ils plus avantageux ?",
   },
   {
-    title: "PER & Épargne retraite",
-    prompt: "Explique-moi comment maximiser les déductions via le PER (Plan Épargne Retraite) et les contrats Madelin. Quel montant optimal dois-je verser pour réduire au maximum mon IR cette année ?",
+    category: "France",
+    title: "Holding & régime mère-fille",
+    prompt: "Comment structurer une holding pour optimiser l'impôt sur les sociétés ? Régime mère-fille (95% exonération), intégration fiscale, remontée de dividendes, apport-cession. Quelles sont les conditions et les économies potentielles ?",
   },
   {
-    title: "Rémunération dirigeant",
-    prompt: "Quelle est la structure de rémunération optimale pour un dirigeant : salaire vs dividendes ? Calcule la charge fiscale et sociale dans chaque cas et recommande la meilleure stratégie.",
-  },
-  {
-    title: "Immobilier & déficit",
-    prompt: "Comment utiliser le déficit foncier, le LMNP et les dispositifs immobiliers (Denormandie, Malraux) pour réduire mes impôts ? Explique les plafonds et conditions.",
-  },
-  {
-    title: "CIR & JEI",
-    prompt: "Suis-je éligible au Crédit Impôt Recherche (CIR) ou au statut JEI (Jeune Entreprise Innovante) ? Quelles dépenses qualifient ? Quel montant puis-je récupérer ?",
-  },
-  {
-    title: "International (Togo/Vietnam)",
-    prompt: "Comment optimiser la fiscalité pour une activité internationale France-Togo-Vietnam ? Conventions fiscales, prix de transfert, TVA intracommunautaire, risques de double imposition.",
-  },
-  {
-    title: "Holding & optimisation IS",
-    prompt: "Comment structurer une holding pour optimiser l'impôt sur les sociétés ? Régime mère-fille, intégration fiscale, remontée de dividendes, apport-cession.",
+    category: "France",
+    title: "PER & Charges déductibles",
+    prompt: "Comment maximiser les déductions via PER, Madelin et toutes les charges déductibles ? Quel montant optimal de PER pour réduire l'IR au maximum ? Quelles charges puis-je déduire à 100% vs partiellement ?",
   },
 ];
 
@@ -67,6 +85,7 @@ interface ConversationMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  provider?: string;
 }
 
 interface LegalAlert {
@@ -79,11 +98,28 @@ interface LegalAlert {
   seen: boolean;
 }
 
+interface AiHistoryItem {
+  id: string;
+  prompt: string;
+  response: string;
+  region: string;
+  createdAt: string;
+}
+
+type AiProvider = "openai" | "claude" | "perplexity";
+
+const AI_PROVIDERS: { id: AiProvider; label: string; color: string; desc: string }[] = [
+  { id: "openai",     label: "ChatGPT",    color: "bg-emerald-600 text-white border-emerald-600",     desc: "GPT-4o" },
+  { id: "claude",     label: "Claude",     color: "bg-orange-500 text-white border-orange-500",       desc: "Opus" },
+  { id: "perplexity", label: "Perplexity", color: "bg-blue-600 text-white border-blue-600",           desc: "Sonar (web)" },
+];
+
 export default function OptimizePage() {
   const [region, setRegion] = useState("france");
   const [optimizeCountryFilter, setOptimizeCountryFilter] = useState("");
   const [showOptimizeCountryList, setShowOptimizeCountryList] = useState(false);
   const [businessType, setBusinessType] = useState("eurl");
+  const [aiProvider, setAiProvider] = useState<AiProvider>("openai");
   const [prompt, setPrompt] = useState("");
   const [ocrContext, setOcrContext] = useState("");
   const [loading, setLoading] = useState(false);
@@ -95,6 +131,10 @@ export default function OptimizePage() {
   const [alertsUnread, setAlertsUnread] = useState(0);
   const [showAlerts, setShowAlerts] = useState(false);
   const [loadingAlerts, setLoadingAlerts] = useState(false);
+  const [creditsBalance, setCreditsBalance] = useState<number | null>(null);
+  const [aiHistory, setAiHistory] = useState<AiHistoryItem[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   /** Sur lg+ : un seul panneau gauche ouvert à la fois (Contexte ou Questions rapides). */
   const [desktopLeftPanel, setDesktopLeftPanel] = useState<"context" | "questions">("context");
   const alertsWrapRef = useRef<HTMLDivElement>(null);
@@ -102,6 +142,8 @@ export default function OptimizePage() {
   useEffect(() => {
     loadTaxRules();
     loadAlerts();
+    loadCredits();
+    loadAiHistory();
   }, []);
 
   /** Fermer « Alertes loi » : clic / toucher hors panneau (desktop) + Échap. Sur mobile le fond assombri gère le tap. */
@@ -162,6 +204,37 @@ export default function OptimizePage() {
     setAlertsUnread(id === "all" ? 0 : Math.max(0, alertsUnread - 1));
   };
 
+  const loadCredits = async () => {
+    try {
+      const token = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
+      const res = await fetch("/api/billing/credits", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setCreditsBalance(typeof data.balance === "number" ? data.balance : null);
+    } catch {
+      // silent
+    }
+  };
+
+  const loadAiHistory = async () => {
+    setLoadingHistory(true);
+    try {
+      const token = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
+      const res = await fetch("/api/ai/history?limit=100", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setAiHistory(Array.isArray(data) ? data : []);
+    } catch {
+      // silent
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
   const handleOptimize = async (customPrompt?: string) => {
     const finalPrompt = customPrompt || prompt;
     if (!finalPrompt.trim()) return;
@@ -186,22 +259,41 @@ export default function OptimizePage() {
         body: JSON.stringify({
           region,
           businessType,
+          provider: aiProvider,
           prompt: finalPrompt,
           ocrText: ocrContext || undefined,
+          history: conversation
+            .slice(-8)
+            .map((m) => ({ role: m.role, content: m.content })),
         }),
       });
       const data = await res.json();
+      if (typeof data?.billing?.creditsRemaining === "number") {
+        setCreditsBalance(data.billing.creditsRemaining);
+      }
       const answer = data.answer || data.error || "Aucune réponse.";
+      const providerLabel = AI_PROVIDERS.find((p) => p.id === aiProvider)?.label ?? aiProvider;
+      const now = new Date();
       setConversation((prev) => [
         ...prev,
-        { role: "assistant", content: answer, timestamp: new Date() },
+        { role: "assistant", content: answer, timestamp: now, provider: providerLabel },
+      ]);
+      setAiHistory((prev) => [
+        {
+          id: `tmp-${now.getTime()}`,
+          prompt: finalPrompt,
+          response: answer,
+          region,
+          createdAt: now.toISOString(),
+        },
+        ...prev,
       ]);
     } catch {
       setConversation((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: "Erreur de connexion au service d'IA. Vérifiez votre clé OpenAI.",
+          content: "Erreur de connexion au service d'IA. Vérifiez votre clé dans .env (OPENAI_API_KEY, ANTHROPIC_API_KEY ou PERPLEXITY_API_KEY).",
           timestamp: new Date(),
         },
       ]);
@@ -229,64 +321,148 @@ export default function OptimizePage() {
     });
   };
 
+  /** Rendu d'un tableau markdown : retourne un <table> stylisé. */
+  const renderMarkdownTable = (tableLines: string[], key: number) => {
+    const rows = tableLines
+      .filter((l) => l.trim().startsWith("|"))
+      .map((l) =>
+        l
+          .trim()
+          .replace(/^\||\|$/g, "")
+          .split("|")
+          .map((cell) => cell.trim()),
+      );
+
+    if (rows.length < 2) return null;
+
+    const header = rows[0];
+    const body = rows.filter((_, i) => {
+      // skip separator rows (e.g. |:---:|---|)
+      if (i === 0) return false;
+      return !rows[i].every((c) => /^[-:]+$/.test(c));
+    });
+
+    return (
+      <div key={key} className="my-2 w-full overflow-x-auto rounded-lg border border-slate-200 sm:my-3">
+        <table className="min-w-full text-[10px] sm:text-xs">
+          <thead className="bg-slate-100">
+            <tr>
+              {header.map((h, ci) => (
+                <th
+                  key={ci}
+                  className="whitespace-nowrap px-2 py-1.5 text-left font-semibold text-slate-700 sm:px-3 sm:py-2"
+                >
+                  {renderInlineMarkdown(h)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {body.map((row, ri) => (
+              <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-slate-50/50"}>
+                {row.map((cell, ci) => (
+                  <td key={ci} className="px-2 py-1.5 text-slate-700 sm:px-3 sm:py-2">
+                    {renderInlineMarkdown(cell)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   const formatAnswer = (text: string) => {
-    return text.split("\n").map((line, i) => {
-      const trimmed = line.trimEnd();
+    // Pre-pass: group consecutive table lines into blocks
+    const rawLines = text.split("\n");
+    type Block =
+      | { type: "table"; lines: string[]; startIdx: number }
+      | { type: "line"; content: string; idx: number };
+
+    const blocks: Block[] = [];
+    let i = 0;
+    while (i < rawLines.length) {
+      const trimmed = rawLines[i].trimEnd();
+      if (trimmed.trim().startsWith("|")) {
+        const tableLines: string[] = [];
+        while (i < rawLines.length && rawLines[i].trim().startsWith("|")) {
+          tableLines.push(rawLines[i]);
+          i++;
+        }
+        blocks.push({ type: "table", lines: tableLines, startIdx: i });
+      } else {
+        blocks.push({ type: "line", content: trimmed, idx: i });
+        i++;
+      }
+    }
+
+    return blocks.map((block, blockIdx) => {
+      if (block.type === "table") {
+        return renderMarkdownTable(block.lines, blockIdx);
+      }
+
+      const trimmed = block.content;
+      const lineKey = blockIdx;
+
       const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
       if (heading) {
         const level = heading[1].length;
         const body = heading[2].replace(/^#+\s*/, "").trim();
         if (level <= 2) {
           return (
-            <h3 key={i} className="mt-3 mb-1.5 text-sm font-bold text-slate-900 sm:mt-4 sm:mb-2 sm:text-base">
+            <h3 key={lineKey} className="mt-3 mb-1.5 text-sm font-bold text-slate-900 sm:mt-4 sm:mb-2 sm:text-base">
               {renderInlineMarkdown(body)}
             </h3>
           );
         }
         return (
-          <h4 key={i} className="mt-2 mb-1 text-xs font-bold text-slate-800 sm:mt-3 sm:text-sm">
+          <h4 key={lineKey} className="mt-2 mb-1 text-xs font-bold text-slate-800 sm:mt-3 sm:text-sm">
             {renderInlineMarkdown(body)}
           </h4>
         );
       }
       if (trimmed.startsWith("## ")) {
         return (
-          <h3 key={i} className="mt-3 mb-1.5 text-sm font-bold text-slate-900 sm:mt-4 sm:mb-2 sm:text-base">
+          <h3 key={lineKey} className="mt-3 mb-1.5 text-sm font-bold text-slate-900 sm:mt-4 sm:mb-2 sm:text-base">
             {renderInlineMarkdown(trimmed.slice(3))}
           </h3>
         );
       }
       if (trimmed.startsWith("### ")) {
         return (
-          <h4 key={i} className="mt-2 mb-1 text-xs font-bold text-slate-800 sm:mt-3 sm:text-sm">
+          <h4 key={lineKey} className="mt-2 mb-1 text-xs font-bold text-slate-800 sm:mt-3 sm:text-sm">
             {renderInlineMarkdown(trimmed.slice(4))}
           </h4>
         );
       }
+      if (trimmed.startsWith("---")) {
+        return <hr key={lineKey} className="my-2 border-slate-200 sm:my-3" />;
+      }
       if (trimmed.startsWith("**") && trimmed.endsWith("**") && trimmed.length > 4) {
         return (
-          <p key={i} className="mt-1.5 text-xs font-semibold text-slate-900 sm:mt-2 sm:text-sm">
+          <p key={lineKey} className="mt-1.5 text-xs font-semibold text-slate-900 sm:mt-2 sm:text-sm">
             {renderInlineMarkdown(trimmed.slice(2, -2))}
           </p>
         );
       }
       if (trimmed.startsWith("- ") || trimmed.startsWith("• ")) {
         return (
-          <li key={i} className="ml-3 list-disc text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">
+          <li key={lineKey} className="ml-3 list-disc text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">
             {renderInlineMarkdown(trimmed.slice(2))}
           </li>
         );
       }
       if (trimmed.match(/^\d+\./)) {
         return (
-          <li key={i} className="ml-3 list-decimal text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">
+          <li key={lineKey} className="ml-3 list-decimal text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">
             {renderInlineMarkdown(trimmed.replace(/^\d+\.\s*/, ""))}
           </li>
         );
       }
-      if (trimmed === "") return <div key={i} className="h-1.5 sm:h-2" />;
+      if (trimmed === "") return <div key={lineKey} className="h-1.5 sm:h-2" />;
       return (
-        <p key={i} className="text-xs leading-5 text-slate-700 sm:text-sm sm:leading-6">
+        <p key={lineKey} className="text-xs leading-5 text-slate-700 sm:text-sm sm:leading-6">
           {renderInlineMarkdown(trimmed)}
         </p>
       );
@@ -489,6 +665,28 @@ export default function OptimizePage() {
                 )}
               </div>
 
+              {/* IA Provider */}
+              <div>
+                <span className="mb-1.5 block text-[10px] font-medium uppercase tracking-wide text-slate-500 sm:mb-2 sm:text-xs sm:normal-case sm:tracking-normal">Modèle IA</span>
+                <div className="flex gap-1.5">
+                  {AI_PROVIDERS.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => setAiProvider(p.id)}
+                      className={`flex flex-1 flex-col items-center rounded-lg border px-1.5 py-1.5 text-center transition sm:rounded-xl ${
+                        aiProvider === p.id
+                          ? p.color
+                          : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
+                      }`}
+                    >
+                      <span className="text-[11px] font-semibold leading-tight sm:text-xs">{p.label}</span>
+                      <span className={`text-[9px] leading-tight sm:text-[10px] ${aiProvider === p.id ? "opacity-80" : "text-slate-400"}`}>{p.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div>
                 <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-500 sm:mb-2 sm:text-xs sm:normal-case sm:tracking-normal">Type d&apos;entreprise / Situation</label>
                 <select
@@ -535,21 +733,32 @@ export default function OptimizePage() {
                 </button>
                 <div className={desktopLeftPanel !== "questions" ? "lg:hidden" : ""}>
                   <p className="mb-2 text-[10px] leading-snug text-slate-500 sm:mb-3 sm:text-xs">
-                    Raccourcis vers l&apos;IA (étape 2). Complétez d&apos;abord le contexte si besoin.
+                    Raccourcis vers l&apos;IA. Sélectionnez d&apos;abord le modèle et le pays.
                   </p>
-                  <div className="space-y-1.5 sm:space-y-2">
-                    {quickPrompts.map((qp) => (
-                      <button
-                        type="button"
-                        key={qp.title}
-                        onClick={() => handleOptimize(qp.prompt)}
-                        disabled={loading}
-                        className="flex w-full items-center rounded-lg border border-slate-200 px-2 py-2 text-left text-[11px] text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50 sm:rounded-xl sm:px-3 sm:py-2.5 sm:text-xs"
-                      >
-                        <span className="font-medium">{qp.title}</span>
-                      </button>
-                    ))}
-                  </div>
+                  {(["International", "France"] as const).map((cat) => (
+                    <div key={cat} className="mb-2 sm:mb-3">
+                      <p className={`mb-1 text-[9px] font-bold uppercase tracking-wider sm:text-[10px] ${cat === "International" ? "text-blue-600" : "text-slate-400"}`}>
+                        {cat === "International" ? "Dividendes & Holdings Internationaux" : "Fiscalité France"}
+                      </p>
+                      <div className="space-y-1 sm:space-y-1.5">
+                        {quickPrompts.filter((qp) => qp.category === cat).map((qp) => (
+                          <button
+                            type="button"
+                            key={qp.title}
+                            onClick={() => handleOptimize(qp.prompt)}
+                            disabled={loading}
+                            className={`flex w-full items-center rounded-lg border px-2 py-1.5 text-left text-[11px] transition disabled:opacity-50 sm:rounded-xl sm:px-3 sm:py-2 sm:text-xs ${
+                              cat === "International"
+                                ? "border-blue-100 bg-blue-50/50 text-blue-900 hover:bg-blue-50 hover:border-blue-200"
+                                : "border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                            }`}
+                          >
+                            <span className="font-medium leading-tight">{qp.title}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -596,41 +805,91 @@ export default function OptimizePage() {
           {/* Conseiller fiscal IA — sur mobile : occupe l’espace sous le bandeau (scroll interne au chat) */}
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm max-lg:min-h-0 lg:col-start-2 lg:row-start-1 lg:h-full lg:min-h-0 lg:rounded-2xl">
             <div className="hidden items-center justify-between gap-2 border-b border-slate-100 px-3 py-2.5 sm:px-6 sm:py-4 lg:flex">
-              <div className="min-w-0">
-                <h2 className="text-xs font-semibold text-slate-900 sm:text-base">Conseiller fiscal IA</h2>
-                <p className="text-[10px] text-slate-400 sm:text-xs">
-                  Basé sur la Loi de Finances 2024/2025 — BOFIP — CGI — CSS
-                </p>
+              <div className="min-w-0 flex items-center gap-2">
+                <div>
+                  <h2 className="text-xs font-semibold text-slate-900 sm:text-base">Conseiller fiscal IA</h2>
+                  <p className="text-[10px] text-slate-400 sm:text-xs">
+                    Dividendes internationaux · Holdings · Fiscalité France · Conventions fiscales
+                  </p>
+                </div>
+                <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold sm:text-xs ${
+                  AI_PROVIDERS.find((p) => p.id === aiProvider)?.color ?? ""
+                }`}>
+                  {AI_PROVIDERS.find((p) => p.id === aiProvider)?.label}
+                </span>
+                <span className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-600 sm:text-xs">
+                  Crédits: {creditsBalance ?? "—"}
+                </span>
               </div>
-              {conversation.length > 0 && (
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setConversation([])}
-                  className="shrink-0 text-[10px] text-slate-400 hover:text-slate-600 sm:text-xs"
+                  onClick={() => setShowHistory((v) => !v)}
+                  className="shrink-0 rounded border border-slate-200 bg-white px-2 py-1 text-[10px] text-slate-600 hover:bg-slate-50 sm:text-xs"
                 >
-                  Effacer
+                  {showHistory ? "Voir chat" : "Historique IA"}
                 </button>
-              )}
+                {conversation.length > 0 && !showHistory && (
+                  <button
+                    type="button"
+                    onClick={() => setConversation([])}
+                    className="shrink-0 text-[10px] text-slate-400 hover:text-slate-600 sm:text-xs"
+                  >
+                    Effacer
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Messages */}
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:space-y-6 sm:p-6">
-              {conversation.length === 0 ? (
+              {showHistory ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-semibold text-slate-900 sm:text-sm">Historique des réponses IA</h3>
+                    <button
+                      type="button"
+                      onClick={() => loadAiHistory()}
+                      disabled={loadingHistory}
+                      className="rounded border border-slate-200 bg-white px-2 py-1 text-[10px] text-slate-600 hover:bg-slate-50 disabled:opacity-50 sm:text-xs"
+                    >
+                      {loadingHistory ? "Chargement..." : "Actualiser"}
+                    </button>
+                  </div>
+                  {loadingHistory ? (
+                    <p className="text-xs text-slate-400">Chargement de l&apos;historique...</p>
+                  ) : aiHistory.length === 0 ? (
+                    <p className="text-xs text-slate-400">Aucune réponse IA enregistrée pour le moment.</p>
+                  ) : (
+                    aiHistory.map((item) => (
+                      <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 sm:rounded-2xl sm:p-4">
+                        <p className="mb-2 text-[10px] font-medium text-slate-500 sm:text-xs">
+                          {new Date(item.createdAt).toLocaleString("fr-FR")} • {regionDisplayLabel(item.region)}
+                        </p>
+                        <p className="mb-2 text-xs font-semibold text-slate-900 sm:text-sm">
+                          Question: {item.prompt}
+                        </p>
+                        <div className="space-y-0.5">{formatAnswer(item.response)}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : conversation.length === 0 ? (
                 <div className="flex min-h-[min(40dvh,320px)] flex-col items-center justify-center py-8 text-center sm:py-12">
-                  <h3 className="mb-1.5 text-sm font-semibold text-slate-900 sm:mb-2 sm:text-lg">
-                    Expert fiscal IA à votre service
+                    <h3 className="mb-1.5 text-sm font-semibold text-slate-900 sm:mb-2 sm:text-lg">
+                    Expert fiscal IA — Dividendes & Holdings
                   </h3>
                   <p className="max-w-sm px-1 text-[11px] leading-snug text-slate-500 sm:text-sm">
-                    Posez une question ou utilisez les prompts rapides pour obtenir un conseil fiscal personnalisé basé sur la législation française en vigueur.
+                    Trouvez le meilleur pays pour vos dividendes (WHT ≤ 5%, impôt local ≤ 10%), analysez les conventions fiscales France, comparez Bulgarie / Maurice / Dubai et bien plus.
                   </p>
                   <div className="mt-4 grid w-full max-w-sm grid-cols-2 gap-1.5 px-1 sm:mt-6 sm:gap-2">
-                    {quickPrompts.slice(0, 4).map((qp) => (
+                    {quickPrompts.filter((qp) => qp.category === "International").slice(0, 4).map((qp) => (
                       <button
                         type="button"
                         key={qp.title}
                         onClick={() => handleOptimize(qp.prompt)}
                         disabled={loading}
-                        className="flex w-full items-center rounded-lg border border-slate-200 px-2 py-2 text-left text-[10px] text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 sm:rounded-xl sm:px-3 sm:py-2.5 sm:text-xs"
+                        className="flex w-full items-center rounded-lg border border-blue-100 bg-blue-50/50 px-2 py-2 text-left text-[10px] text-blue-900 transition hover:bg-blue-50 sm:rounded-xl sm:px-3 sm:py-2.5 sm:text-xs"
                       >
                         <span className="font-medium leading-tight">{qp.title}</span>
                       </button>
@@ -655,9 +914,16 @@ export default function OptimizePage() {
                       ) : (
                         <div className="space-y-0.5">{formatAnswer(msg.content)}</div>
                       )}
-                      <p className={`mt-1.5 text-[10px] sm:mt-2 sm:text-xs ${msg.role === "user" ? "text-slate-400" : "text-slate-400"}`}>
-                        {msg.timestamp.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
-                      </p>
+                      <div className="mt-1.5 flex items-center gap-2 sm:mt-2">
+                        <p className="text-[10px] text-slate-400 sm:text-xs">
+                          {msg.timestamp.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                        {msg.role === "assistant" && msg.provider && (
+                          <span className="text-[9px] font-medium text-slate-400 sm:text-[10px]">
+                            via {msg.provider}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))
@@ -678,6 +944,23 @@ export default function OptimizePage() {
 
             {/* Input */}
             <div className="border-t border-slate-100 p-2.5 sm:p-4">
+              {/* Provider switcher inline (mobile + desktop) */}
+              <div className="mb-2 flex gap-1.5 sm:mb-2.5">
+                {AI_PROVIDERS.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setAiProvider(p.id)}
+                    className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold transition sm:rounded-lg sm:px-2.5 sm:text-xs ${
+                      aiProvider === p.id
+                        ? p.color
+                        : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
               <div className="flex gap-2 sm:gap-3">
                 <textarea
                   value={prompt}
@@ -690,7 +973,7 @@ export default function OptimizePage() {
                   }}
                   rows={2}
                   className="flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-900 focus:border-slate-400 focus:outline-none sm:rounded-xl sm:px-4 sm:py-3 sm:text-sm"
-                  placeholder="Ex : Comment optimiser mes impôts en tant que gérant de SARL ?…"
+                  placeholder="Ex : Quel pays pour remonter mes dividendes à moins de 5% ? Quel est le statut de la convention France-Cambodge ?…"
                   disabled={loading}
                 />
                 <button
@@ -703,7 +986,7 @@ export default function OptimizePage() {
                 </button>
               </div>
               <p className="mt-1.5 text-[10px] text-slate-400 sm:mt-2 sm:text-xs">
-                Entrée pour envoyer • Maj+Entrée pour nouvelle ligne • Données fiscales France 2024/2025
+                Entrée pour envoyer • Maj+Entrée pour nouvelle ligne • {AI_PROVIDERS.find((p) => p.id === aiProvider)?.label} actif
               </p>
             </div>
           </div>

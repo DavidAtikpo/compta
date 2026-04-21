@@ -39,6 +39,8 @@ export async function GET(request: Request) {
           pdfHeaderAddress: true,
           pdfHeaderTableJson: true,
           pdfHeaderLayout: true,
+          aiCreditsBalance: true,
+          billingPlan: true,
         },
       });
       if (user) {
@@ -55,6 +57,8 @@ export async function GET(request: Request) {
           pdfHeaderAddress: user.pdfHeaderAddress || "",
           pdfHeaderTableJson: user.pdfHeaderTableJson || "",
           pdfHeaderLayout: user.pdfHeaderLayout || "stacked",
+          aiCreditsBalance: user.aiCreditsBalance ?? 0,
+          billingPlan: user.billingPlan || "starter",
         });
       }
     }
@@ -71,6 +75,8 @@ export async function GET(request: Request) {
       pdfHeaderAddress: "",
       pdfHeaderTableJson: "",
       pdfHeaderLayout: "stacked",
+      aiCreditsBalance: 0,
+      billingPlan: "starter",
     });
   } catch {
     return NextResponse.json({ error: "Token invalide." }, { status: 401 });

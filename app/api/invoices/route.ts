@@ -64,6 +64,7 @@ export async function POST(request: NextRequest) {
       region,
       amount,
       category,
+      invoiceType,
       structureId,
       invoiceDate,
       fileUrl,
@@ -86,9 +87,14 @@ export async function POST(request: NextRequest) {
         ? accountantResult.rows[0].id
         : null;
 
+    const normalizedInvoiceType =
+      typeof invoiceType === "string" && invoiceType.toLowerCase() === "vente"
+        ? "vente"
+        : "achat";
+
     const result = await pool.query(
-      `INSERT INTO invoices (id, "userId", filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, "structureId", status, "invoiceDate", "fileUrl", "createdAt", "updatedAt")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, NOW(), NOW())
+      `INSERT INTO invoices (id, "userId", filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, "invoiceType", "structureId", status, "invoiceDate", "fileUrl", "createdAt", "updatedAt")
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending', $13, $14, NOW(), NOW())
        RETURNING *`,
       [
         userId,
@@ -101,6 +107,7 @@ export async function POST(request: NextRequest) {
         accountantId,
         amount || null,
         category || null,
+        normalizedInvoiceType,
         structureId || null,
         invoiceDate || null,
         fileUrl || null,
