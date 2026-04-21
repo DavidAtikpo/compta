@@ -140,7 +140,7 @@ export async function POST(
 
   try {
     const invoiceRes = await pool.query(
-      `SELECT "ocrText", "originalName", "fileUrl" FROM invoices WHERE id = $1 AND "userId" = $2`,
+      `SELECT "ocrText", "originalName", "fileUrl", "mimeType" FROM invoices WHERE id = $1 AND "userId" = $2`,
       [id, userId]
     );
 
@@ -148,10 +148,11 @@ export async function POST(
       return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });
     }
 
-    const { ocrText, originalName, fileUrl } = invoiceRes.rows[0] as {
+    const { ocrText, originalName, fileUrl, mimeType } = invoiceRes.rows[0] as {
       ocrText: string | null;
       originalName: string;
       fileUrl: string | null;
+      mimeType: string | null;
     };
 
     const openaiKey = process.env.OPENAI_API_KEY;
@@ -163,8 +164,15 @@ export async function POST(
     let visionDataUrl: string | null = null;
 
     if (fileUrl) {
-      const isPdf   = /\.pdf(\?|$)/i.test(fileUrl);
-      const isImage = /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(fileUrl);
+      const lowerName = String(originalName || "").toLowerCase();
+      const lowerMime = String(mimeType || "").toLowerCase();
+      const isPdf =
+        lowerMime.includes("pdf") ||
+        lowerName.endsWith(".pdf") ||
+        /\.pdf(\?|$)/i.test(fileUrl);
+      const isImage =
+        lowerMime.startsWith("image/") ||
+        /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(fileUrl);
 
       if (isImage) {
         visionDataUrl = await imageUrlToDataUrl(fileUrl);

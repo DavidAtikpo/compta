@@ -19,6 +19,7 @@ const IMAP_DEFAULT_PORT = "993";
 /** URLs image : aperçu en balise img (évite l’iframe qui affiche la photo trop zoomée sur mobile). */
 function isLikelyImagePreviewUrl(url: string): boolean {
   const u = url.toLowerCase();
+  if (/\.pdf(\?|#|$|\/)/i.test(u)) return false;
   if (u.includes("/raw/upload/")) return false;
   if (u.includes("/image/upload/") || u.includes("/image/authenticated/") || u.includes("/image/private/"))
     return true;
@@ -26,6 +27,12 @@ function isLikelyImagePreviewUrl(url: string): boolean {
   if (/\.(jpe?g|png|gif|webp|bmp|heic|heif)(\?|#|$|\/)/i.test(u)) return true;
   if (u.includes("resource_type=image")) return true;
   return false;
+}
+
+function isLikelyPdfPreview(title: string, url: string): boolean {
+  const t = title.toLowerCase();
+  const u = url.toLowerCase();
+  return t.endsWith(".pdf") || /\.pdf(\?|#|$|\/)/i.test(u);
 }
 
 const categoryOptions = [
@@ -1360,7 +1367,7 @@ export default function InvoicesPage() {
                 Fermer
               </button>
             </div>
-            {previewImageMode ? (
+            {previewImageMode && !isLikelyPdfPreview(previewTitle, previewUrl) ? (
               <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-slate-100 p-3">
                 <img
                   src={previewUrl}
