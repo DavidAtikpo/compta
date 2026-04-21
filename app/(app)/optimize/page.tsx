@@ -135,6 +135,7 @@ export default function OptimizePage() {
   const [aiHistory, setAiHistory] = useState<AiHistoryItem[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showDesktopSidebar, setShowDesktopSidebar] = useState(false);
   /** Sur lg+ : un seul panneau gauche ouvert à la fois (Contexte ou Questions rapides). */
   const [desktopLeftPanel, setDesktopLeftPanel] = useState<"context" | "questions">("context");
 
@@ -464,7 +465,7 @@ export default function OptimizePage() {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 sm:py-6 lg:px-6 lg:py-6">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden ">
       <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col lg:min-h-0 lg:space-y-6">
         <div className="mb-1 flex justify-end lg:hidden">
           <button
@@ -540,9 +541,9 @@ export default function OptimizePage() {
           </>
         )}
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-[minmax(0,320px)_1fr] lg:items-stretch lg:space-y-0">
+        <div className={`grid min-h-0 flex-1 grid-cols-1 gap-4 sm:gap-6 lg:items-stretch lg:space-y-0 ${showDesktopSidebar ? "lg:grid-cols-[minmax(0,320px)_1fr]" : "lg:grid-cols-1"}`}>
           {/* Colonne gauche : contexte, prompts, dispositifs — masquée sur téléphone ; desktop : scroll interne (pas de scroll de la page) */}
-          <div className="hidden min-h-0 flex-col gap-4 overflow-y-auto sm:gap-6 lg:col-start-1 lg:row-start-1 lg:max-h-full lg:flex">
+          <div className={`hidden min-h-0 flex-col gap-4 overflow-y-auto sm:gap-6 lg:row-start-1 lg:max-h-full ${showDesktopSidebar ? "lg:col-start-1 lg:flex" : ""}`}>
             {/* 1 — Contexte ; sur lg un seul panneau gauche ouvert à la fois avec Questions rapides */}
             <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:space-y-4 sm:rounded-2xl sm:p-5">
               <button
@@ -767,8 +768,8 @@ export default function OptimizePage() {
           </div>
 
           {/* Conseiller fiscal IA — sur mobile : occupe l’espace sous le bandeau (scroll interne au chat) */}
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm max-lg:min-h-0 lg:col-start-2 lg:row-start-1 lg:h-full lg:min-h-0 lg:rounded-2xl">
-            <div className="hidden items-center justify-between gap-2 border-b border-slate-100 px-3 py-2.5 sm:px-6 sm:py-4 lg:flex">
+          <div className={`flex min-h-0 flex-1 flex-col overflow-hidden  bg-white  shadow-sm max-lg:min-h-0 lg:row-start-1 lg:h-full lg:min-h-0  ${showDesktopSidebar ? "lg:col-start-2" : "lg:col-start-1"}`}>
+            <div className="hidden items-center justify-between gap-2 border-b border-slate-100 px-3 py-2.5 sm:px-6 sm:py-1 lg:flex">
               <div className="min-w-0 flex items-center gap-2">
                 <div>
                   <h2 className="text-xs font-semibold text-slate-900 sm:text-base">Conseiller fiscal IA</h2>
@@ -786,6 +787,13 @@ export default function OptimizePage() {
                 </span>
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDesktopSidebar((v) => !v)}
+                  className="hidden shrink-0 rounded border border-slate-200 bg-white px-2 py-1 text-[10px] text-slate-600 hover:bg-slate-50 lg:inline"
+                >
+                  {showDesktopSidebar ? "Masquer panneau" : "Afficher panneau"}
+                </button>
                 <button
                   type="button"
                   onClick={() => setShowHistory((v) => !v)}
@@ -898,9 +906,9 @@ export default function OptimizePage() {
             </div>
 
             {/* Input */}
-            <div className="border-t border-slate-100 p-2.5 sm:p-4">
+            <div className="border-t border-slate-100 p-2.5 sm:p-1">
               {/* Provider switcher inline (mobile + desktop) */}
-              <div className="mb-2 flex gap-1.5 sm:mb-2.5">
+              <div className="mb-2 flex gap-1.5 sm:mb-1">
                 {AI_PROVIDERS.map((p) => (
                   <button
                     key={p.id}
@@ -916,7 +924,7 @@ export default function OptimizePage() {
                   </button>
                 ))}
               </div>
-              <div className="flex gap-2 sm:gap-3">
+              <div className="flex gap-2 sm:gap-2">
                 <textarea
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
@@ -927,7 +935,7 @@ export default function OptimizePage() {
                     }
                   }}
                   rows={2}
-                  className="flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-900 focus:border-slate-400 focus:outline-none sm:rounded-xl sm:px-4 sm:py-3 sm:text-sm"
+                  className="flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2.5 text-xs text-slate-900 focus:border-slate-400 focus:outline-none sm:rounded-xl sm:px-4 sm:py-1 sm:text-sm"
                   placeholder="Ex : Quel pays pour remonter mes dividendes à moins de 5% ? Quel est le statut de la convention France-Cambodge ?…"
                   disabled={loading}
                 />
