@@ -119,7 +119,7 @@ export default function OptimizePage() {
   const [optimizeCountryFilter, setOptimizeCountryFilter] = useState("");
   const [showOptimizeCountryList, setShowOptimizeCountryList] = useState(false);
   const [businessType, setBusinessType] = useState("eurl");
-  const [aiProvider, setAiProvider] = useState<AiProvider>("openai");
+  const [aiProvider, setAiProvider] = useState<AiProvider>("claude");
   const [prompt, setPrompt] = useState("");
   const [ocrContext, setOcrContext] = useState("");
   const [loading, setLoading] = useState(false);
