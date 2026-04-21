@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   IMAP_REGION_OPTIONS_SORTED,
   imapCountryFilterMatch,
@@ -137,7 +137,6 @@ export default function OptimizePage() {
   const [showHistory, setShowHistory] = useState(false);
   /** Sur lg+ : un seul panneau gauche ouvert à la fois (Contexte ou Questions rapides). */
   const [desktopLeftPanel, setDesktopLeftPanel] = useState<"context" | "questions">("context");
-  const alertsWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadTaxRules();
@@ -146,27 +145,22 @@ export default function OptimizePage() {
     loadAiHistory();
   }, []);
 
-  /** Fermer « Alertes loi » : clic / toucher hors panneau (desktop) + Échap. Sur mobile le fond assombri gère le tap. */
+  /** Ouvre les alertes depuis le Header global + ferme au clavier. */
   useEffect(() => {
-    if (!showAlerts) return;
-    const closeIfOutside = (e: MouseEvent | TouchEvent) => {
-      const root = alertsWrapRef.current;
-      if (!root) return;
-      const t = e.target;
-      if (t instanceof Node && !root.contains(t)) setShowAlerts(false);
+    const onOpen = () => {
+      setShowAlerts(true);
+      loadAlerts();
     };
     const onEscape = (e: KeyboardEvent) => {
       if (e.key === "Escape") setShowAlerts(false);
     };
-    document.addEventListener("mousedown", closeIfOutside, true);
-    document.addEventListener("touchstart", closeIfOutside, true);
+    window.addEventListener("compta-open-alerts", onOpen as EventListener);
     window.addEventListener("keydown", onEscape);
     return () => {
-      document.removeEventListener("mousedown", closeIfOutside, true);
-      document.removeEventListener("touchstart", closeIfOutside, true);
+      window.removeEventListener("compta-open-alerts", onOpen as EventListener);
       window.removeEventListener("keydown", onEscape);
     };
-  }, [showAlerts]);
+  }, []);
 
   const loadTaxRules = async () => {
     setLoadingRules(true);
@@ -472,109 +466,79 @@ export default function OptimizePage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 sm:py-6 lg:px-6 lg:py-6">
       <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col lg:min-h-0 lg:space-y-6">
-        {/* Mobile : bandeau toujours visible (sticky) — Conseiller fiscal IA + Alertes. Desktop : titre complet + alertes. */}
-        <div className="sticky top-0 z-30 -mx-3 flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white/95 px-3 py-2.5 backdrop-blur supports-[backdrop-filter]:bg-white/90 sm:-mx-4 sm:px-4 lg:static lg:z-auto lg:mx-0 lg:mb-0 lg:items-start lg:justify-between lg:gap-4 lg:border-0 lg:bg-transparent lg:px-0 lg:py-0 lg:backdrop-blur-none">
-          <div className="min-w-0 flex-1 lg:flex-1">
-            <h1 className="max-lg:truncate text-base font-bold tracking-tight text-slate-900 lg:text-2xl">
-              <span className="lg:hidden">Conseiller fiscal IA</span>
-              <span className="hidden lg:inline">Optimisation fiscale IA</span>
-            </h1>
-            <p className="mt-0.5 hidden text-[11px] leading-snug text-slate-500 sm:mt-1 sm:text-sm lg:block">
-              IA spécialisée en fiscalité — barèmes et dispositifs ; alertes JO, data.gouv et Judilibre (PISTE) si configuré
-            </p>
-          </div>
-          {conversation.length > 0 && (
+        <div className="mb-1 flex justify-end lg:hidden">
+          <button
+            type="button"
+            onClick={() => setShowHistory((v) => !v)}
+            className="rounded border border-slate-200 bg-white px-2 py-1 text-[10px] text-slate-600"
+          >
+            {showHistory ? "Chat" : "Historique"}
+          </button>
+        </div>
+
+        {showAlerts && (
+          <>
             <button
               type="button"
-              onClick={() => setConversation([])}
-              className="shrink-0 text-[10px] font-medium text-slate-500 hover:text-slate-800 lg:hidden"
-            >
-              Effacer
-            </button>
-          )}
-          {/* Alertes Légifrance */}
-          <div ref={alertsWrapRef} className="relative shrink-0 self-center sm:self-auto lg:self-start">
-            <button
-              type="button"
-              onClick={() => { setShowAlerts(!showAlerts); if (!showAlerts) loadAlerts(); }}
-              className="relative inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 sm:gap-2 sm:rounded-xl sm:px-4 sm:py-2.5 sm:text-sm"
-            >
-              <svg className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-              </svg>
-              Alertes loi
-              {alertsUnread > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-[10px] font-bold text-white">
-                  {alertsUnread}
-                </span>
-              )}
-            </button>
-            {showAlerts && (
-              <>
-                {/* Mobile / tablette : zone plein écran sous le panneau pour fermer au tap (le panneau est au-dessus, z-50) */}
-                <button
-                  type="button"
-                  aria-label="Fermer les alertes"
-                  className="fixed inset-0 z-[45] cursor-default touch-manipulation bg-slate-900/25 lg:hidden"
-                  onClick={() => setShowAlerts(false)}
-                />
-                <div className="fixed inset-x-2 top-14 z-50 max-h-[min(75dvh,560px)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl sm:absolute sm:inset-x-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-96 sm:max-h-80 sm:rounded-2xl">
-                <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-2.5 py-2 sm:px-4 sm:py-3">
-                  <h3 className="text-xs font-semibold text-slate-900 sm:text-sm">Alertes veille juridique</h3>
-                  <div className="flex shrink-0 gap-1.5 sm:gap-2">
-                    <button
-                      type="button"
-                      onClick={() => loadAlerts(true)}
-                      disabled={loadingAlerts}
-                      className="text-[10px] text-blue-600 hover:text-blue-700 disabled:opacity-50 sm:text-xs"
-                    >
-                      {loadingAlerts ? "…" : "Actualiser"}
+              aria-label="Fermer les alertes"
+              className="fixed inset-0 z-[45] touch-manipulation bg-slate-900/25"
+              onClick={() => setShowAlerts(false)}
+            />
+            <div className="fixed inset-x-2 top-16 z-50 max-h-[min(75dvh,560px)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl sm:inset-x-auto sm:right-6 sm:w-96 sm:max-h-80 sm:rounded-2xl">
+              <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-2.5 py-2 sm:px-4 sm:py-3">
+                <h3 className="text-xs font-semibold text-slate-900 sm:text-sm">Alertes veille juridique</h3>
+                <div className="flex shrink-0 gap-1.5 sm:gap-2">
+                  <button
+                    type="button"
+                    onClick={() => loadAlerts(true)}
+                    disabled={loadingAlerts}
+                    className="text-[10px] text-blue-600 hover:text-blue-700 disabled:opacity-50 sm:text-xs"
+                  >
+                    {loadingAlerts ? "…" : "Actualiser"}
+                  </button>
+                  {alertsUnread > 0 && (
+                    <button type="button" onClick={() => markAlertSeen("all")} className="text-[10px] text-slate-400 hover:text-slate-600 sm:text-xs">
+                      Tout marquer lu
                     </button>
-                    {alertsUnread > 0 && (
-                      <button type="button" onClick={() => markAlertSeen("all")} className="text-[10px] text-slate-400 hover:text-slate-600 sm:text-xs">
-                        Tout marquer lu
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="max-h-[min(60dvh,420px)] overflow-y-auto divide-y divide-slate-100 sm:max-h-80">
-                  {legalAlerts.length === 0 ? (
-                    <p className="text-xs text-slate-400 text-center py-6">
-                      {loadingAlerts ? "Chargement…" : "Aucune alerte. Cliquez sur Actualiser."}
-                    </p>
-                  ) : (
-                    legalAlerts.map((alert) => (
-                      <div
-                        key={alert.id}
-                        className={`cursor-pointer px-2.5 py-2 transition hover:bg-slate-50 sm:px-4 sm:py-3 ${!alert.seen ? "bg-blue-50/50" : ""}`}
-                        onClick={() => { markAlertSeen(alert.id); if (alert.url) window.open(alert.url, "_blank"); }}
-                      >
-                        <div className="flex items-start justify-between gap-1.5">
-                          <p className={`text-[11px] font-medium leading-snug sm:text-xs ${!alert.seen ? "text-slate-900" : "text-slate-600"}`}>
-                            {!alert.seen && <span className="mr-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500 align-middle" />}
-                            {alert.title}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); handleOptimize(`Analyse cette mise à jour légale et son impact fiscal pour mon cas (${businessType}, ${region}) : "${alert.title}". ${alert.description}`); setShowAlerts(false); }}
-                            className="shrink-0 whitespace-nowrap text-[10px] text-blue-600 hover:text-blue-700 sm:text-xs"
-                          >
-                            Analyser →
-                          </button>
-                        </div>
-                        <p className="mt-0.5 line-clamp-2 text-[10px] text-slate-400 sm:text-xs">{alert.description}</p>
-                        <p className="mt-0.5 text-[9px] text-slate-300 sm:mt-1 sm:text-[10px]">
-                          {new Date(alert.pubDate).toLocaleDateString("fr-FR")} — {alert.source}
-                        </p>
-                      </div>
-                    ))
                   )}
                 </div>
               </div>
-              </>
-            )}
-          </div>
-        </div>
+              <div className="max-h-[min(60dvh,420px)] overflow-y-auto divide-y divide-slate-100 sm:max-h-80">
+                {legalAlerts.length === 0 ? (
+                  <p className="py-6 text-center text-xs text-slate-400">
+                    {loadingAlerts ? "Chargement…" : "Aucune alerte. Cliquez sur Actualiser."}
+                  </p>
+                ) : (
+                  legalAlerts.map((alert) => (
+                    <div
+                      key={alert.id}
+                      className={`cursor-pointer px-2.5 py-2 transition hover:bg-slate-50 sm:px-4 sm:py-3 ${!alert.seen ? "bg-blue-50/50" : ""}`}
+                      onClick={() => { markAlertSeen(alert.id); if (alert.url) window.open(alert.url, "_blank"); }}
+                    >
+                      <div className="flex items-start justify-between gap-1.5">
+                        <p className={`text-[11px] font-medium leading-snug sm:text-xs ${!alert.seen ? "text-slate-900" : "text-slate-600"}`}>
+                          {!alert.seen && <span className="mr-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500 align-middle" />}
+                          {alert.title}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleOptimize(`Analyse cette mise à jour légale et son impact fiscal pour mon cas (${businessType}, ${region}) : "${alert.title}". ${alert.description}`); setShowAlerts(false); }}
+                          className="shrink-0 whitespace-nowrap text-[10px] text-blue-600 hover:text-blue-700 sm:text-xs"
+                        >
+                          Analyser →
+                        </button>
+                      </div>
+                      <p className="mt-0.5 line-clamp-2 text-[10px] text-slate-400 sm:text-xs">{alert.description}</p>
+                      <p className="mt-0.5 text-[9px] text-slate-300 sm:mt-1 sm:text-[10px]">
+                        {new Date(alert.pubDate).toLocaleDateString("fr-FR")} — {alert.source}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </>
+        )}
 
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-[minmax(0,320px)_1fr] lg:items-stretch lg:space-y-0">
           {/* Colonne gauche : contexte, prompts, dispositifs — masquée sur téléphone ; desktop : scroll interne (pas de scroll de la page) */}
@@ -829,15 +793,6 @@ export default function OptimizePage() {
                 >
                   {showHistory ? "Voir chat" : "Historique IA"}
                 </button>
-                {conversation.length > 0 && !showHistory && (
-                  <button
-                    type="button"
-                    onClick={() => setConversation([])}
-                    className="shrink-0 text-[10px] text-slate-400 hover:text-slate-600 sm:text-xs"
-                  >
-                    Effacer
-                  </button>
-                )}
               </div>
             </div>
 

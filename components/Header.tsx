@@ -21,15 +21,35 @@ type HeaderProps = {
 export function Header({ userName, userEmail, userImageUrl, onLogout }: HeaderProps) {
   const pathname = usePathname();
   const title = titles[pathname] ?? "Compta IA";
+  const isOptimize = pathname === "/optimize";
   const display = userName || userEmail || "…";
   const initial = (userName || userEmail || "?").slice(0, 1).toUpperCase();
 
   return (
     <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white/95 px-3 backdrop-blur-sm lg:h-12 lg:px-5">
       <div className="flex min-w-0 items-center gap-2">
-        <p className="truncate text-base font-semibold text-slate-900">{title}</p>
+        <div className="min-w-0">
+          <p className="truncate text-base font-semibold text-slate-900">{title}</p>
+          {isOptimize && (
+            <p className="hidden truncate text-[11px] text-slate-500 lg:block">
+              IA specialisee en fiscalite - baremes et dispositifs ; alertes JO, data.gouv et Judilibre (PISTE) si configure
+            </p>
+          )}
+        </div>
       </div>
       <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
+        {isOptimize && (
+          <button
+            type="button"
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent("compta-open-alerts"));
+            }}
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50"
+            title="Alertes loi"
+          >
+            Alertes loi
+          </button>
+        )}
         {userImageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
