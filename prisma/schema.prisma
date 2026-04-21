@@ -111,6 +111,8 @@ model Invoice {
   montantTVA      Float?
   tauxTVA         Float?
   montantTTC      Float?
+  isPaid          Boolean?
+  paidDate        DateTime?
   structureId     String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt

@@ -132,7 +132,7 @@ export async function PATCH(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { id, status, amount, category } = body;
+    const { id, status, amount, category, isPaid, paidDate } = body;
 
     if (!id) {
       return NextResponse.json({ error: "id requis" }, { status: 400 });
@@ -143,10 +143,20 @@ export async function PATCH(request: NextRequest) {
         status = COALESCE($2, status),
         amount = COALESCE($3, amount),
         category = COALESCE($4, category),
+        "isPaid" = COALESCE($5::boolean, "isPaid"),
+        "paidDate" = COALESCE($6::timestamptz, "paidDate"),
         "updatedAt" = NOW()
-       WHERE id = $1 AND "userId" = $5
+       WHERE id = $1 AND "userId" = $7
        RETURNING *`,
-      [id, status || null, amount || null, category || null, userId]
+      [
+        id,
+        status ?? null,
+        amount ?? null,
+        category ?? null,
+        typeof isPaid === "boolean" ? isPaid : null,
+        paidDate ? new Date(String(paidDate)) : null,
+        userId,
+      ]
     );
 
     if (result.rows.length === 0) {

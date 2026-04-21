@@ -155,10 +155,8 @@ export async function POST(
       mimeType: string | null;
     };
 
-    const openaiKey = process.env.OPENAI_API_KEY;
-    if (!openaiKey) {
-      return NextResponse.json({ error: "OPENAI_API_KEY non configurée." }, { status: 400 });
-    }
+    const body = await request.json().catch(() => ({}));
+    const provider = body?.provider === "claude" ? "claude" : body?.provider === "perplexity" ? "perplexity" : "openai";
 
     // Build vision data URL
     let visionDataUrl: string | null = null;
@@ -228,27 +226,7 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
       );
     }
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiKey}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        messages,
-        temperature: 0.1,
-        max_tokens: 500,
-        response_format: { type: "json_object" },
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`OpenAI error: ${await response.text()}`);
-    }
-
-    const payload = await response.json();
-    const raw = payload?.choices?.[0]?.message?.content || "{}";
+    const raw = await extractWithProvider(provider, systemPrompt, messages, ocrText, originalName, visionDataUrl);
     const extracted = JSON.parse(raw);
 
     let invoiceDateVal: Date | null = null;
@@ -307,4 +285,102 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
       { status: 500 }
     );
   }
+}
+
+async function extractWithProvider(
+  provider: "openai" | "claude" | "perplexity",
+  systemPrompt: string,
+  messages: object[],
+  ocrText: string | null,
+  originalName: string,
+  visionDataUrl: string | null,
+): Promise<string> {
+  if (provider === "claude") {
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    if (!anthropicKey) throw new Error("ANTHROPIC_API_KEY non configurée.");
+
+    const userText = `Analyse cette facture "${originalName}" et extrait toutes les données comptables.${ocrText ? `\n\nTexte OCR:\n${ocrText.slice(0, 4000)}` : ""}`;
+    const content: object[] = [{ type: "text", text: userText }];
+    if (visionDataUrl?.startsWith("data:image/")) {
+      const m = visionDataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (m?.[1] && m?.[2]) {
+        content.push({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: m[1],
+            data: m[2],
+          },
+        });
+      }
+    }
+
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": anthropicKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-5",
+        system: systemPrompt,
+        max_tokens: 1200,
+        temperature: 0.1,
+        messages: [{ role: "user", content }],
+      }),
+    });
+    if (!res.ok) throw new Error(`Claude error: ${await res.text()}`);
+    const payload = await res.json();
+    return payload?.content?.[0]?.text || "{}";
+  }
+
+  if (provider === "perplexity") {
+    const perplexityKey = process.env.PERPLEXITY_API_KEY;
+    if (!perplexityKey) throw new Error("PERPLEXITY_API_KEY non configurée.");
+    if (!ocrText) {
+      throw new Error("Perplexity extraction nécessite du texte OCR.");
+    }
+    const res = await fetch("https://api.perplexity.ai/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${perplexityKey}`,
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-sonar-large-128k-online",
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: `Analyse cette facture "${originalName}" à partir du texte OCR ci-dessous et réponds uniquement en JSON.\n\n${ocrText.slice(0, 4000)}`,
+          },
+        ],
+        temperature: 0.1,
+      }),
+    });
+    if (!res.ok) throw new Error(`Perplexity error: ${await res.text()}`);
+    const payload = await res.json();
+    return payload?.choices?.[0]?.message?.content || "{}";
+  }
+
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) throw new Error("OPENAI_API_KEY non configurée.");
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${openaiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      messages,
+      temperature: 0.1,
+      max_tokens: 500,
+      response_format: { type: "json_object" },
+    }),
+  });
+  if (!response.ok) throw new Error(`OpenAI error: ${await response.text()}`);
+  const payload = await response.json();
+  return payload?.choices?.[0]?.message?.content || "{}";
 }

@@ -72,6 +72,8 @@ interface Invoice {
   montantTTC: number | null;
   tauxTVA: number | null;
   invoiceDate: string | null;
+  isPaid: boolean | null;
+  paidDate: string | null;
 }
 
 function extractPaidAmount(ocrText: string | null): number | null {
@@ -180,6 +182,8 @@ export default function InvoicesPage() {
 
   // Action states
   const [extractingId, setExtractingId] = useState<string | null>(null);
+  const [extractProvider, setExtractProvider] = useState<"openai" | "claude" | "perplexity">("openai");
+  const [savingPaymentId, setSavingPaymentId] = useState<string | null>(null);
   const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
   const [fiscalAiAnalyzingId, setFiscalAiAnalyzingId] = useState<string | null>(null);
   const [fiscalAiModal, setFiscalAiModal] = useState<{ title: string; body: string } | null>(null);
@@ -725,7 +729,11 @@ export default function InvoicesPage() {
       const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
       const res = await fetch(`/api/invoices/${id}/extract`, {
         method: "POST",
-        ...(t ? { headers: { Authorization: `Bearer ${t}` } } : {}),
+        headers: {
+          "Content-Type": "application/json",
+          ...(t ? { Authorization: `Bearer ${t}` } : {}),
+        },
+        body: JSON.stringify({ provider: extractProvider }),
       });
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
@@ -746,6 +754,38 @@ export default function InvoicesPage() {
     } finally {
       setExtractingId(null);
       setTimeout(() => setExtractResults((prev) => { const n = { ...prev }; delete n[id]; return n; }), 6000);
+    }
+  };
+
+  const handleSetPayment = async (inv: Invoice, isPaid: boolean, paidDate?: string) => {
+    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+    if (!t) return;
+    setSavingPaymentId(inv.id);
+    try {
+      const payload: Record<string, unknown> = {
+        id: inv.id,
+        isPaid,
+      };
+      if (paidDate !== undefined) {
+        payload.paidDate = paidDate || null;
+      } else if (!isPaid) {
+        payload.paidDate = null;
+      }
+      const res = await fetch("/api/invoices", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${t}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) return;
+      const updated = (await res.json()) as Partial<Invoice> & { id: string };
+      setInvoices((prev) =>
+        prev.map((it) => (it.id === inv.id ? { ...it, ...updated } : it))
+      );
+    } finally {
+      setSavingPaymentId(null);
     }
   };
 
@@ -1520,6 +1560,20 @@ export default function InvoicesPage() {
                   </select>
                 </div>
 
+                {/* AI provider for extraction */}
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">IA extraction</label>
+                  <select
+                    value={extractProvider}
+                    onChange={(e) => setExtractProvider(e.target.value as "openai" | "claude" | "perplexity")}
+                    className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                  >
+                    <option value="openai">ChatGPT</option>
+                    <option value="claude">Claude</option>
+                    <option value="perplexity">Perplexity</option>
+                  </select>
+                </div>
+
                 {/* Date from */}
                 <div className="flex flex-col gap-0.5">
                   <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Date facture du</label>
@@ -1661,6 +1715,8 @@ export default function InvoicesPage() {
                       const montantTTC = inv.montantTTC ?? inv.amount;
                       const montantHT  = inv.montantHT;
                       const paidAmount = extractPaidAmount(inv.ocrText);
+                      const isPaidManual = typeof inv.isPaid === "boolean" ? inv.isPaid : paidAmount != null;
+                      const paidDateValue = inv.paidDate ? new Date(inv.paidDate).toISOString().slice(0, 10) : "";
                       const dateAjout  = inv.createdAt ? new Date(inv.createdAt).toLocaleDateString("fr-FR") : "—";
                       const dateFacture = inv.invoiceDate ? new Date(inv.invoiceDate).toLocaleDateString("fr-FR") : "—";
                       const regionLabel = regionDisplayLabel(inv.region);
@@ -1709,11 +1765,34 @@ export default function InvoicesPage() {
                             {montantHT != null ? <span>{montantHT.toFixed(2)} <span className="text-[10px] text-slate-400">€</span></span> : <span className="text-slate-300">—</span>}
                           </td>
                           <td className="px-2 py-1.5 whitespace-nowrap text-center">
-                            {paidAmount != null ? (
-                              <span className="inline-flex rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">Oui {paidAmount.toFixed(2)} €</span>
-                            ) : (
-                              <span className="inline-flex rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">—</span>
-                            )}
+                            <div className="flex flex-col items-center gap-1">
+                              <select
+                                value={isPaidManual ? "yes" : "no"}
+                                onChange={(e) => {
+                                  const yes = e.target.value === "yes";
+                                  void handleSetPayment(inv, yes);
+                                }}
+                                disabled={savingPaymentId === inv.id}
+                                className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-700 focus:outline-none"
+                              >
+                                <option value="no">Non</option>
+                                <option value="yes">Oui</option>
+                              </select>
+                              {isPaidManual && (
+                                <input
+                                  type="date"
+                                  value={paidDateValue}
+                                  onChange={(e) => void handleSetPayment(inv, true, e.target.value)}
+                                  disabled={savingPaymentId === inv.id}
+                                  className="rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px] text-slate-700 focus:outline-none"
+                                />
+                              )}
+                              {paidAmount != null && (
+                                <span className="text-[9px] text-emerald-700">
+                                  IA: {paidAmount.toFixed(2)} €
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="px-2 py-1.5 whitespace-nowrap text-right">
                             {montantTTC != null
