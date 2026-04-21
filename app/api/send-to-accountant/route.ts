@@ -5,11 +5,11 @@ import { getAuthenticatedUserId } from "../../../lib/auth-request";
 
 export const runtime = "nodejs";
 
-async function resolveRecipientEmails(region: string): Promise<string[]> {
+async function resolveRecipientEmails(region: string, userId: string): Promise<string[]> {
   try {
     const result = await pool.query(
-      `SELECT email FROM accountants WHERE region = $1 ORDER BY "createdAt" ASC`,
-      [region]
+      `SELECT email FROM accountants WHERE region = $1 AND "userId" = $2 ORDER BY "createdAt" ASC`,
+      [region, userId]
     );
     return result.rows
       .map((r: { email: string }) => String(r.email || "").trim())
@@ -66,7 +66,7 @@ export async function POST(request: Request) {
     }
     recipientEmails = [recipientEmailOverride];
   } else {
-    recipientEmails = await resolveRecipientEmails(region);
+    recipientEmails = await resolveRecipientEmails(region, userId);
     if (recipientEmails.length === 0) {
       return NextResponse.json(
         {

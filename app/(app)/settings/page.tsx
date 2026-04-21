@@ -179,8 +179,12 @@ export default function SettingsPage() {
   }, [accountants]);
 
   const loadAccountants = async () => {
+    const t = getToken();
+    if (!t) return;
     try {
-      const res = await fetch("/api/accountants");
+      const res = await fetch("/api/accountants", {
+        headers: { Authorization: `Bearer ${t}` },
+      });
       if (res.ok) {
         const list: AccountantRow[] = await res.json();
         setAccountants(list);
@@ -193,8 +197,12 @@ export default function SettingsPage() {
   };
 
   const loadStructures = async () => {
+    const t = getToken();
+    if (!t) return;
     try {
-      const res = await fetch("/api/structures");
+      const res = await fetch("/api/structures", {
+        headers: { Authorization: `Bearer ${t}` },
+      });
       if (res.ok) setStructures(await res.json());
     } catch {
       /* silent */
@@ -447,9 +455,14 @@ export default function SettingsPage() {
     setCabinetSaving(true);
     setCabinetMsg("");
     try {
+      const t = getToken();
+      if (!t) {
+        setCabinetMsg("Session expirée. Reconnectez-vous.");
+        return;
+      }
       const res = await fetch("/api/accountants", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
         body: JSON.stringify({
           region,
           email,
@@ -476,7 +489,12 @@ export default function SettingsPage() {
   const handleDeleteCabinet = async (id: string) => {
     if (!window.confirm("Retirer ce cabinet de la liste ?")) return;
     try {
-      const res = await fetch(`/api/accountants/${id}`, { method: "DELETE" });
+      const t = getToken();
+      if (!t) return;
+      const res = await fetch(`/api/accountants/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${t}` },
+      });
       if (res.ok) await loadAccountants();
     } catch {
       /* silent */
@@ -496,9 +514,14 @@ export default function SettingsPage() {
     setSavingStruct(true);
     setStructMsg("");
     try {
+      const t = getToken();
+      if (!t) {
+        setStructMsg("Session expirée. Reconnectez-vous.");
+        return;
+      }
       const res = await fetch("/api/structures", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
         body: JSON.stringify(newStruct),
       });
       if (res.ok) {
@@ -518,9 +541,11 @@ export default function SettingsPage() {
   };
 
   const handleDeleteStructure = async (id: string) => {
+    const t = getToken();
+    if (!t) return;
     await fetch("/api/structures", {
       method: "DELETE",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
       body: JSON.stringify({ id }),
     });
     await loadStructures();

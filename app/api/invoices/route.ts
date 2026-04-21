@@ -64,6 +64,7 @@ export async function POST(request: NextRequest) {
       region,
       amount,
       category,
+      structureId,
       invoiceDate,
       fileUrl,
     } = body;
@@ -77,8 +78,8 @@ export async function POST(request: NextRequest) {
 
     // Try to find accountant for region
     const accountantResult = await pool.query(
-      `SELECT id FROM accountants WHERE region = $1 ORDER BY "createdAt" ASC LIMIT 1`,
-      [region]
+      `SELECT id FROM accountants WHERE region = $1 AND "userId" = $2 ORDER BY "createdAt" ASC LIMIT 1`,
+      [region, userId]
     );
     const accountantId =
       accountantResult.rows.length > 0
@@ -86,8 +87,8 @@ export async function POST(request: NextRequest) {
         : null;
 
     const result = await pool.query(
-      `INSERT INTO invoices (id, "userId", filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, status, "invoiceDate", "fileUrl", "createdAt", "updatedAt")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12, NOW(), NOW())
+      `INSERT INTO invoices (id, "userId", filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, "structureId", status, "invoiceDate", "fileUrl", "createdAt", "updatedAt")
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, NOW(), NOW())
        RETURNING *`,
       [
         userId,
@@ -100,6 +101,7 @@ export async function POST(request: NextRequest) {
         accountantId,
         amount || null,
         category || null,
+        structureId || null,
         invoiceDate || null,
         fileUrl || null,
       ]

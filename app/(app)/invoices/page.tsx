@@ -47,6 +47,7 @@ interface Invoice {
   id: string;
   originalName: string;
   region: string;
+  structureId: string | null;
   status: string;
   amount: number | null;
   category: string | null;
@@ -116,6 +117,7 @@ type Tab = "invoices" | "email";
 const ACTION_MENU_WIDTH_PX = 176;
 
 type AccountantRow = { id: string; region: string; email: string; label: string | null };
+type StructureRow = { id: string; name: string; region: string; type: string; siret: string | null };
 
 type CabinetModalState =
   | null
@@ -135,6 +137,12 @@ export default function InvoicesPage() {
   const [region, setRegion] = useState("france");
   const [category, setCategory] = useState("");
   const [amount, setAmount] = useState("");
+  const [selectedStructureId, setSelectedStructureId] = useState("");
+  const [structures, setStructures] = useState<StructureRow[]>([]);
+  const [showCreateStructureInline, setShowCreateStructureInline] = useState(false);
+  const [newStructureInline, setNewStructureInline] = useState({ name: "", type: "EURL / SASU", siret: "" });
+  const [savingStructureInline, setSavingStructureInline] = useState(false);
+  const [structureInlineMsg, setStructureInlineMsg] = useState("");
   const [message, setMessage] = useState("");
   const [ocrStatus, setOcrStatus] = useState("");
   const [extractedTexts, setExtractedTexts] = useState<{ name: string; text: string }[]>([]);
@@ -158,7 +166,7 @@ export default function InvoicesPage() {
     if (!createOpen || typeof window === "undefined") return;
     const v = window.localStorage.getItem("compta-default-invoice-region");
     if (v?.trim()) setRegion(v.trim().toLowerCase());
-  }, [createOpen]);
+  }, [createOpen, token]);
 
   // Action states
   const [extractingId, setExtractingId] = useState<string | null>(null);
@@ -231,6 +239,23 @@ export default function InvoicesPage() {
 
   useEffect(() => {
     if (!createOpen) return;
+    void (async () => {
+      try {
+        const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+        const res = await fetch("/api/structures", {
+          headers: t ? { Authorization: `Bearer ${t}` } : {},
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as StructureRow[];
+        setStructures(data);
+      } catch {
+        // silent
+      }
+    })();
+  }, [createOpen]);
+
+  useEffect(() => {
+    if (!createOpen) return;
     setCreateCountryFilter("");
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") setCreateOpen(false);
@@ -238,6 +263,12 @@ export default function InvoicesPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [createOpen]);
+
+  useEffect(() => {
+    if (!selectedStructureId) return;
+    const existsInRegion = structures.some((s) => s.id === selectedStructureId && s.region === region);
+    if (!existsInRegion) setSelectedStructureId("");
+  }, [region, structures, selectedStructureId]);
 
   useEffect(() => {
     if (!cabinetModal) return;
@@ -572,6 +603,7 @@ export default function InvoicesPage() {
             region,
             amount: amount ? parseFloat(amount) : null,
             category: category || null,
+            structureId: selectedStructureId || null,
             fileUrl,
           }),
         });
@@ -611,7 +643,10 @@ export default function InvoicesPage() {
 
   const loadAccountants = async (): Promise<AccountantRow[]> => {
     try {
-      const res = await fetch("/api/accountants");
+      const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+      const res = await fetch("/api/accountants", {
+        headers: t ? { Authorization: `Bearer ${t}` } : {},
+      });
       if (!res.ok) return [];
       return (await res.json()) as AccountantRow[];
     } catch {
@@ -1155,8 +1190,55 @@ export default function InvoicesPage() {
     setFiles([]); setExtractedTexts([]); setUploadedUrls([]);
     setOcrStatus(""); setUploadResult(""); setSendResult("");
     setAmount(""); setCategory(""); setMessage("");
+    setSelectedStructureId("");
+    setShowCreateStructureInline(false);
+    setNewStructureInline({ name: "", type: "EURL / SASU", siret: "" });
+    setStructureInlineMsg("");
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (cameraInputRef.current) cameraInputRef.current.value = "";
+  };
+
+  const handleCreateStructureInline = async () => {
+    if (!newStructureInline.name.trim()) return;
+    setSavingStructureInline(true);
+    setStructureInlineMsg("");
+    try {
+      const res = await fetch("/api/structures", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          name: newStructureInline.name.trim(),
+          region,
+          type: newStructureInline.type.trim() || "EURL / SASU",
+          siret: newStructureInline.siret.trim() || null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStructureInlineMsg(typeof data.error === "string" ? data.error : "Erreur création structure.");
+        return;
+      }
+      const createdId = typeof data.id === "string" ? data.id : "";
+      const listRes = await fetch("/api/structures", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (listRes.ok) {
+        const list = (await listRes.json()) as StructureRow[];
+        setStructures(list);
+      }
+      if (createdId) setSelectedStructureId(createdId);
+      setNewStructureInline({ name: "", type: "EURL / SASU", siret: "" });
+      setShowCreateStructureInline(false);
+      setStructureInlineMsg("Structure créée.");
+      setTimeout(() => setStructureInlineMsg(""), 3000);
+    } catch {
+      setStructureInlineMsg("Erreur réseau.");
+    } finally {
+      setSavingStructureInline(false);
+    }
   };
 
   const exportPDF = async () => {
@@ -1252,6 +1334,7 @@ export default function InvoicesPage() {
 
   const draftAllOnCloudinary =
     files.length > 0 && files.every((f) => uploadedUrls.some((u) => u.name === f.name));
+  const structuresForRegion = structures.filter((s) => s.region === region);
 
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col px-4 py-3 sm:px-6 lg:px-8">
@@ -2088,6 +2171,84 @@ export default function InvoicesPage() {
                   <option value="">Choisir</option>
                   {categoryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-medium text-slate-600">Structure juridique</label>
+                <div className="flex gap-2">
+                  <select
+                    value={selectedStructureId}
+                    onChange={(e) => setSelectedStructureId(e.target.value)}
+                    className="w-full rounded border border-slate-300 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-900 focus:border-slate-500 focus:outline-none"
+                  >
+                    <option value="">Aucune</option>
+                    {structuresForRegion.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} - {s.type}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateStructureInline((v) => !v)}
+                    className="shrink-0 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    {showCreateStructureInline ? "Fermer" : "Creer"}
+                  </button>
+                </div>
+                <p className="mt-1 text-[10px] text-slate-500">
+                  {structuresForRegion.length > 0
+                    ? `${structuresForRegion.length} structure(s) pour ${regionDisplayLabel(region)}`
+                    : "Aucune structure pour ce pays. Creer une structure ci-dessous."}
+                </p>
+                {showCreateStructureInline && (
+                  <div className="mt-2 space-y-2 rounded border border-slate-200 bg-white p-2.5">
+                    <input
+                      type="text"
+                      value={newStructureInline.name}
+                      onChange={(e) => setNewStructureInline((p) => ({ ...p, name: e.target.value }))}
+                      className="w-full rounded border border-slate-300 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-900 focus:border-slate-500 focus:outline-none"
+                      placeholder="Nom de la structure"
+                    />
+                    <select
+                      value={newStructureInline.type}
+                      onChange={(e) => setNewStructureInline((p) => ({ ...p, type: e.target.value }))}
+                      className="w-full rounded border border-slate-300 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-900 focus:border-slate-500 focus:outline-none"
+                    >
+                      <option value="Auto-entrepreneur / Micro">Auto-entrepreneur / Micro</option>
+                      <option value="EURL / SASU">EURL / SASU</option>
+                      <option value="SARL">SARL</option>
+                      <option value="SAS">SAS</option>
+                      <option value="SCI">SCI</option>
+                      <option value="Association loi 1901">Association loi 1901</option>
+                      <option value="Profession libérale BNC">Profession libérale BNC</option>
+                      <option value="Holding IS">Holding IS</option>
+                      <option value="Salarié / Particulier">Salarié / Particulier</option>
+                    </select>
+                    <input
+                      type="text"
+                      value={newStructureInline.siret}
+                      onChange={(e) => setNewStructureInline((p) => ({ ...p, siret: e.target.value }))}
+                      className="w-full rounded border border-slate-300 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-900 focus:border-slate-500 focus:outline-none"
+                      placeholder="SIRET (optionnel)"
+                    />
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[10px] text-slate-500">Pays applique: {regionDisplayLabel(region)}</p>
+                      <button
+                        type="button"
+                        onClick={() => void handleCreateStructureInline()}
+                        disabled={savingStructureInline || !newStructureInline.name.trim()}
+                        className="rounded bg-slate-900 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+                      >
+                        {savingStructureInline ? "Creation..." : "Valider"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {structureInlineMsg && (
+                  <p className={`mt-1 text-[10px] ${structureInlineMsg.includes("Erreur") ? "text-rose-700" : "text-emerald-700"}`}>
+                    {structureInlineMsg}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="mb-1.5 block text-[11px] font-medium text-slate-600">Montant TTC (€) <span className="font-normal text-slate-400">OCR</span></label>

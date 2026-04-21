@@ -1,11 +1,19 @@
 import { NextResponse } from "next/server";
 import { pool } from "../../../lib/postgres";
+import { getAuthenticatedUserId } from "../../../lib/auth-request";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
   try {
-    const result = await pool.query(`SELECT * FROM structures ORDER BY region, name`);
+    const result = await pool.query(
+      `SELECT * FROM structures WHERE "userId" = $1 ORDER BY region, name`,
+      [userId],
+    );
     return NextResponse.json(result.rows);
   } catch (error) {
     console.error("Erreur structures:", error);
@@ -14,6 +22,10 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
   try {
     const { name, region, type, siret } = await request.json();
     if (!name || !region || !type) {
@@ -21,10 +33,10 @@ export async function POST(request: Request) {
     }
 
     const result = await pool.query(
-      `INSERT INTO structures (id, name, region, type, siret, "createdAt", "updatedAt")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW(), NOW())
+      `INSERT INTO structures (id, "userId", name, region, type, siret, "createdAt", "updatedAt")
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW(), NOW())
        RETURNING *`,
-      [name, region, type, siret ?? null]
+      [userId, name, region, type, siret ?? null]
     );
     return NextResponse.json(result.rows[0], { status: 201 });
   } catch (error) {
@@ -34,9 +46,13 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
   try {
     const { id } = await request.json();
-    await pool.query(`DELETE FROM structures WHERE id = $1`, [id]);
+    await pool.query(`DELETE FROM structures WHERE id = $1 AND "userId" = $2`, [id, userId]);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Erreur suppression structure:", error);

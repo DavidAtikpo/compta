@@ -31,10 +31,14 @@ model User {
   updatedAt           DateTime @updatedAt
   invoices            Invoice[]
   sendHistory         SendHistory[]
+  accountants         Accountant[]
+  structures          Structure[]
 }
 
 model Structure {
   id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   name      String
   region    String
   type      String
@@ -42,6 +46,7 @@ model Structure {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([userId])
   @@map("structures")
 }
 
@@ -61,6 +66,8 @@ model LegalAlert {
 
 model Accountant {
   id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   region    String
   email     String
   label     String?
@@ -69,7 +76,8 @@ model Accountant {
 
   invoices Invoice[]
 
-  @@unique([region, email])
+  @@unique([userId, region, email])
+  @@index([userId])
   @@map("accountants")
 }
 
