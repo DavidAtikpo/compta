@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Tesseract from "tesseract.js";
 import { InvoicePhotoCropModal } from "@/components/InvoicePhotoCropModal";
 import { UploadRingSpinner } from "@/components/UploadRingSpinner";
@@ -243,8 +243,7 @@ const CABINET_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export default function InvoicesPage() {
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
-  const kindParam = searchParams.get("kind") === "vente" ? "vente" : "achat";
+  const [invoiceKind, setInvoiceKind] = useState<"achat" | "vente">("achat");
   const [token, setToken] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState("");
   const [activeTab, setActiveTab] = useState<Tab>("invoices");
@@ -554,14 +553,28 @@ export default function InvoicesPage() {
   };
 
   useEffect(() => {
-    setInvoiceType(kindParam);
-    applyFilters({ invoiceType: kindParam });
+    if (typeof window === "undefined") return;
+    const applyKindFromUrl = () => {
+      const params = new URLSearchParams(window.location.search);
+      const kind = params.get("kind") === "vente" ? "vente" : "achat";
+      setInvoiceKind(kind);
+      setInvoiceType(kind);
+      applyFilters({ invoiceType: kind });
+    };
+    applyKindFromUrl();
+    window.addEventListener("popstate", applyKindFromUrl);
+    return () => window.removeEventListener("popstate", applyKindFromUrl);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kindParam]);
+  }, []);
 
   const switchInvoiceKind = (kind: "achat" | "vente") => {
-    const params = new URLSearchParams(searchParams.toString());
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
     params.set("kind", kind);
+    setInvoiceKind(kind);
+    setInvoiceType(kind);
+    setFilterInvoiceType(kind);
+    applyFilters({ invoiceType: kind });
     router.replace(`${pathname}?${params.toString()}`);
   };
 
@@ -1621,7 +1634,7 @@ export default function InvoicesPage() {
               type="button"
               onClick={() => switchInvoiceKind("achat")}
               className={`rounded px-3 py-1 text-[11px] font-medium transition ${
-                kindParam === "achat"
+                invoiceKind === "achat"
                   ? "bg-slate-900 text-white"
                   : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
               }`}
@@ -1632,7 +1645,7 @@ export default function InvoicesPage() {
               type="button"
               onClick={() => switchInvoiceKind("vente")}
               className={`rounded px-3 py-1 text-[11px] font-medium transition ${
-                kindParam === "vente"
+                invoiceKind === "vente"
                   ? "bg-slate-900 text-white"
                   : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
               }`}
