@@ -227,7 +227,7 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
     }
 
     const raw = await extractWithProvider(provider, systemPrompt, messages, ocrText, originalName, visionDataUrl);
-    const extracted = JSON.parse(raw);
+    const extracted = safeParseExtractedJson(raw);
 
     let invoiceDateVal: Date | null = null;
     if (extracted.dateFacture) {
@@ -285,6 +285,43 @@ Pour le compte comptable, utilise le plan comptable français (607=achats, 606=f
       { status: 500 }
     );
   }
+}
+
+function safeParseExtractedJson(raw: string): Record<string, unknown> {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return {};
+
+  // 1) direct JSON
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // continue
+  }
+
+  // 2) markdown fenced block ```json ... ```
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fencedMatch?.[1]) {
+    const candidate = fencedMatch[1].trim();
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // continue
+    }
+  }
+
+  // 3) fallback: extract first {...} block
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const candidate = trimmed.slice(firstBrace, lastBrace + 1);
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // continue
+    }
+  }
+
+  throw new Error("Réponse IA non JSON exploitable.");
 }
 
 async function extractWithProvider(

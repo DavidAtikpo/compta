@@ -1,7 +1,8 @@
 ﻿"use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Tesseract from "tesseract.js";
 import { InvoicePhotoCropModal } from "@/components/InvoicePhotoCropModal";
 import { UploadRingSpinner } from "@/components/UploadRingSpinner";
@@ -121,6 +122,108 @@ function buildInvoiceContextForAi(inv: Invoice): string {
   return lines.join("\n");
 }
 
+function renderInlineMarkdown(s: string): ReactNode {
+  const parts = s.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, j) => {
+    const bold = part.match(/^\*\*([^*]+)\*\*$/);
+    if (bold) return <strong key={j} className="font-semibold text-slate-900">{bold[1]}</strong>;
+    let t = part.replace(/\*([^*]+)\*/g, "$1");
+    t = t.replace(/\*\*/g, "");
+    t = t.replace(/(^|\n)\s*#{1,6}\s*/g, "$1");
+    return <span key={j}>{t}</span>;
+  });
+}
+
+function renderMarkdownTable(tableLines: string[], key: number) {
+  const rows = tableLines
+    .filter((l) => l.trim().startsWith("|"))
+    .map((l) => l.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()));
+
+  if (rows.length < 2) return null;
+  const header = rows[0];
+  const body = rows.filter((_, i) => i > 0 && !rows[i].every((c) => /^[-:]+$/.test(c)));
+
+  return (
+    <div key={key} className="my-2 w-full overflow-x-auto rounded-lg border border-slate-200 sm:my-3">
+      <table className="min-w-full text-[10px] sm:text-xs">
+        <thead className="bg-slate-100">
+          <tr>
+            {header.map((h, ci) => (
+              <th key={ci} className="whitespace-nowrap px-2 py-1.5 text-left font-semibold text-slate-700 sm:px-3 sm:py-2">
+                {renderInlineMarkdown(h)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {body.map((row, ri) => (
+            <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-slate-50/50"}>
+              {row.map((cell, ci) => (
+                <td key={ci} className="px-2 py-1.5 text-slate-700 sm:px-3 sm:py-2">
+                  {renderInlineMarkdown(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function formatFiscalAiAnswer(text: string) {
+  const rawLines = text.split("\n");
+  const blocks: Array<{ type: "table"; lines: string[] } | { type: "line"; content: string }> = [];
+
+  let i = 0;
+  while (i < rawLines.length) {
+    const trimmed = rawLines[i].trimEnd();
+    if (trimmed.trim().startsWith("|")) {
+      const tableLines: string[] = [];
+      while (i < rawLines.length && rawLines[i].trim().startsWith("|")) {
+        tableLines.push(rawLines[i]);
+        i++;
+      }
+      blocks.push({ type: "table", lines: tableLines });
+    } else {
+      blocks.push({ type: "line", content: trimmed });
+      i++;
+    }
+  }
+
+  return blocks.map((block, idx) => {
+    if (block.type === "table") return renderMarkdownTable(block.lines, idx);
+
+    const trimmed = block.content;
+    if (trimmed === "") return <div key={idx} className="h-1.5 sm:h-2" />;
+    if (trimmed.startsWith("---")) return <hr key={idx} className="my-2 border-slate-200 sm:my-3" />;
+
+    const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = heading[1].length;
+      const body = heading[2].replace(/^#+\s*/, "").trim();
+      if (level <= 2) {
+        return <h3 key={idx} className="mt-3 mb-1.5 text-sm font-bold text-slate-900 sm:mt-4 sm:mb-2 sm:text-base">{renderInlineMarkdown(body)}</h3>;
+      }
+      return <h4 key={idx} className="mt-2 mb-1 text-xs font-bold text-slate-800 sm:mt-3 sm:text-sm">{renderInlineMarkdown(body)}</h4>;
+    }
+
+    if (trimmed.startsWith("**") && trimmed.endsWith("**") && trimmed.length > 4) {
+      return <p key={idx} className="mt-1.5 text-xs font-semibold text-slate-900 sm:mt-2 sm:text-sm">{renderInlineMarkdown(trimmed.slice(2, -2))}</p>;
+    }
+
+    if (trimmed.startsWith("- ") || trimmed.startsWith("• ")) {
+      return <li key={idx} className="ml-3 list-disc text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">{renderInlineMarkdown(trimmed.slice(2))}</li>;
+    }
+
+    if (trimmed.match(/^\d+\./)) {
+      return <li key={idx} className="ml-3 list-decimal text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">{renderInlineMarkdown(trimmed.replace(/^\d+\.\s*/, ""))}</li>;
+    }
+
+    return <p key={idx} className="text-xs leading-5 text-slate-700 sm:text-sm sm:leading-6">{renderInlineMarkdown(trimmed)}</p>;
+  });
+}
+
 type Tab = "invoices" | "email";
 
 /** Largeur minimale du menu actions (aligné avec min-w-[11rem]) */
@@ -138,6 +241,10 @@ type CabinetModalState =
 const CABINET_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function InvoicesPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const kindParam = searchParams.get("kind") === "vente" ? "vente" : "achat";
   const [token, setToken] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState("");
   const [activeTab, setActiveTab] = useState<Tab>("invoices");
@@ -182,7 +289,7 @@ export default function InvoicesPage() {
 
   // Action states
   const [extractingId, setExtractingId] = useState<string | null>(null);
-  const [extractProvider, setExtractProvider] = useState<"openai" | "claude" | "perplexity">("openai");
+  const [extractProvider, setExtractProvider] = useState<"openai" | "claude" | "perplexity">("claude");
   const [savingPaymentId, setSavingPaymentId] = useState<string | null>(null);
   const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
   const [fiscalAiAnalyzingId, setFiscalAiAnalyzingId] = useState<string | null>(null);
@@ -444,6 +551,18 @@ export default function InvoicesPage() {
     const dateFrom = overrides.dateFrom ?? filterDateFrom;
     const dateTo = overrides.dateTo ?? filterDateTo;
     loadInvoices(reg || undefined, status || undefined, categ || undefined, dateFrom || undefined, dateTo || undefined, invoiceTypeValue || undefined);
+  };
+
+  useEffect(() => {
+    setInvoiceType(kindParam);
+    applyFilters({ invoiceType: kindParam });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kindParam]);
+
+  const switchInvoiceKind = (kind: "achat" | "vente") => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("kind", kind);
+    router.replace(`${pathname}?${params.toString()}`);
   };
 
   const clearFilters = () => {
@@ -803,6 +922,7 @@ export default function InvoicesPage() {
         body: JSON.stringify({
           region: inv.region || "france",
           businessType: "eurl",
+          provider: extractProvider,
           invoiceId: inv.id,
           ocrText: inv.ocrText || undefined,
           context: contextExtra,
@@ -1493,6 +1613,33 @@ export default function InvoicesPage() {
           >
             Import email (IMAP)
           </button>
+        </div>
+
+        <div className="border-b border-slate-200 bg-slate-50/70 px-3 py-2">
+          <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1">
+            <button
+              type="button"
+              onClick={() => switchInvoiceKind("achat")}
+              className={`rounded px-3 py-1 text-[11px] font-medium transition ${
+                kindParam === "achat"
+                  ? "bg-slate-900 text-white"
+                  : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+              }`}
+            >
+              Achat
+            </button>
+            <button
+              type="button"
+              onClick={() => switchInvoiceKind("vente")}
+              className={`rounded px-3 py-1 text-[11px] font-medium transition ${
+                kindParam === "vente"
+                  ? "bg-slate-900 text-white"
+                  : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+              }`}
+            >
+              Vente
+            </button>
+          </div>
         </div>
 
         {/* ============================================================ */}
@@ -2778,9 +2925,9 @@ export default function InvoicesPage() {
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-              <pre className="whitespace-pre-wrap break-words font-sans text-[11px] leading-relaxed text-slate-800 sm:text-xs">
-                {fiscalAiModal.body}
-              </pre>
+              <div className="space-y-0.5">
+                {formatFiscalAiAnswer(fiscalAiModal.body)}
+              </div>
             </div>
             <div className="border-t border-slate-100 px-4 py-2 text-[10px] text-slate-500">
               Réponse indicative — validez avec votre expert-comptable. La synthèse est aussi enregistrée côté serveur avec la facture.

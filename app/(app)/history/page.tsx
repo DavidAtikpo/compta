@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 function getAuthHeaders(): Record<string, string> {
   const h: Record<string, string> = {};
@@ -35,6 +35,98 @@ interface AiHistoryRecord {
   response: string;
   region: string;
   createdAt: string;
+}
+
+function renderInlineMarkdown(s: string): ReactNode {
+  const parts = s.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, j) => {
+    const bold = part.match(/^\*\*([^*]+)\*\*$/);
+    if (bold) return <strong key={j} className="font-semibold text-slate-900">{bold[1]}</strong>;
+    let t = part.replace(/\*([^*]+)\*/g, "$1");
+    t = t.replace(/\*\*/g, "");
+    t = t.replace(/(^|\n)\s*#{1,6}\s*/g, "$1");
+    return <span key={j}>{t}</span>;
+  });
+}
+
+function renderMarkdownTable(tableLines: string[], key: number) {
+  const rows = tableLines
+    .filter((l) => l.trim().startsWith("|"))
+    .map((l) => l.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()));
+  if (rows.length < 2) return null;
+  const header = rows[0];
+  const body = rows.filter((_, i) => i > 0 && !rows[i].every((c) => /^[-:]+$/.test(c)));
+
+  return (
+    <div key={key} className="my-2 w-full overflow-x-auto rounded-lg border border-slate-200 sm:my-3">
+      <table className="min-w-full text-[10px] sm:text-xs">
+        <thead className="bg-slate-100">
+          <tr>
+            {header.map((h, ci) => (
+              <th key={ci} className="whitespace-nowrap px-2 py-1.5 text-left font-semibold text-slate-700 sm:px-3 sm:py-2">
+                {renderInlineMarkdown(h)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {body.map((row, ri) => (
+            <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-slate-50/50"}>
+              {row.map((cell, ci) => (
+                <td key={ci} className="px-2 py-1.5 text-slate-700 sm:px-3 sm:py-2">
+                  {renderInlineMarkdown(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function formatAiResponse(text: string) {
+  const rawLines = text.split("\n");
+  const blocks: Array<{ type: "table"; lines: string[] } | { type: "line"; content: string }> = [];
+  let i = 0;
+  while (i < rawLines.length) {
+    const trimmed = rawLines[i].trimEnd();
+    if (trimmed.trim().startsWith("|")) {
+      const tableLines: string[] = [];
+      while (i < rawLines.length && rawLines[i].trim().startsWith("|")) {
+        tableLines.push(rawLines[i]);
+        i++;
+      }
+      blocks.push({ type: "table", lines: tableLines });
+    } else {
+      blocks.push({ type: "line", content: trimmed });
+      i++;
+    }
+  }
+
+  return blocks.map((block, idx) => {
+    if (block.type === "table") return renderMarkdownTable(block.lines, idx);
+    const trimmed = block.content;
+    if (trimmed === "") return <div key={idx} className="h-1.5 sm:h-2" />;
+    if (trimmed.startsWith("---")) return <hr key={idx} className="my-2 border-slate-200 sm:my-3" />;
+    const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = heading[1].length;
+      const body = heading[2].replace(/^#+\s*/, "").trim();
+      if (level <= 2) return <h3 key={idx} className="mt-3 mb-1.5 text-sm font-bold text-slate-900 sm:mt-4 sm:mb-2 sm:text-base">{renderInlineMarkdown(body)}</h3>;
+      return <h4 key={idx} className="mt-2 mb-1 text-xs font-bold text-slate-800 sm:mt-3 sm:text-sm">{renderInlineMarkdown(body)}</h4>;
+    }
+    if (trimmed.startsWith("**") && trimmed.endsWith("**") && trimmed.length > 4) {
+      return <p key={idx} className="mt-1.5 text-xs font-semibold text-slate-900 sm:mt-2 sm:text-sm">{renderInlineMarkdown(trimmed.slice(2, -2))}</p>;
+    }
+    if (trimmed.startsWith("- ") || trimmed.startsWith("• ")) {
+      return <li key={idx} className="ml-3 list-disc text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">{renderInlineMarkdown(trimmed.slice(2))}</li>;
+    }
+    if (trimmed.match(/^\d+\./)) {
+      return <li key={idx} className="ml-3 list-decimal text-xs leading-5 text-slate-700 sm:ml-4 sm:text-sm sm:leading-6">{renderInlineMarkdown(trimmed.replace(/^\d+\.\s*/, ""))}</li>;
+    }
+    return <p key={idx} className="text-xs leading-5 text-slate-700 sm:text-sm sm:leading-6">{renderInlineMarkdown(trimmed)}</p>;
+  });
 }
 
 export default function HistoryPage() {
@@ -493,9 +585,11 @@ export default function HistoryPage() {
                           </div>
                           <div>
                             <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 sm:text-xs">Réponse IA</p>
-                            <p className="max-h-60 overflow-y-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-white p-2 text-[11px] leading-relaxed text-slate-700 sm:max-h-72 sm:rounded-xl sm:p-2.5 sm:text-sm">
-                              {row.response}
-                            </p>
+                            <div className="max-h-60 overflow-y-auto rounded-lg border border-slate-200 bg-white p-2 sm:max-h-72 sm:rounded-xl sm:p-2.5">
+                              <div className="space-y-0.5">
+                                {formatAiResponse(row.response)}
+                              </div>
+                            </div>
                           </div>
                           {row.invoiceId && (
                             <p className="text-[10px] text-slate-400 sm:text-[11px]">
