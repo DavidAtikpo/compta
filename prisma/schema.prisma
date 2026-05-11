@@ -8,35 +8,69 @@ datasource db {
 }
 
 model User {
-  id                  String   @id @default(cuid())
-  email               String   @unique
-  passwordHash        String
-  name                String?
-  imageUrl            String?
-  aiOptimizations     AiOptimization[]
-  /// Texte libre sous la zone structurée (si pas d’image d’en-tête pleine largeur)
-  pdfHeaderText       String?
-  pdfFooterText       String?
-  /// Image d’en-tête / pied de page : si renseignées, remplacent la mise en page texte correspondante
-  pdfHeaderImageUrl   String?
-  pdfFooterImageUrl   String?
-  pdfLogoUrl          String?
-  pdfHeaderTitle      String?
-  pdfHeaderAddress    String?
-  /// JSON : tableau 2 lignes × 4 colonnes de chaînes
-  pdfHeaderTableJson  String?
-  /// stacked = logo+titre puis tableau pleine largeur ; logo_table_row = titre/adresse puis logo et tableau côte à côte
-  pdfHeaderLayout     String   @default("stacked")
-  aiCreditsBalance    Int      @default(2000)
-  billingPlan         String   @default("starter")
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-  invoices            Invoice[]
-  sendHistory         SendHistory[]
-  accountants         Accountant[]
-  structures          Structure[]
-  aiUsageLogs         AiUsageLog[]
-  billingEvents       BillingEvent[]
+  id                    String   @id @default(cuid())
+  email                 String   @unique
+  passwordHash          String
+  name                  String?
+  imageUrl              String?
+  aiOptimizations       AiOptimization[]
+  pdfHeaderText         String?
+  pdfFooterText         String?
+  pdfHeaderImageUrl     String?
+  pdfFooterImageUrl     String?
+  pdfLogoUrl            String?
+  pdfHeaderTitle        String?
+  pdfHeaderAddress      String?
+  pdfHeaderTableJson    String?
+  pdfHeaderLayout       String   @default("stacked")
+  aiCreditsBalance      Int      @default(2000)
+  billingPlan           String   @default("starter")
+  deletedAt             DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  invoices              Invoice[]
+  sendHistory           SendHistory[]
+  accountants           Accountant[]
+  structures            Structure[]
+  aiUsageLogs           AiUsageLog[]
+  billingEvents         BillingEvent[]
+  ownedEnterprises      Enterprise[]       @relation("EnterpriseOwner")
+  enterpriseMemberships EnterpriseMember[]
+  submittedInvoices     Invoice[]          @relation("InvoiceSubmittedBy")
+}
+
+model Enterprise {
+  id        String   @id @default(cuid())
+  name      String
+  siret     String?
+  ownerId   String
+  owner     User     @relation("EnterpriseOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  members   EnterpriseMember[]
+  @@index([ownerId])
+  @@map("enterprises")
+}
+
+/// role: owner | manager | agent
+/// status: pending | active | removed
+model EnterpriseMember {
+  id            String             @id @default(cuid())
+  enterpriseId  String
+  enterprise    Enterprise         @relation(fields: [enterpriseId], references: [id], onDelete: Cascade)
+  userId        String?
+  user          User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  email         String
+  role          String             @default("agent")
+  status        String             @default("pending")
+  inviteToken   String?            @unique
+  joinedAt      DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  @@unique([enterpriseId, email])
+  @@index([enterpriseId])
+  @@index([userId])
+  @@map("enterprise_members")
 }
 
 model Structure {
@@ -47,6 +81,7 @@ model Structure {
   region    String
   type      String
   siret     String?
+  deletedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -75,6 +110,7 @@ model Accountant {
   region    String
   email     String
   label     String?
+  deletedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -86,9 +122,11 @@ model Accountant {
 }
 
 model Invoice {
-  id              String      @id @default(cuid())
-  userId          String?
-  user            User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                 String      @id @default(cuid())
+  userId             String?
+  user               User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  submittedByUserId  String?
+  submittedBy        User?       @relation("InvoiceSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: SetNull)
   filename        String
   originalName    String
   size            Int
@@ -114,12 +152,15 @@ model Invoice {
   isPaid          Boolean?
   paidDate        DateTime?
   structureId     String?
+  currency        String?   @default("EUR")
+  deletedAt       DateTime?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
-  aiOptimizations AiOptimization[]
+  aiOptimizations   AiOptimization[]
 
   @@index([userId])
+  @@index([submittedByUserId])
   @@map("invoices")
 }
 
@@ -170,6 +211,21 @@ model AiUsageLog {
 
   @@index([userId, createdAt])
   @@map("ai_usage_logs")
+}
+
+model AdminAuditLog {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorUserId String   @map("actor_user_id")
+  actorEmail  String   @map("actor_email")
+  actorRole   String   @map("actor_role")
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  details     Json?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([actorUserId, createdAt])
+  @@map("admin_audit_logs")
 }
 
 model BillingEvent {

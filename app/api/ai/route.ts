@@ -1,6 +1,7 @@
 ﻿import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUserId } from "../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { pool } from "../../../lib/postgres";
 import { SQL_TABLES } from "../../../lib/sql-tables";
 
@@ -35,9 +36,17 @@ export async function POST(request: NextRequest) {
     Array.isArray(body.history) ? body.history : [];
 
   if (invoiceId) {
+    const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
+      await resolveInvoiceWorkspace(userId);
+    const agentClause = restrictAgentToOwnSubmissions
+      ? ` AND "submittedByUserId" = $3`
+      : "";
+    const selParams = restrictAgentToOwnSubmissions
+      ? [invoiceId, workspaceOwnerId, actorUserId]
+      : [invoiceId, workspaceOwnerId];
     const own = await pool.query(
-      `SELECT id FROM ${SQL_TABLES.invoices} WHERE id = $1 AND "userId" = $2`,
-      [invoiceId, userId],
+      `SELECT id FROM ${SQL_TABLES.invoices} WHERE id = $1 AND "userId" = $2 AND ("deletedAt" IS NULL)${agentClause}`,
+      selParams,
     );
     if (own.rows.length === 0) {
       return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });

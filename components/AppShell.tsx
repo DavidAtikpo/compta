@@ -6,28 +6,46 @@ import { Header } from "@/components/Header";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { SessionExpiredRedirect } from "@/components/SessionExpiredRedirect";
 import { Sidebar } from "@/components/Sidebar";
+import { isEntreprisePlan } from "@/lib/plans";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
   const [userImageUrl, setUserImageUrl] = useState("");
+  const [showEnterpriseNav, setShowEnterpriseNav] = useState(false);
+  const [showAdminNav, setShowAdminNav] = useState(false);
 
   useEffect(() => {
     const load = () => {
       const token = window.localStorage.getItem("compta-token");
-      if (!token) return;
-      fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
-        .then(async (r) => {
-          if (r.status === 401) return;
-          const d = await r.json();
-          if (d.email) {
-            setUserEmail(d.email);
-            setUserName(typeof d.name === "string" ? d.name : "");
-            setUserImageUrl(typeof d.imageUrl === "string" ? d.imageUrl : "");
+      if (!token) {
+        setShowEnterpriseNav(false);
+        setShowAdminNav(false);
+        return;
+      }
+      void (async () => {
+        try {
+          const [meRes, entRes] = await Promise.all([
+            fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } }),
+            fetch("/api/enterprise", { headers: { Authorization: `Bearer ${token}` } }),
+          ]);
+          const me = await meRes.json().catch(() => ({}));
+          const ent = await entRes.json().catch(() => ({}));
+          if (meRes.ok && me.email) {
+            setUserEmail(me.email);
+            setUserName(typeof me.name === "string" ? me.name : "");
+            setUserImageUrl(typeof me.imageUrl === "string" ? me.imageUrl : "");
+            setShowAdminNav(!!me.isAdmin);
+            const mine = isEntreprisePlan(me.billingPlan);
+            const ownerOk = isEntreprisePlan(ent?.ownerBillingPlan);
+            const hasEnt = !!ent?.enterprise;
+            setShowEnterpriseNav(mine || (hasEnt && ownerOk));
           }
-        })
-        .catch(() => {});
+        } catch {
+          /* silent */
+        }
+      })();
     };
     load();
     window.addEventListener("compta-profile-updated", load);
@@ -42,7 +60,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-dvh max-h-dvh overflow-hidden bg-slate-50 text-slate-900">
       <SessionExpiredRedirect />
-      <Sidebar />
+      <Sidebar showEnterpriseNav={showEnterpriseNav} showAdminNav={showAdminNav} />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <Header
           userName={userName}
@@ -60,7 +78,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </p>
         </footer>
       </div>
-      <MobileBottomNav />
+      <MobileBottomNav showEnterpriseNav={showEnterpriseNav} showAdminNav={showAdminNav} />
     </div>
   );
 }

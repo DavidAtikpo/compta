@@ -1,6 +1,7 @@
 ﻿import { NextResponse } from "next/server";
 import { pool } from "../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 
 export async function GET(request: Request) {
   const userId = getAuthenticatedUserId(request);
@@ -8,13 +9,14 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
   }
   try {
+    const { workspaceOwnerId } = await resolveInvoiceWorkspace(userId);
     const result = await pool.query(
       `SELECT id, region, email, label, "createdAt", "updatedAt"
        FROM accountants
-       WHERE "userId" = $1
+       WHERE "userId" = $1 AND ("deletedAt" IS NULL)
        ORDER BY region ASC, "createdAt" ASC`
       ,
-      [userId]
+      [workspaceOwnerId]
     );
     return NextResponse.json(result.rows);
   } catch (error) {
@@ -29,6 +31,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
   }
   try {
+    const { workspaceOwnerId } = await resolveInvoiceWorkspace(userId);
     const body = await request.json();
     const region = typeof body.region === "string" ? body.region.trim().toLowerCase() : "";
     const email = typeof body.email === "string" ? body.email.trim() : "";
@@ -48,7 +51,7 @@ export async function POST(request: Request) {
          label = COALESCE(EXCLUDED.label, accountants.label),
          "updatedAt" = NOW()
        RETURNING *`,
-      [userId, region, email, label]
+      [workspaceOwnerId, region, email, label]
     );
 
     return NextResponse.json(result.rows[0]);

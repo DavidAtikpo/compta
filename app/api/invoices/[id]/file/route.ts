@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { v2 as cloudinary } from "cloudinary";
 import { pool } from "../../../../../lib/postgres";
 import { getUserIdFromJwt } from "../../../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -178,11 +179,20 @@ export async function GET(
     return NextResponse.json({ error: "Session invalide." }, { status: 401 });
   }
 
+  const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
+    await resolveInvoiceWorkspace(userId);
+
   // Get fileUrl from DB
   try {
+    const agentClause = restrictAgentToOwnSubmissions
+      ? ` AND "submittedByUserId" = $3`
+      : "";
+    const selParams = restrictAgentToOwnSubmissions
+      ? [id, workspaceOwnerId, actorUserId]
+      : [id, workspaceOwnerId];
     const r = await pool.query(
-      `SELECT "fileUrl", "originalName" FROM invoices WHERE id = $1 AND "userId" = $2`,
-      [id, userId]
+      `SELECT "fileUrl", "originalName" FROM invoices WHERE id = $1 AND "userId" = $2 AND ("deletedAt" IS NULL)${agentClause}`,
+      selParams
     );
     const row = r.rows[0] as { fileUrl: string | null; originalName: string } | undefined;
     if (!row?.fileUrl) {

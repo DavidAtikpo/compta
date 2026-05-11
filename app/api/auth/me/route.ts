@@ -1,11 +1,33 @@
 import { NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
 import { prisma } from "../../../../lib/prisma";
+import { isAdminEmail } from "@/lib/admin";
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 
 if (!JWT_SECRET) {
   throw new Error("JWT_SECRET must be set in environment variables.");
+}
+
+function adminRoleFromEmail(email: string): "super_admin" | "support_admin" | "read_only_admin" | null {
+  const normalized = email.trim().toLowerCase();
+  const direct = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  if (direct && normalized === direct) return "super_admin";
+
+  const parseEmails = (value: string | undefined) =>
+    new Set(
+      (value || "")
+        .split(",")
+        .map((v) => v.trim().toLowerCase())
+        .filter(Boolean),
+    );
+  if (parseEmails(process.env.ADMIN_EMAILS).has(normalized)) return "super_admin";
+
+  // Backward compatible legacy vars: treat as super admin
+  if (parseEmails(process.env.ADMIN_SUPER_EMAILS).has(normalized)) return "super_admin";
+  if (parseEmails(process.env.ADMIN_SUPPORT_EMAILS).has(normalized)) return "super_admin";
+  if (parseEmails(process.env.ADMIN_READONLY_EMAILS).has(normalized)) return "super_admin";
+  return null;
 }
 
 export async function GET(request: Request) {
@@ -47,6 +69,8 @@ export async function GET(request: Request) {
         return NextResponse.json({
           email: user.email,
           name: user.name || "",
+          isAdmin: isAdminEmail(user.email),
+          adminRole: adminRoleFromEmail(user.email),
           imageUrl: user.imageUrl || "",
           pdfHeaderText: user.pdfHeaderText || "",
           pdfFooterText: user.pdfFooterText || "",
@@ -65,6 +89,8 @@ export async function GET(request: Request) {
     return NextResponse.json({
       email: payload.email,
       name: payload.name || "",
+      isAdmin: isAdminEmail(payload.email),
+      adminRole: adminRoleFromEmail(payload.email),
       imageUrl: "",
       pdfHeaderText: "",
       pdfFooterText: "",

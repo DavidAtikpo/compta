@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -19,7 +20,15 @@ const settingsItem = {
   ),
 } as const;
 
-const nav = [
+type NavItem = {
+  href: string;
+  label: string;
+  icon: ReactNode;
+  requiresEnterprise?: boolean;
+  requiresAdmin?: boolean;
+};
+
+const nav: NavItem[] = [
   {
     href: "/",
     label: "Tableau de bord",
@@ -65,10 +74,46 @@ const nav = [
       </svg>
     ),
   },
+  {
+    href: "/enterprise",
+    label: "Entreprise",
+    requiresEnterprise: true,
+    icon: (
+      <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+      </svg>
+    ),
+  },
+  {
+    href: "/admin",
+    label: "Admin",
+    requiresAdmin: true,
+    icon: (
+      <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422A12.083 12.083 0 0112 20.055a12.083 12.083 0 01-6.16-9.477L12 14z"
+        />
+      </svg>
+    ),
+  },
 ];
 
-export function Sidebar() {
+export function Sidebar({
+  showEnterpriseNav = false,
+  showAdminNav = false,
+}: {
+  showEnterpriseNav?: boolean;
+  showAdminNav?: boolean;
+}) {
   const pathname = usePathname();
+
+  const visible = nav.filter((item) => {
+    if ("requiresEnterprise" in item && item.requiresEnterprise) return showEnterpriseNav;
+    if ("requiresAdmin" in item && item.requiresAdmin) return showAdminNav;
+    return true;
+  });
 
   return (
     <aside className="hidden h-dvh w-56 shrink-0 flex-col border-r border-slate-200 bg-white lg:flex">
@@ -86,7 +131,7 @@ export function Sidebar() {
       </div>
       <nav className="flex min-h-0 flex-1 flex-col">
         <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
-          {nav.map((item) => {
+          {visible.map((item) => {
             const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
             return (
               <Link

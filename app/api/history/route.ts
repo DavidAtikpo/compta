@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { pool } from "../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 
 export async function GET(request: NextRequest) {
   const userId = getAuthenticatedUserId(request);
@@ -14,12 +15,13 @@ export async function GET(request: NextRequest) {
   const limit = parseInt(searchParams.get("limit") || "100", 10);
 
   try {
+    const { workspaceOwnerId } = await resolveInvoiceWorkspace(userId);
     let query = `
       SELECT id, region, "recipientEmail", message, "filesCount", "sentAt", success, error
       FROM send_history
       WHERE "userId" = $1
     `;
-    const params: (string | number)[] = [userId];
+    const params: (string | number)[] = [workspaceOwnerId];
     let idx = 2;
 
     if (region) {

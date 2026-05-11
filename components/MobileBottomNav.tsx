@@ -4,11 +4,15 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const items: {
+type NavItem = {
   href: string;
   short: string;
   icon: ReactNode;
-}[] = [
+  requiresEnterprise?: boolean;
+  requiresAdmin?: boolean;
+};
+
+const items: NavItem[] = [
   {
     href: "/",
     short: "Accueil",
@@ -62,10 +66,46 @@ const items: {
       </svg>
     ),
   },
+  {
+    href: "/enterprise",
+    short: "Entreprise",
+    requiresEnterprise: true,
+    icon: (
+      <svg className="mx-auto h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+      </svg>
+    ),
+  },
+  {
+    href: "/admin",
+    short: "Admin",
+    requiresAdmin: true,
+    icon: (
+      <svg className="mx-auto h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422A12.083 12.083 0 0112 20.055a12.083 12.083 0 01-6.16-9.477L12 14z"
+        />
+      </svg>
+    ),
+  },
 ];
 
-export function MobileBottomNav() {
+export function MobileBottomNav({
+  showEnterpriseNav = false,
+  showAdminNav = false,
+}: {
+  showEnterpriseNav?: boolean;
+  showAdminNav?: boolean;
+}) {
   const pathname = usePathname();
+
+  const visible = items.filter((item) => {
+    if (item.requiresEnterprise) return showEnterpriseNav;
+    if (item.requiresAdmin) return showAdminNav;
+    return true;
+  });
 
   return (
     <nav
@@ -74,7 +114,7 @@ export function MobileBottomNav() {
       aria-label="Navigation principale"
     >
       <ul className="mx-auto flex max-w-lg items-stretch justify-between gap-0 px-0.5">
-        {items.map((item) => {
+        {visible.map((item) => {
           const active =
             pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
           return (

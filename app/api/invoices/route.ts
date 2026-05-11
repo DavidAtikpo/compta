@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { pool } from "../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 
 export async function GET(request: NextRequest) {
   const userId = getAuthenticatedUserId(request);
@@ -15,14 +16,25 @@ export async function GET(request: NextRequest) {
   const limit = parseInt(searchParams.get("limit") || "50", 10);
 
   try {
+    const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
+      await resolveInvoiceWorkspace(userId);
+
     let query = `
-      SELECT i.*, a.email as accountant_email
+      SELECT i.*, a.email as accountant_email,
+        su.email as "submittedByEmail",
+        su.name as "submittedByName"
       FROM invoices i
       LEFT JOIN accountants a ON i."accountantId" = a.id
-      WHERE i."userId" = $1
+      LEFT JOIN "User" su ON i."submittedByUserId" = su.id
+      WHERE i."userId" = $1 AND (i."deletedAt" IS NULL)
     `;
-    const params: (string | number)[] = [userId];
+    const params: (string | number)[] = [workspaceOwnerId];
     let idx = 2;
+
+    if (restrictAgentToOwnSubmissions) {
+      query += ` AND i."submittedByUserId" = $${idx++}`;
+      params.push(actorUserId);
+    }
 
     if (region) {
       query += ` AND i.region = $${idx++}`;
@@ -54,6 +66,8 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const { workspaceOwnerId, actorUserId } = await resolveInvoiceWorkspace(userId);
+
     const body = await request.json();
     const {
       filename,
@@ -68,6 +82,7 @@ export async function POST(request: NextRequest) {
       structureId,
       invoiceDate,
       fileUrl,
+      currency,
     } = body;
 
     if (!originalName || !region) {
@@ -77,10 +92,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Try to find accountant for region
     const accountantResult = await pool.query(
       `SELECT id FROM accountants WHERE region = $1 AND "userId" = $2 ORDER BY "createdAt" ASC LIMIT 1`,
-      [region, userId]
+      [region, workspaceOwnerId]
     );
     const accountantId =
       accountantResult.rows.length > 0
@@ -92,12 +106,19 @@ export async function POST(request: NextRequest) {
         ? "vente"
         : "achat";
 
+    const VALID_CURRENCIES = ["EUR", "GBP", "USD", "CNY", "GHS", "XAF", "XOF"];
+    const normalizedCurrency =
+      typeof currency === "string" && VALID_CURRENCIES.includes(currency.toUpperCase())
+        ? currency.toUpperCase()
+        : "EUR";
+
     const result = await pool.query(
-      `INSERT INTO invoices (id, "userId", filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, "invoiceType", "structureId", status, "invoiceDate", "fileUrl", "createdAt", "updatedAt")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending', $13, $14, NOW(), NOW())
+      `INSERT INTO invoices (id, "userId", "submittedByUserId", filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, "invoiceType", "structureId", status, "invoiceDate", "fileUrl", currency, "createdAt", "updatedAt")
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending', $14, $15, $16, NOW(), NOW())
        RETURNING *`,
       [
-        userId,
+        workspaceOwnerId,
+        actorUserId,
         filename || originalName,
         originalName,
         size || 0,
@@ -111,6 +132,7 @@ export async function POST(request: NextRequest) {
         structureId || null,
         invoiceDate || null,
         fileUrl || null,
+        normalizedCurrency,
       ]
     );
 
@@ -131,11 +153,36 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
+    const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
+      await resolveInvoiceWorkspace(userId);
     const body = await request.json();
-    const { id, status, amount, category, isPaid, paidDate } = body;
+    const { id, status, amount, category, isPaid, paidDate, currency } = body;
 
     if (!id) {
       return NextResponse.json({ error: "id requis" }, { status: 400 });
+    }
+
+    const VALID_CURRENCIES = ["EUR", "GBP", "USD", "CNY", "GHS", "XAF", "XOF"];
+    const normalizedCurrency =
+      typeof currency === "string" && VALID_CURRENCIES.includes(currency.toUpperCase())
+        ? currency.toUpperCase()
+        : null;
+
+    const agentClause = restrictAgentToOwnSubmissions
+      ? ` AND "submittedByUserId" = $9`
+      : "";
+    const patchParams: (string | number | Date | boolean | null)[] = [
+      id,
+      status ?? null,
+      amount ?? null,
+      category ?? null,
+      typeof isPaid === "boolean" ? isPaid : null,
+      paidDate ? new Date(String(paidDate)) : null,
+      workspaceOwnerId,
+      normalizedCurrency,
+    ];
+    if (restrictAgentToOwnSubmissions) {
+      patchParams.push(actorUserId);
     }
 
     const result = await pool.query(
@@ -145,18 +192,11 @@ export async function PATCH(request: NextRequest) {
         category = COALESCE($4, category),
         "isPaid" = COALESCE($5::boolean, "isPaid"),
         "paidDate" = COALESCE($6::timestamptz, "paidDate"),
+        currency = COALESCE($8, currency),
         "updatedAt" = NOW()
-       WHERE id = $1 AND "userId" = $7
+       WHERE id = $1 AND "userId" = $7 AND ("deletedAt" IS NULL)${agentClause}
        RETURNING *`,
-      [
-        id,
-        status ?? null,
-        amount ?? null,
-        category ?? null,
-        typeof isPaid === "boolean" ? isPaid : null,
-        paidDate ? new Date(String(paidDate)) : null,
-        userId,
-      ]
+      patchParams,
     );
 
     if (result.rows.length === 0) {

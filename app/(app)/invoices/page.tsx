@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import Tesseract from "tesseract.js";
@@ -12,6 +12,11 @@ import {
   regionDisplayLabel,
 } from "@/lib/country-regions";
 import { MAX_PDF_INVOICES } from "../../../lib/pdf-export";
+import {
+  detectCurrencyFromOcrText,
+  getExplicitCurrencyFromText,
+  mergeOcrCurrencyMarker,
+} from "@/lib/invoice-currency";
 
 /** Réglages IMAP Gmail recommandés (identiques pour tous les comptes Gmail). */
 const IMAP_DEFAULT_HOST = "imap.gmail.com";
@@ -34,6 +39,21 @@ function isLikelyPdfPreview(title: string, url: string): boolean {
   const t = title.toLowerCase();
   const u = url.toLowerCase();
   return t.endsWith(".pdf") || /\.pdf(\?|#|$|\/)/i.test(u);
+}
+
+const CURRENCY_OPTIONS = [
+  { code: "EUR", label: "Euro (€)",                  symbol: "€"    },
+  { code: "GBP", label: "Livre sterling (£)",         symbol: "£"    },
+  { code: "USD", label: "Dollar américain ($)",       symbol: "$"    },
+  { code: "CNY", label: "Yuan chinois (¥)",           symbol: "¥"    },
+  { code: "GHS", label: "Cédi ghanéen (₵)",          symbol: "₵"    },
+  { code: "XAF", label: "Franc CFA CEMAC (XAF)",     symbol: "FCFA" },
+  { code: "XOF", label: "Franc CFA UEMOA (XOF)",     symbol: "FCFA" },
+] as const;
+
+function currencySymbol(code: string | null | undefined): string {
+  const found = CURRENCY_OPTIONS.find((c) => c.code === (code ?? "EUR"));
+  return found?.symbol ?? "€";
 }
 
 const categoryOptions = [
@@ -75,6 +95,9 @@ interface Invoice {
   invoiceDate: string | null;
   isPaid: boolean | null;
   paidDate: string | null;
+  currency: string | null;
+  submittedByEmail?: string | null;
+  submittedByName?: string | null;
 }
 
 function extractPaidAmount(ocrText: string | null): number | null {
@@ -107,17 +130,20 @@ function extractPaidAmount(ocrText: string | null): number | null {
 }
 
 function buildInvoiceContextForAi(inv: Invoice): string {
+  const cur = inv.currency ?? "EUR";
+  const sym = currencySymbol(cur);
   const lines = [
     `Pièce : ${inv.originalName}`,
     inv.fournisseur ? `Fournisseur : ${inv.fournisseur}` : null,
     inv.numeroFacture ? `N° facture : ${inv.numeroFacture}` : null,
     inv.invoiceDate ? `Date facture : ${inv.invoiceDate}` : null,
     inv.category ? `Catégorie : ${inv.category}` : null,
-    inv.montantHT != null ? `Montant HT : ${inv.montantHT}` : null,
-    inv.montantTVA != null ? `TVA : ${inv.montantTVA}` : null,
-    inv.montantTTC != null ? `Montant TTC : ${inv.montantTTC}` : null,
+    `Devise : ${cur}`,
+    inv.montantHT != null ? `Montant HT : ${inv.montantHT} ${sym}` : null,
+    inv.montantTVA != null ? `TVA : ${inv.montantTVA} ${sym}` : null,
+    inv.montantTTC != null ? `Montant TTC : ${inv.montantTTC} ${sym}` : null,
     inv.tauxTVA != null ? `Taux TVA : ${inv.tauxTVA}%` : null,
-    inv.amount != null ? `Montant enregistré : ${inv.amount}` : null,
+    inv.amount != null ? `Montant enregistré : ${inv.amount} ${sym}` : null,
   ].filter(Boolean) as string[];
   return lines.join("\n");
 }
@@ -254,6 +280,7 @@ export default function InvoicesPage() {
   const [invoiceType, setInvoiceType] = useState<"achat" | "vente">("achat");
   const [category, setCategory] = useState("");
   const [amount, setAmount] = useState("");
+  const [currency, setCurrency] = useState("EUR");
   const [selectedStructureId, setSelectedStructureId] = useState("");
   const [structures, setStructures] = useState<StructureRow[]>([]);
   const [showCreateStructureInline, setShowCreateStructureInline] = useState(false);
@@ -271,6 +298,14 @@ export default function InvoicesPage() {
 
   // Invoice list states
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+
+  const showAddedByColumn = useMemo(() => {
+    if (!userEmail) return false;
+    const u = userEmail.trim().toLowerCase();
+    return invoices.some(
+      (i) => i.submittedByEmail && String(i.submittedByEmail).trim().toLowerCase() !== u,
+    );
+  }, [invoices, userEmail]);
   const [filterRegion, setFilterRegion] = useState("");
   const [filterInvoiceType, setFilterInvoiceType] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
@@ -288,7 +323,10 @@ export default function InvoicesPage() {
 
   // Action states
   const [extractingId, setExtractingId] = useState<string | null>(null);
-  const [extractProvider, setExtractProvider] = useState<"openai" | "claude" | "perplexity">("claude");
+  // Extraction facture: OCR + règles uniquement (pas de LLM)
+  const [extractProvider] = useState<"rules">("rules");
+  // IA: uniquement pour l'analyse / recherche
+  const [aiProvider, setAiProvider] = useState<"openai" | "claude" | "perplexity">("claude");
   const [savingPaymentId, setSavingPaymentId] = useState<string | null>(null);
   const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
   const [fiscalAiAnalyzingId, setFiscalAiAnalyzingId] = useState<string | null>(null);
@@ -601,10 +639,24 @@ export default function InvoicesPage() {
           },
         });
         const text = result.data.text.trim();
-        results.push({ name: file.name, text: text || "Aucun texte détecté." });
-        if (!amount) {
-          const m = text.match(/(?:total|montant|ttc|ht)[^\d]*(\d+[,.]?\d*)/i);
-          if (m) setAmount(m[1].replace(",", "."));
+        if (text) {
+          const detected = detectCurrencyFromOcrText(text);
+          const explicit = getExplicitCurrencyFromText(text);
+          if (explicit) setCurrency(explicit);
+          const stamped = mergeOcrCurrencyMarker(text, detected);
+          results.push({ name: file.name, text: stamped });
+          if (!amount) {
+            const m = text.match(
+              /(?:total|montant|ttc|ht|balance\s+due|amount\s+due)[^\d]{0,40}(\d[\d\s.,]{0,14})(?:\s*(€|eur|\$|usd|£|gbp|¥|元|cny|₵|ghs|fcfa|xaf|xof))?/i,
+            );
+            if (m?.[1]) {
+              const num = m[1].replace(/\s/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(/,(?=\d{3}(\D|$))/g, "").replace(",", ".");
+              const n = parseFloat(num);
+              if (!Number.isNaN(n)) setAmount(String(n));
+            }
+          }
+        } else {
+          results.push({ name: file.name, text: "Aucun texte détecté." });
         }
       } catch (err) {
         results.push({ name: file.name, text: `Erreur OCR: ${(err as Error).message}` });
@@ -755,18 +807,24 @@ export default function InvoicesPage() {
             invoiceType,
             structureId: selectedStructureId || null,
             fileUrl,
+            currency: currency || "EUR",
           }),
         });
         if (res.ok) {
           const inv = await res.json();
           if (fileUrl && inv.id) {
-            setOcrStatus(`Extraction IA ${i + 1}/${files.length} : ${file.name}`);
+            setOcrStatus(`Extraction (OCR) ${i + 1}/${files.length} : ${file.name}`);
             try {
               const exRes = await fetch(`/api/invoices/${inv.id}/extract`, {
                 method: "POST",
-                ...(authT ? { headers: { Authorization: `Bearer ${authT}` } } : {}),
+                headers: {
+                  "Content-Type": "application/json",
+                  ...(authT ? { Authorization: `Bearer ${authT}` } : {}),
+                },
+                body: JSON.stringify({ provider: "rules" }),
               });
-              if (exRes.ok) autoExtractOk++;
+              const exJson = await exRes.json().catch(() => ({}));
+              if (exRes.ok && exJson?.success) autoExtractOk++;
               else autoExtractFail++;
             } catch { autoExtractFail++; }
           }
@@ -775,7 +833,7 @@ export default function InvoicesPage() {
       const totalExtract = autoExtractOk + autoExtractFail;
       if (totalExtract > 0) {
         setUploadResult(
-          `${files.length} facture(s) enregistrée(s). Extraction IA auto : ${autoExtractOk} OK${autoExtractFail ? `, ${autoExtractFail} en erreur (relancer depuis le menu)` : ""}.`
+          `${files.length} facture(s) enregistrée(s). Extraction (OCR) auto : ${autoExtractOk} OK${autoExtractFail ? `, ${autoExtractFail} en erreur (relancer depuis le menu)` : ""}.`
         );
       } else {
         setUploadResult(`${files.length} facture(s) enregistrée(s).`);
@@ -871,9 +929,10 @@ export default function InvoicesPage() {
       if (res.ok && json.success) {
         const d = json.data ?? {};
         const parts: string[] = [];
+        const sym = currencySymbol(d.currency ?? null);
         if (d.fournisseur)   parts.push(d.fournisseur);
-        if (d.montantTTC)    parts.push(`TTC: ${Number(d.montantTTC).toFixed(2)} €`);
-        if (d.montantHT)     parts.push(`HT: ${Number(d.montantHT).toFixed(2)} €`);
+        if (d.montantTTC)    parts.push(`TTC: ${Number(d.montantTTC).toFixed(2)} ${sym}`);
+        if (d.montantHT)     parts.push(`HT: ${Number(d.montantHT).toFixed(2)} ${sym}`);
         if (d.numeroFacture) parts.push(`N°${d.numeroFacture}`);
         const msg = parts.length > 0 ? `✓ ${parts.join(" · ")}` : "✓ Extrait (aucune donnée trouvée)";
         setExtractResults((prev) => ({ ...prev, [id]: { ok: true, msg } }));
@@ -935,7 +994,7 @@ export default function InvoicesPage() {
         body: JSON.stringify({
           region: inv.region || "france",
           businessType: "eurl",
-          provider: extractProvider,
+          provider: aiProvider,
           invoiceId: inv.id,
           ocrText: inv.ocrText || undefined,
           context: contextExtra,
@@ -1377,7 +1436,7 @@ export default function InvoicesPage() {
     });
     setFiles([]); setExtractedTexts([]); setUploadedUrls([]);
     setOcrStatus(""); setUploadResult(""); setSendResult("");
-    setAmount(""); setCategory(""); setMessage("");
+    setAmount(""); setCategory(""); setCurrency("EUR"); setMessage("");
     setInvoiceType("achat");
     setSelectedStructureId("");
     setShowCreateStructureInline(false);
@@ -1569,7 +1628,7 @@ export default function InvoicesPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-lg font-semibold text-slate-900">Factures et pièces justificatives</h1>
-            <p className="mt-0.5 text-xs text-slate-500">OCR, extraction IA, stockage, transmission cabinet</p>
+            <p className="mt-0.5 text-xs text-slate-500">OCR, extraction (OCR), stockage, transmission cabinet</p>
           </div>
           <div className="flex flex-wrap gap-1.5">
             <button
@@ -1720,16 +1779,28 @@ export default function InvoicesPage() {
                   </select>
                 </div>
 
-                {/* AI provider for extraction */}
+                {/* Extraction (OCR) + AI provider for analysis */}
                 <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">IA extraction</label>
+                  <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Extraction</label>
                   <select
                     value={extractProvider}
-                    onChange={(e) => setExtractProvider(e.target.value as "openai" | "claude" | "perplexity")}
+                    onChange={() => {}}
+                    disabled
                     className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
                   >
-                    <option value="openai">ChatGPT</option>
+                    <option value="rules">Sans IA (OCR)</option>
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Analyse IA</label>
+                  <select
+                    value={aiProvider}
+                    onChange={(e) => setAiProvider(e.target.value as "openai" | "claude" | "perplexity")}
+                    className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                  >
                     <option value="claude">Claude</option>
+                    <option value="openai">ChatGPT</option>
                     <option value="perplexity">Perplexity</option>
                   </select>
                 </div>
@@ -1860,7 +1931,13 @@ export default function InvoicesPage() {
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap" title="Date d'ajout">Ajout</th>
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap" title="Date sur la facture (IA)">Date facture</th>
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Client / Fournisseur</th>
+                      {showAddedByColumn && (
+                        <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">
+                          Ajouté par
+                        </th>
+                      )}
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Référence</th>
+                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Devise</th>
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant HT</th>
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Règlé</th>
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant TTC</th>
@@ -1874,6 +1951,8 @@ export default function InvoicesPage() {
                     {invoices.map((inv) => {
                       const montantTTC = inv.montantTTC ?? inv.amount;
                       const montantHT  = inv.montantHT;
+                      const invCurrency = inv.currency ?? "EUR";
+                      const invSymbol   = currencySymbol(invCurrency);
                       const paidAmount = extractPaidAmount(inv.ocrText);
                       const isPaidManual = typeof inv.isPaid === "boolean" ? inv.isPaid : paidAmount != null;
                       const paidDateValue = inv.paidDate ? new Date(inv.paidDate).toISOString().slice(0, 10) : "";
@@ -1917,12 +1996,34 @@ export default function InvoicesPage() {
                             </p>
                             {inv.category && <p className="truncate text-[10px] text-slate-400">{inv.category}</p>}
                           </td>
+                          {showAddedByColumn && (
+                            <td className="px-2 py-1.5 max-w-[100px]">
+                              <p className="truncate text-[10px] font-medium text-slate-700">
+                                {inv.submittedByName || inv.submittedByEmail || "—"}
+                              </p>
+                              {inv.submittedByEmail && (
+                                <p className="truncate text-[9px] text-slate-400">{inv.submittedByEmail}</p>
+                              )}
+                            </td>
+                          )}
                           <td className="px-2 py-1.5 max-w-[120px]">
                             <p className="truncate text-[10px] text-slate-500">{inv.originalName}</p>
                             {inv.accountant_email && <p className="truncate text-[10px] text-slate-400">{inv.accountant_email}</p>}
                           </td>
+                          <td className="px-2 py-1.5 whitespace-nowrap text-center">
+                            <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                              invCurrency === "EUR" ? "bg-blue-50 text-blue-700"
+                              : invCurrency === "GBP" ? "bg-violet-50 text-violet-700"
+                              : invCurrency === "USD" ? "bg-green-50 text-green-700"
+                              : invCurrency === "CNY" ? "bg-red-50 text-red-700"
+                              : invCurrency === "GHS" ? "bg-amber-50 text-amber-700"
+                              : "bg-slate-100 text-slate-600"
+                            }`}>
+                              {invCurrency}
+                            </span>
+                          </td>
                           <td className="px-2 py-1.5 whitespace-nowrap text-right font-mono text-[11px] text-slate-700">
-                            {montantHT != null ? <span>{montantHT.toFixed(2)} <span className="text-[10px] text-slate-400">€</span></span> : <span className="text-slate-300">—</span>}
+                            {montantHT != null ? <span>{montantHT.toFixed(2)} <span className="text-[10px] text-slate-400">{invSymbol}</span></span> : <span className="text-slate-300">—</span>}
                           </td>
                           <td className="px-2 py-1.5 whitespace-nowrap text-center">
                             <div className="flex flex-col items-center gap-1">
@@ -1949,14 +2050,14 @@ export default function InvoicesPage() {
                               )}
                               {paidAmount != null && (
                                 <span className="text-[9px] text-emerald-700">
-                                  IA: {paidAmount.toFixed(2)} €
+                                  IA: {paidAmount.toFixed(2)} {invSymbol}
                                 </span>
                               )}
                             </div>
                           </td>
                           <td className="px-2 py-1.5 whitespace-nowrap text-right">
                             {montantTTC != null
-                              ? <span className="font-mono font-medium text-slate-900">{montantTTC.toFixed(2)} <span className="text-[10px] text-slate-400">€</span></span>
+                              ? <span className="font-mono font-medium text-slate-900">{montantTTC.toFixed(2)} <span className="text-[10px] text-slate-400">{invSymbol}</span></span>
                               : <span className="text-slate-300 font-mono">—</span>}
                           </td>
                           <td className="px-2 py-1.5 whitespace-nowrap text-center">
@@ -2529,9 +2630,34 @@ export default function InvoicesPage() {
                   </p>
                 )}
               </div>
-              <div>
-                <label className="mb-1.5 block text-[11px] font-medium text-slate-600">Montant TTC (€) <span className="font-normal text-slate-400">OCR</span></label>
-                <input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full rounded border border-slate-300 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-900 focus:border-slate-500 focus:outline-none" placeholder="0.00" />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1.5 block text-[11px] font-medium text-slate-600">
+                    Devise
+                  </label>
+                  <select
+                    value={currency}
+                    onChange={(e) => setCurrency(e.target.value)}
+                    className="w-full rounded border border-slate-300 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-900 focus:border-slate-500 focus:outline-none"
+                  >
+                    {CURRENCY_OPTIONS.map((c) => (
+                      <option key={c.code} value={c.code}>{c.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-[11px] font-medium text-slate-600">
+                    Montant TTC <span className="font-normal text-slate-400">({currencySymbol(currency)})</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    className="w-full rounded border border-slate-300 bg-slate-50 px-2 py-1.5 text-[11px] text-slate-900 focus:border-slate-500 focus:outline-none"
+                    placeholder="0.00"
+                  />
+                </div>
               </div>
               <div>
                 <label className="mb-1.5 block text-[11px] font-medium text-slate-600">Message comptable</label>
@@ -2734,7 +2860,7 @@ export default function InvoicesPage() {
                 }}
                 className="w-full px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:opacity-40"
               >
-                {extractingId === actionMenuInvoice.id ? "Extraction IA…" : "Extraction IA"}
+                {extractingId === actionMenuInvoice.id ? "Extraction (OCR)…" : "Extraction (OCR)"}
               </button>
             </li>
             <li>

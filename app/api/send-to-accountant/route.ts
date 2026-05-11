@@ -2,6 +2,7 @@
 import nodemailer from "nodemailer";
 import { pool } from "../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 
 export const runtime = "nodejs";
 
@@ -27,6 +28,9 @@ export async function POST(request: Request) {
   if (!userId) {
     return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
   }
+
+  const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
+    await resolveInvoiceWorkspace(userId);
 
   const formData = await request.formData();
   const region = formData.get("region")?.toString() || "france";
@@ -66,7 +70,7 @@ export async function POST(request: Request) {
     }
     recipientEmails = [recipientEmailOverride];
   } else {
-    recipientEmails = await resolveRecipientEmails(region, userId);
+    recipientEmails = await resolveRecipientEmails(region, workspaceOwnerId);
     if (recipientEmails.length === 0) {
       return NextResponse.json(
         {
@@ -148,7 +152,7 @@ export async function POST(request: Request) {
       `INSERT INTO send_history (id, "userId", region, "recipientEmail", message, "filesCount", "sentAt", success, error)
        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW(), $6, $7)`,
       [
-        userId,
+        workspaceOwnerId,
         region,
         recipientEmail,
         message,
@@ -166,10 +170,16 @@ export async function POST(request: Request) {
     try {
       const ids = invoiceIds.map((id) => id.toString()).filter(Boolean);
       if (ids.length > 0) {
+        const agentClause = restrictAgentToOwnSubmissions
+          ? ` AND "submittedByUserId" = $3`
+          : "";
+        const updParams = restrictAgentToOwnSubmissions
+          ? [ids, workspaceOwnerId, actorUserId]
+          : [ids, workspaceOwnerId];
         await pool.query(
           `UPDATE invoices SET status = 'sent', "sentAt" = NOW(), "updatedAt" = NOW()
-           WHERE id = ANY($1::text[]) AND "userId" = $2`,
-          [ids, userId]
+           WHERE id = ANY($1::text[]) AND "userId" = $2 AND ("deletedAt" IS NULL)${agentClause}`,
+          updParams
         );
       }
     } catch (dbError) {

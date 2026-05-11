@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { pool } from "../../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 
 export const runtime = "nodejs";
 
@@ -42,15 +43,23 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
   }
 
+  const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
+    await resolveInvoiceWorkspace(userId);
+
   const { searchParams } = new URL(request.url);
   const region = searchParams.get("region");
   const from = searchParams.get("from");
   const to = searchParams.get("to");
 
   try {
-    let query = `SELECT * FROM invoices WHERE status != 'draft' AND "userId" = $1`;
-    const params: string[] = [userId];
+    let query = `SELECT * FROM invoices WHERE status != 'draft' AND "userId" = $1 AND ("deletedAt" IS NULL)`;
+    const params: string[] = [workspaceOwnerId];
     let idx = 2;
+
+    if (restrictAgentToOwnSubmissions) {
+      query += ` AND "submittedByUserId" = $${idx++}`;
+      params.push(actorUserId);
+    }
 
     if (region) { query += ` AND region = $${idx++}`; params.push(region); }
     if (from)   { query += ` AND "createdAt" >= $${idx++}`; params.push(from); }

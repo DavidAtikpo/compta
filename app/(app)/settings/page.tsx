@@ -92,6 +92,16 @@ export default function SettingsPage() {
   const [defaultInvoiceRegion, setDefaultInvoiceRegion] = useState("france");
   const [prefsMsg, setPrefsMsg] = useState("");
 
+  // Billing / crédits
+  const [creditsBalance, setCreditsBalance] = useState(0);
+  const [creditsLoading, setCreditsLoading] = useState(true);
+  const [purchaseAmountUsd, setPurchaseAmountUsd] = useState("5");
+  const [purchaseBusy, setPurchaseBusy] = useState(false);
+  const [purchaseMsg, setPurchaseMsg] = useState("");
+  const [billingPlan, setBillingPlan] = useState("starter");
+  const [planBusy, setPlanBusy] = useState(false);
+  const [planMsg, setPlanMsg] = useState("");
+
   // Profil & PDF (serveur)
   const [accountEmail, setAccountEmail] = useState("");
   const [profileName, setProfileName] = useState("");
@@ -140,6 +150,7 @@ export default function SettingsPage() {
         setPdfHeaderLayout(
           normalizePdfHeaderLayout(typeof d.pdfHeaderLayout === "string" ? d.pdfHeaderLayout : null),
         );
+        if (typeof d.billingPlan === "string") setBillingPlan(d.billingPlan);
       }
     } catch {
       /* silent */
@@ -150,11 +161,88 @@ export default function SettingsPage() {
     loadAccountants();
     loadStructures();
     void loadMe();
+    void loadCredits();
     if (typeof window !== "undefined") {
       const r = window.localStorage.getItem(LS_DEFAULT_REGION);
       if (r?.trim()) setDefaultInvoiceRegion(r.trim().toLowerCase());
+      const p = new URLSearchParams(window.location.search);
+      if (p.get("planPurchase") === "success") {
+        setPlanMsg("Abonnement activé. Merci !");
+        void loadMe();
+        notifyProfileChanged();
+      }
     }
   }, [loadMe]);
+
+  const loadCredits = async () => {
+    const t = getToken();
+    if (!t) {
+      setCreditsLoading(false);
+      return;
+    }
+    try {
+      const res = await fetch("/api/billing/credits", { headers: { Authorization: `Bearer ${t}` } });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok) setCreditsBalance(Number(d?.balance ?? 0));
+    } catch {
+      /* silent */
+    } finally {
+      setCreditsLoading(false);
+    }
+  };
+
+  const handlePlanSubscribe = async (plan: "pro" | "entreprise") => {
+    const t = getToken();
+    if (!t) return;
+    setPlanBusy(true);
+    setPlanMsg("");
+    try {
+      const res = await fetch("/api/billing/stripe/plan-checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ plan }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d?.url) {
+        setPlanMsg(d?.error || "Impossible de démarrer le paiement.");
+        return;
+      }
+      window.location.assign(String(d.url));
+    } catch {
+      setPlanMsg("Erreur réseau.");
+    } finally {
+      setPlanBusy(false);
+    }
+  };
+
+  const handleBuyCredits = async () => {
+    const t = getToken();
+    if (!t) return;
+    const amountUsd = Number(purchaseAmountUsd);
+    if (!Number.isFinite(amountUsd) || amountUsd < 5) {
+      setPurchaseMsg("Minimum 5$.");
+      return;
+    }
+    setPurchaseBusy(true);
+    setPurchaseMsg("");
+    try {
+      const res = await fetch("/api/billing/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({ amountUsd }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d?.url) {
+        setPurchaseMsg(d?.error || "Impossible de démarrer le paiement.");
+        return;
+      }
+      window.location.assign(String(d.url));
+    } catch {
+      setPurchaseMsg("Erreur réseau.");
+    } finally {
+      setPurchaseBusy(false);
+    }
+  };
 
   const knownRegions = useMemo(
     () =>
@@ -674,6 +762,99 @@ export default function SettingsPage() {
                 </p>
                 <p className="mt-1 text-xs text-slate-500">{structures.length} structure(s) enregistree(s)</p>
               </button>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Abonnement</p>
+              <p className="mt-1 text-sm text-slate-600">
+                Plan actuel : <span className="font-semibold text-slate-900">{billingPlan}</span>
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                  <p className="text-xs font-semibold text-slate-800">Starter</p>
+                  <p className="mt-1 text-[11px] text-slate-500">Inclus pour démarrer.</p>
+                </div>
+                <div className="rounded-lg border border-indigo-100 bg-indigo-50/60 p-3">
+                  <p className="text-xs font-semibold text-indigo-900">Pro</p>
+                  <p className="mt-1 text-[11px] text-indigo-800/90">Fonctions avancées.</p>
+                  <button
+                    type="button"
+                    disabled={planBusy || billingPlan === "pro"}
+                    onClick={() => void handlePlanSubscribe("pro")}
+                    className="mt-2 w-full rounded-md bg-indigo-600 py-1.5 text-[11px] font-medium text-white disabled:opacity-50"
+                  >
+                    {billingPlan === "pro" ? "Plan actif" : "Payer avec Stripe"}
+                  </button>
+                </div>
+                <div className="rounded-lg border border-violet-200 bg-violet-50/70 p-3">
+                  <p className="text-xs font-semibold text-violet-900">Entreprise</p>
+                  <p className="mt-1 text-[11px] text-violet-900/90">Équipe, factures partagées, analyses.</p>
+                  <button
+                    type="button"
+                    disabled={planBusy || billingPlan === "entreprise"}
+                    onClick={() => void handlePlanSubscribe("entreprise")}
+                    className="mt-2 w-full rounded-md bg-violet-700 py-1.5 text-[11px] font-medium text-white disabled:opacity-50"
+                  >
+                    {billingPlan === "entreprise" ? "Plan actif" : "Payer avec Stripe"}
+                  </button>
+                </div>
+              </div>
+              {!!planMsg && <p className="mt-2 text-xs text-emerald-700">{planMsg}</p>}
+              <p className="mt-2 text-[10px] text-slate-400">
+                Montants : variables <code className="rounded bg-slate-100 px-1">STRIPE_PRO_PRICE_USD_CENTS</code> et{" "}
+                <code className="rounded bg-slate-100 px-1">STRIPE_ENTREPRISE_PRICE_USD_CENTS</code> (centimes USD).
+                Défauts : 29&nbsp;$ et 99&nbsp;$ si non définies.
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Crédits IA</p>
+                  <p className="mt-1 text-lg font-bold text-slate-900">
+                    {creditsLoading ? "…" : creditsBalance.toLocaleString("fr-FR")} crédits
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-500">5$ = 2500 crédits. Minimum 5$.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void loadCredits()}
+                    className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                  >
+                    Actualiser
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-end gap-2">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600">Montant (USD)</label>
+                  <input
+                    value={purchaseAmountUsd}
+                    onChange={(e) => setPurchaseAmountUsd(e.target.value)}
+                    inputMode="decimal"
+                    className="mt-1 w-44 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-slate-400"
+                    placeholder="5"
+                  />
+                </div>
+                <div className="pb-2 text-xs text-slate-500">
+                  ≈{" "}
+                  <span className="font-semibold text-slate-700">
+                    {Math.max(0, Math.round(Number(purchaseAmountUsd || 0) * 100) * 5).toLocaleString("fr-FR")}
+                  </span>{" "}
+                  crédits
+                </div>
+                <button
+                  type="button"
+                  disabled={purchaseBusy}
+                  onClick={handleBuyCredits}
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                >
+                  {purchaseBusy ? "Redirection..." : "Payer avec Stripe"}
+                </button>
+              </div>
+              {!!purchaseMsg && <p className="mt-2 text-xs text-rose-600">{purchaseMsg}</p>}
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-600">

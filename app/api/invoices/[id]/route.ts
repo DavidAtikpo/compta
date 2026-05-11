@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { pool } from "../../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 
 export async function DELETE(
   req: Request,
@@ -16,9 +17,17 @@ export async function DELETE(
     return NextResponse.json({ error: "ID manquant" }, { status: 400 });
   }
   try {
+    const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
+      await resolveInvoiceWorkspace(userId);
+    const agentClause = restrictAgentToOwnSubmissions
+      ? ` AND "submittedByUserId" = $3`
+      : "";
+    const delParams = restrictAgentToOwnSubmissions
+      ? [id, workspaceOwnerId, actorUserId]
+      : [id, workspaceOwnerId];
     const result = await pool.query(
-      `DELETE FROM invoices WHERE id = $1 AND "userId" = $2 RETURNING id`,
-      [id, userId]
+      `DELETE FROM invoices WHERE id = $1 AND "userId" = $2${agentClause} RETURNING id`,
+      delParams
     );
     if (result.rowCount === 0) {
       return NextResponse.json({ error: "Facture introuvable" }, { status: 404 });

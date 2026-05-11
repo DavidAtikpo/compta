@@ -4,6 +4,7 @@ import { pool } from "../../../../lib/postgres";
 import { prisma } from "../../../../lib/prisma";
 import { MAX_PDF_INVOICES } from "../../../../lib/pdf-export";
 import { getAuthenticatedUserId } from "../../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { pdfBufferFromInvoices } from "../../../../lib/pdf-invoice-export";
 
 export const runtime = "nodejs";
@@ -18,8 +19,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
+      await resolveInvoiceWorkspace(userId);
+
     const user = await prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: workspaceOwnerId },
       select: {
         pdfHeaderText: true,
         pdfFooterText: true,
@@ -58,6 +62,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const agentClause = restrictAgentToOwnSubmissions
+      ? ` AND i."submittedByUserId" = $3`
+      : "";
+    const pdfParams = restrictAgentToOwnSubmissions
+      ? [cleanIds, workspaceOwnerId, actorUserId]
+      : [cleanIds, workspaceOwnerId];
+
     const result = await pool.query<Record<string, unknown>>(
       `
       SELECT i.*, a.email AS accountant_email
@@ -66,8 +77,9 @@ export async function POST(request: NextRequest) {
       WHERE i.id = ANY($1::text[])
         AND i."userId" = $2
         AND i.status != 'draft'
+        AND (i."deletedAt" IS NULL)${agentClause}
       `,
-      [cleanIds, userId],
+      pdfParams,
     );
 
     const rowById = new Map(result.rows.map((r) => [String(r.id), r]));

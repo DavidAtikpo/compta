@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { pool } from "../../../../../lib/postgres";
 import { randomBytes } from "crypto";
 import { getAuthenticatedUserId } from "../../../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 
 export const runtime = "nodejs";
 
@@ -17,9 +18,17 @@ export async function POST(
   const { id } = await params;
 
   try {
+    const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
+      await resolveInvoiceWorkspace(userId);
+    const agentClause = restrictAgentToOwnSubmissions
+      ? ` AND "submittedByUserId" = $3`
+      : "";
+    const selParams = restrictAgentToOwnSubmissions
+      ? [id, workspaceOwnerId, actorUserId]
+      : [id, workspaceOwnerId];
     const existing = await pool.query(
-      `SELECT "shareToken" FROM invoices WHERE id = $1 AND "userId" = $2`,
-      [id, userId]
+      `SELECT "shareToken" FROM invoices WHERE id = $1 AND "userId" = $2 AND ("deletedAt" IS NULL)${agentClause}`,
+      selParams
     );
 
     if (existing.rows.length === 0) {
@@ -30,9 +39,15 @@ export async function POST(
 
     if (!token) {
       token = randomBytes(24).toString("hex");
+      const updParams = restrictAgentToOwnSubmissions
+        ? [token, id, workspaceOwnerId, actorUserId]
+        : [token, id, workspaceOwnerId];
+      const updClause = restrictAgentToOwnSubmissions
+        ? ` AND "submittedByUserId" = $4`
+        : "";
       await pool.query(
-        `UPDATE invoices SET "shareToken" = $1, "updatedAt" = NOW() WHERE id = $2 AND "userId" = $3`,
-        [token, id, userId]
+        `UPDATE invoices SET "shareToken" = $1, "updatedAt" = NOW() WHERE id = $2 AND "userId" = $3 AND ("deletedAt" IS NULL)${updClause}`,
+        updParams
       );
     }
 
@@ -56,9 +71,17 @@ export async function DELETE(
   const { id } = await params;
 
   try {
+    const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
+      await resolveInvoiceWorkspace(userId);
+    const agentClause = restrictAgentToOwnSubmissions
+      ? ` AND "submittedByUserId" = $3`
+      : "";
+    const updParams = restrictAgentToOwnSubmissions
+      ? [id, workspaceOwnerId, actorUserId]
+      : [id, workspaceOwnerId];
     const upd = await pool.query(
-      `UPDATE invoices SET "shareToken" = NULL, "updatedAt" = NOW() WHERE id = $1 AND "userId" = $2`,
-      [id, userId]
+      `UPDATE invoices SET "shareToken" = NULL, "updatedAt" = NOW() WHERE id = $1 AND "userId" = $2 AND ("deletedAt" IS NULL)${agentClause}`,
+      updParams
     );
     if (upd.rowCount === 0) {
       return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });

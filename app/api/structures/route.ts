@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { pool } from "../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../lib/auth-request";
+import { resolveInvoiceWorkspace } from "@/lib/workspace";
 
 export const runtime = "nodejs";
 
@@ -10,9 +11,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
   }
   try {
+    const { workspaceOwnerId } = await resolveInvoiceWorkspace(userId);
     const result = await pool.query(
-      `SELECT * FROM structures WHERE "userId" = $1 ORDER BY region, name`,
-      [userId],
+      `SELECT * FROM structures WHERE "userId" = $1 AND ("deletedAt" IS NULL) ORDER BY region, name`,
+      [workspaceOwnerId],
     );
     return NextResponse.json(result.rows);
   } catch (error) {
@@ -27,6 +29,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
   }
   try {
+    const { workspaceOwnerId } = await resolveInvoiceWorkspace(userId);
     const { name, region, type, siret } = await request.json();
     if (!name || !region || !type) {
       return NextResponse.json({ error: "name, region et type sont requis." }, { status: 400 });
@@ -36,7 +39,7 @@ export async function POST(request: Request) {
       `INSERT INTO structures (id, "userId", name, region, type, siret, "createdAt", "updatedAt")
        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW(), NOW())
        RETURNING *`,
-      [userId, name, region, type, siret ?? null]
+      [workspaceOwnerId, name, region, type, siret ?? null]
     );
     return NextResponse.json(result.rows[0], { status: 201 });
   } catch (error) {
@@ -51,8 +54,9 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
   }
   try {
+    const { workspaceOwnerId } = await resolveInvoiceWorkspace(userId);
     const { id } = await request.json();
-    await pool.query(`DELETE FROM structures WHERE id = $1 AND "userId" = $2`, [id, userId]);
+    await pool.query(`DELETE FROM structures WHERE id = $1 AND "userId" = $2`, [id, workspaceOwnerId]);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Erreur suppression structure:", error);

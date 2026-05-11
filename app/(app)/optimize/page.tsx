@@ -139,6 +139,11 @@ export default function OptimizePage() {
   /** Sur lg+ : un seul panneau gauche ouvert à la fois (Contexte ou Questions rapides). */
   const [desktopLeftPanel, setDesktopLeftPanel] = useState<"context" | "questions">("context");
 
+  const [showBuyCredits, setShowBuyCredits] = useState(false);
+  const [purchaseAmountUsd, setPurchaseAmountUsd] = useState("5");
+  const [purchaseBusy, setPurchaseBusy] = useState(false);
+  const [purchaseMsg, setPurchaseMsg] = useState("");
+
   useEffect(() => {
     loadTaxRules();
     loadAlerts();
@@ -210,6 +215,35 @@ export default function OptimizePage() {
       setCreditsBalance(typeof data.balance === "number" ? data.balance : null);
     } catch {
       // silent
+    }
+  };
+
+  const handleBuyCredits = async () => {
+    const token = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
+    if (!token) return;
+    const amountUsd = Number(purchaseAmountUsd);
+    if (!Number.isFinite(amountUsd) || amountUsd < 5) {
+      setPurchaseMsg("Minimum 5$.");
+      return;
+    }
+    setPurchaseBusy(true);
+    setPurchaseMsg("");
+    try {
+      const res = await fetch("/api/billing/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ amountUsd }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d?.url) {
+        setPurchaseMsg(d?.error || "Impossible de démarrer le paiement.");
+        return;
+      }
+      window.location.assign(String(d.url));
+    } catch {
+      setPurchaseMsg("Erreur réseau.");
+    } finally {
+      setPurchaseBusy(false);
     }
   };
 
@@ -467,14 +501,64 @@ export default function OptimizePage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden ">
       <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col lg:min-h-0 lg:space-y-6">
-        <div className="mb-1 flex justify-end lg:hidden">
-          <button
-            type="button"
-            onClick={() => setShowHistory((v) => !v)}
-            className="rounded border border-slate-200 bg-white px-2 py-1 text-[10px] text-slate-600"
-          >
-            {showHistory ? "Chat" : "Historique"}
-          </button>
+        <div className="mb-1 space-y-1.5 lg:hidden">
+          <div className="flex items-center justify-between gap-2">
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+              Crédits: {creditsBalance ?? "—"}
+            </span>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBuyCredits((v) => !v);
+                  setPurchaseMsg("");
+                }}
+                className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-800"
+              >
+                Acheter
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowHistory((v) => !v)}
+                className="rounded border border-slate-200 bg-white px-2 py-1 text-[10px] text-slate-600"
+              >
+                {showHistory ? "Chat" : "Historique"}
+              </button>
+            </div>
+          </div>
+          {showBuyCredits && (
+            <div className="rounded-lg border border-slate-200 bg-white p-2 text-[10px] text-slate-600">
+              <p className="text-[10px] text-slate-500">5$ = 2500 crédits. Minimum 5$.</p>
+              <div className="mt-1.5 flex flex-wrap items-end gap-2">
+                <div>
+                  <label className="block text-[9px] font-medium text-slate-500">USD</label>
+                  <input
+                    value={purchaseAmountUsd}
+                    onChange={(e) => setPurchaseAmountUsd(e.target.value)}
+                    inputMode="decimal"
+                    className="mt-0.5 w-24 rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-900 outline-none focus:border-slate-400"
+                    placeholder="5"
+                  />
+                </div>
+                <span className="pb-1 text-[9px] text-slate-500">
+                  ≈{" "}
+                  <span className="font-semibold text-slate-700">
+                    {Math.max(0, Math.round(Number(purchaseAmountUsd || 0) * 100) * 5).toLocaleString("fr-FR")}
+                  </span>{" "}
+                  cr.
+                </span>
+                <button
+                  type="button"
+                  disabled={purchaseBusy}
+                  onClick={() => void handleBuyCredits()}
+                  className="rounded bg-slate-900 px-2.5 py-1 text-[10px] font-medium text-white disabled:opacity-60"
+                >
+                  {purchaseBusy ? "…" : "Stripe"}
+                </button>
+              </div>
+              {!!purchaseMsg && <p className="mt-1 text-[10px] text-rose-600">{purchaseMsg}</p>}
+            </div>
+          )}
         </div>
 
         {showAlerts && (
@@ -785,6 +869,16 @@ export default function OptimizePage() {
                 <span className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-600 sm:text-xs">
                   Crédits: {creditsBalance ?? "—"}
                 </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowBuyCredits((v) => !v);
+                    setPurchaseMsg("");
+                  }}
+                  className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 sm:text-xs"
+                >
+                  Acheter
+                </button>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -803,6 +897,39 @@ export default function OptimizePage() {
                 </button>
               </div>
             </div>
+            {showBuyCredits && (
+              <div className="hidden border-b border-slate-100 bg-slate-50/80 px-3 py-2 sm:px-6 lg:block">
+                <p className="text-[10px] text-slate-500 sm:text-xs">5$ = 2500 crédits. Minimum 5$.</p>
+                <div className="mt-1.5 flex flex-wrap items-end gap-2">
+                  <div>
+                    <label className="block text-[10px] font-medium text-slate-500 sm:text-xs">Montant (USD)</label>
+                    <input
+                      value={purchaseAmountUsd}
+                      onChange={(e) => setPurchaseAmountUsd(e.target.value)}
+                      inputMode="decimal"
+                      className="mt-0.5 w-32 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-900 outline-none focus:border-slate-400 sm:w-40 sm:px-3 sm:py-2 sm:text-sm"
+                      placeholder="5"
+                    />
+                  </div>
+                  <span className="pb-1 text-[10px] text-slate-500 sm:text-xs">
+                    ≈{" "}
+                    <span className="font-semibold text-slate-700">
+                      {Math.max(0, Math.round(Number(purchaseAmountUsd || 0) * 100) * 5).toLocaleString("fr-FR")}
+                    </span>{" "}
+                    crédits
+                  </span>
+                  <button
+                    type="button"
+                    disabled={purchaseBusy}
+                    onClick={() => void handleBuyCredits()}
+                    className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60 sm:px-4 sm:py-2 sm:text-sm"
+                  >
+                    {purchaseBusy ? "Redirection..." : "Payer avec Stripe"}
+                  </button>
+                </div>
+                {!!purchaseMsg && <p className="mt-1.5 text-[10px] text-rose-600 sm:text-xs">{purchaseMsg}</p>}
+              </div>
+            )}
 
             {/* Messages */}
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3 sm:space-y-6 sm:p-6">
