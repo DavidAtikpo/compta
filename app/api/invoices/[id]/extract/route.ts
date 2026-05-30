@@ -21,7 +21,7 @@ function isMissingApiKeyError(err: unknown, keyName: string): boolean {
   return msg.toLowerCase().includes(keyName.toLowerCase()) && msg.toLowerCase().includes("non configur");
 }
 
-function isOcrTextUsable(text: string | null): boolean {
+function isOcrTextUsable(text: string | null): text is string {
   const t = String(text || "").trim();
   if (!t) return false;
   if (/^erreur\s+ocr\b/i.test(t)) return false;

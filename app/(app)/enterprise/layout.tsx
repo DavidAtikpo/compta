@@ -4,12 +4,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { TEAM_MODE_UI } from "@/lib/plans";
 
-const nav = [
+type NavItem = { href: string; label: string; exact?: boolean };
+
+const nav: NavItem[] = [
   { href: "/enterprise", label: "Vue d'ensemble", exact: true },
   { href: "/enterprise/members", label: "Collaborateurs" },
   { href: "/enterprise/analyse", label: "Analyse" },
   { href: "/enterprise/statistiques", label: "Statistiques" },
-] as const;
+];
 
 export default function EnterpriseLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();

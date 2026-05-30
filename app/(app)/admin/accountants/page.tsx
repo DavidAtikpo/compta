@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 type AdminOverview = {
@@ -17,6 +17,20 @@ type AdminAccountant = {
 type Paginated<T> = { items: T[]; page: number; pageSize: number; total: number };
 
 export default function AdminAccountantsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-[40vh] items-center justify-center">
+          <div className="text-sm text-slate-400">Chargement comptables...</div>
+        </div>
+      }
+    >
+      <AdminAccountantsPageContent />
+    </Suspense>
+  );
+}
+
+function AdminAccountantsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 

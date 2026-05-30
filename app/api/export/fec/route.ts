@@ -62,7 +62,7 @@ export async function GET(request: NextRequest) {
 
     for (const inv of invoices) {
       const account = inv.accountCode
-        ? { num: String(inv.accountCode).padEnd(6, "0").slice(0, 6), lib: "Compte PCG" }
+        ? { num: String(inv.accountCode).padEnd(6, "0").slice(0, 6), label: "Compte PCG" }
         : accountForCategory(inv.category);
       const montantTTC = inv.montantTTC ?? inv.amount ?? 0;
       const montantHT  = inv.montantHT ?? (montantTTC / 1.2);
@@ -76,7 +76,7 @@ export async function GET(request: NextRequest) {
       lines.push([
         "ACH", "Achats",
         numStr, dateEcriture,
-        account.num, account.lib,
+        account.num, account.label,
         "", "",
         pieceRef, dateEcriture,
         lib,

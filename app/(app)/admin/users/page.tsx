@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { TEAM_MODE_UI } from "@/lib/plans";
 
@@ -19,6 +19,20 @@ type AdminUser = {
 type Paginated<T> = { items: T[]; page: number; pageSize: number; total: number };
 
 export default function AdminUsersPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-[40vh] items-center justify-center">
+          <div className="text-sm text-slate-400">Chargement utilisateurs...</div>
+        </div>
+      }
+    >
+      <AdminUsersPageContent />
+    </Suspense>
+  );
+}
+
+function AdminUsersPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 

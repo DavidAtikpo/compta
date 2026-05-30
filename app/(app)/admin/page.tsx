@@ -16,6 +16,7 @@ export default function AdminOverviewPage() {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
 
   const authHeaders = useMemo(() => {
+    if (typeof window === "undefined") return {};
     const token = window.localStorage.getItem("compta-token");
     const headers: Record<string, string> = {};
     if (token) headers.Authorization = `Bearer ${token}`;
