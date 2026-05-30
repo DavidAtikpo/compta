@@ -4,6 +4,7 @@ import { pool } from "../../../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { detectCurrencyFromOcrText, isValidInvoiceCurrency } from "@/lib/invoice-currency";
+import { resolveClassificationFromExtract } from "@/lib/classification";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -521,6 +522,8 @@ export async function POST(
         }
       }
 
+      const classification = resolveClassificationFromExtract(extracted);
+
       await pool.query(
         `UPDATE invoices SET
           "fournisseur"   = COALESCE($1, "fournisseur"),
@@ -532,6 +535,8 @@ export async function POST(
           amount          = COALESCE($6, amount),
           "invoiceDate"   = COALESCE($8::timestamptz, "invoiceDate"),
           currency        = COALESCE($10, currency),
+          category        = COALESCE($11, category),
+          "accountCode"   = COALESCE($12, "accountCode"),
           "updatedAt"     = NOW()
         WHERE id = $7 AND "userId" = $9 AND ("deletedAt" IS NULL)`,
         [
@@ -545,10 +550,12 @@ export async function POST(
           invoiceDateVal,
           workspaceOwnerId,
           (extracted.currency as string | null) || null,
+          classification.category,
+          classification.accountCode,
         ]
       );
 
-      return NextResponse.json({ success: true, data: extracted });
+      return NextResponse.json({ success: true, data: { ...extracted, ...classification } });
     }
 
     // Build vision data URL
@@ -703,6 +710,8 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
         ? String(extracted.currency).toUpperCase()
         : detectCurrencyFromOcrText(ocrText ?? "");
 
+    const classification = resolveClassificationFromExtract(extracted);
+
     await pool.query(
       `UPDATE invoices SET
         "fournisseur"   = COALESCE($1, "fournisseur"),
@@ -719,6 +728,8 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
                           END,
         "invoiceDate"   = COALESCE($8::timestamptz, "invoiceDate"),
         currency        = COALESCE($11, currency),
+        category        = COALESCE($12, category),
+        "accountCode"   = COALESCE($13, "accountCode"),
         "updatedAt"     = NOW()
       WHERE id = $7 AND "userId" = $10 AND ("deletedAt" IS NULL)`,
       [
@@ -733,10 +744,12 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
         aiPaidMarkers || null,
         workspaceOwnerId,
         extractedCurrency,
+        classification.category,
+        classification.accountCode,
       ]
     );
 
-    return NextResponse.json({ success: true, data: extracted });
+    return NextResponse.json({ success: true, data: { ...extracted, ...classification } });
   } catch (error) {
     console.error("Erreur extraction comptable:", error);
     return NextResponse.json(

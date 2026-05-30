@@ -11,6 +11,7 @@ import {
   PDF_HEADER_LAYOUT_STACKED,
   type PdfHeaderLayoutId,
 } from "@/lib/pdf-invoice-export";
+import { billingPlanDisplayName, TEAM_MODE_UI } from "@/lib/plans";
 
 const emptyPdfTable = (): string[][] => [
   ["", "", "", ""],
@@ -58,7 +59,7 @@ type TabId = "overview" | "profile" | "pdf" | "cabinets" | "preferences" | "stru
 const TABS: { id: TabId; label: string }[] = [
   { id: "overview", label: "Vue d’ensemble" },
   { id: "profile", label: "Profil" },
-  { id: "pdf", label: "PDF entreprise" },
+  { id: "pdf", label: "PDF & en-têtes" },
   { id: "cabinets", label: "Cabinets" },
   { id: "preferences", label: "Préférences" },
   { id: "structures", label: "Structures" },
@@ -730,7 +731,7 @@ export default function SettingsPage() {
                 onClick={() => setTab("pdf")}
                 className="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-slate-300 hover:bg-slate-50"
               >
-                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">PDF entreprise</p>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">PDF & logo</p>
                 <p className={`mt-1 text-sm font-semibold ${hasPdfConfig ? "text-emerald-700" : "text-amber-700"}`}>
                   {hasPdfConfig ? "Configure" : "A completer"}
                 </p>
@@ -767,7 +768,8 @@ export default function SettingsPage() {
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Abonnement</p>
               <p className="mt-1 text-sm text-slate-600">
-                Plan actuel : <span className="font-semibold text-slate-900">{billingPlan}</span>
+                Plan actuel :{" "}
+                <span className="font-semibold text-slate-900">{billingPlanDisplayName(billingPlan)}</span>
               </p>
               <div className="mt-3 grid gap-2 sm:grid-cols-3">
                 <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
@@ -787,8 +789,10 @@ export default function SettingsPage() {
                   </button>
                 </div>
                 <div className="rounded-lg border border-violet-200 bg-violet-50/70 p-3">
-                  <p className="text-xs font-semibold text-violet-900">Entreprise</p>
-                  <p className="mt-1 text-[11px] text-violet-900/90">Équipe, factures partagées, analyses.</p>
+                  <p className="text-xs font-semibold text-violet-900">{TEAM_MODE_UI.planDisplayName}</p>
+                  <p className="mt-1 text-[11px] text-violet-900/90">
+                    Espace équipe, factures partagées, analyses.
+                  </p>
                   <button
                     type="button"
                     disabled={planBusy || billingPlan === "entreprise"}
@@ -1201,7 +1205,7 @@ export default function SettingsPage() {
               <div className="space-y-5 p-6">
                 <div className="flex flex-wrap items-start gap-4">
                   <div className="space-y-2">
-                    <p className="text-xs font-medium text-slate-700">Logo entreprise</p>
+                    <p className="text-xs font-medium text-slate-700">Logo (exports PDF)</p>
                     {pdfLogoUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img

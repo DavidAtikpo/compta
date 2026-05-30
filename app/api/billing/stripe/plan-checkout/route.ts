@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/auth-request";
 import { stripe } from "@/lib/stripe";
-import { defaultPlanPriceUsdCents } from "@/lib/plans";
+import { defaultPlanPriceUsdCents, TEAM_MODE_UI } from "@/lib/plans";
 
 type PurchasablePlan = "pro" | "entreprise";
 const ALLOWED: PurchasablePlan[] = ["pro", "entreprise"];
@@ -33,7 +33,8 @@ export async function POST(request: NextRequest) {
   const successUrl = `${origin}/settings?tab=overview&planPurchase=success`;
   const cancelUrl = `${origin}/settings?tab=overview&planPurchase=cancel`;
 
-  const label = plan === "entreprise" ? "Plan Entreprise — Compta IA" : "Plan Pro — Compta IA";
+  const label =
+    plan === "entreprise" ? `${TEAM_MODE_UI.planDisplayName} — Compta IA` : "Plan Pro — Compta IA";
 
   const session = await stripe.checkout.sessions.create({
     mode: "payment",
@@ -47,7 +48,10 @@ export async function POST(request: NextRequest) {
           unit_amount: amountUsdCents,
           product_data: {
             name: label,
-            description: `Abonnement ${plan === "entreprise" ? "Entreprise (équipe + analyses)" : "Pro"}`,
+            description:
+              plan === "entreprise"
+                ? `${TEAM_MODE_UI.planDisplayName} — compte partagé et analyses`
+                : "Pro",
           },
         },
       },

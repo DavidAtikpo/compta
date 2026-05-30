@@ -153,6 +153,7 @@ model Invoice {
   paidDate        DateTime?
   structureId     String?
   currency        String?   @default("EUR")
+  accountCode     String?
   deletedAt       DateTime?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
@@ -242,4 +243,101 @@ model BillingEvent {
 
   @@index([userId, createdAt])
   @@map("billing_events")
+}
+
+/// Plan comptable général (PCG) — comptes système partagés
+model ChartAccount {
+  id        String @id @default(cuid())
+  num       String @unique
+  label     String
+  pcgClass  Int    @map("pcg_class")
+  parentNum String? @map("parent_num")
+
+  @@index([pcgClass])
+  @@map("chart_accounts")
+}
+
+/// Écriture comptable (opération avec pièces jointes optionnelles)
+model JournalEntry {
+  id                String         @id @default(cuid())
+  userId            String
+  journalCode       String         @default("OD")
+  journalLabel      String         @default("Opérations diverses")
+  entryDate         DateTime
+  pieceRef          String?
+  label             String
+  invoiceId         String?
+  bankTransactionId String?        @unique
+  attachmentUrl     String?
+  attachmentName    String?
+  mimeType          String?
+  deletedAt         DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  lines             JournalLine[]
+  bankTransaction   BankTransaction? @relation(fields: [bankTransactionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, entryDate])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id           String       @id @default(cuid())
+  entryId      String
+  entry        JournalEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  accountNum   String
+  accountLabel String
+  debit        Float        @default(0)
+  credit       Float        @default(0)
+
+  @@index([entryId])
+  @@index([accountNum])
+  @@map("journal_lines")
+}
+
+model BankAccount {
+  id           String            @id @default(cuid())
+  userId       String
+  name         String
+  iban         String?
+  bic          String?
+  currency     String            @default("EUR")
+  createdAt    DateTime          @default(now())
+  transactions BankTransaction[]
+
+  @@index([userId])
+  @@map("bank_accounts")
+}
+
+model BankImportBatch {
+  id           String            @id @default(cuid())
+  userId       String
+  format       String
+  fileName     String
+  rowCount     Int               @default(0)
+  importedAt   DateTime          @default(now())
+  transactions BankTransaction[]
+
+  @@index([userId])
+  @@map("bank_import_batches")
+}
+
+model BankTransaction {
+  id               String           @id @default(cuid())
+  userId           String
+  bankAccountId    String?
+  bankAccount      BankAccount?     @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
+  importBatchId    String?
+  importBatch      BankImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  transactionDate  DateTime
+  label            String
+  amount           Float
+  reference        String?
+  matchedInvoiceId String?
+  rawData          String?
+  createdAt        DateTime         @default(now())
+  journalEntry     JournalEntry?
+
+  @@index([userId, transactionDate])
+  @@map("bank_transactions")
 }

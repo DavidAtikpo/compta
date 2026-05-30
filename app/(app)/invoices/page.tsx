@@ -335,6 +335,7 @@ export default function InvoicesPage() {
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [shareLinks, setShareLinks] = useState<Record<string, string>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [journalFromInvoiceId, setJournalFromInvoiceId] = useState<string | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const [actionMenuPlacement, setActionMenuPlacement] = useState<{
     top: number;
@@ -909,6 +910,33 @@ export default function InvoicesPage() {
       setSendResult("Impossible de joindre le service d'envoi.");
     } finally {
       setSending(false);
+    }
+  };
+
+  const handleJournalFromInvoice = async (id: string) => {
+    setJournalFromInvoiceId(id);
+    try {
+      const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+      const res = await fetch("/api/journal/from-invoice", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(t ? { Authorization: `Bearer ${t}` } : {}),
+        },
+        body: JSON.stringify({ invoiceId: id }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) {
+        alert("Écriture comptable créée à partir de la facture.");
+      } else if (res.status === 409) {
+        alert("Une écriture existe déjà pour cette facture.");
+      } else {
+        alert(json.error || `Erreur ${res.status}`);
+      }
+    } catch {
+      alert("Erreur réseau lors de la création de l'écriture.");
+    } finally {
+      setJournalFromInvoiceId(null);
     }
   };
 
@@ -2896,6 +2924,21 @@ export default function InvoicesPage() {
                 ) : (
                   "Envoyer au cabinet"
                 )}
+              </button>
+            </li>
+            <li className="pointer-events-none mx-1.5 list-none border-t border-slate-100 py-0" role="separator" />
+            <li>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={journalFromInvoiceId === actionMenuInvoice.id}
+                onClick={() => {
+                  setOpenActionMenuId(null);
+                  void handleJournalFromInvoice(actionMenuInvoice.id);
+                }}
+                className="w-full px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:opacity-40"
+              >
+                {journalFromInvoiceId === actionMenuInvoice.id ? "Écriture comptable…" : "Générer écriture comptable"}
               </button>
             </li>
             <li className="pointer-events-none mx-1.5 list-none border-t border-slate-100 py-0" role="separator" />

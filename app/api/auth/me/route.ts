@@ -45,46 +45,51 @@ export async function GET(request: Request) {
       name?: string | null;
     };
     const userId = typeof payload.sub === "string" ? payload.sub : null;
-    if (userId) {
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          email: true,
-          name: true,
-          imageUrl: true,
-          pdfHeaderText: true,
-          pdfFooterText: true,
-          pdfHeaderImageUrl: true,
-          pdfFooterImageUrl: true,
-          pdfLogoUrl: true,
-          pdfHeaderTitle: true,
-          pdfHeaderAddress: true,
-          pdfHeaderTableJson: true,
-          pdfHeaderLayout: true,
-          aiCreditsBalance: true,
-          billingPlan: true,
-        },
+    const userSelect = {
+      email: true,
+      name: true,
+      imageUrl: true,
+      pdfHeaderText: true,
+      pdfFooterText: true,
+      pdfHeaderImageUrl: true,
+      pdfFooterImageUrl: true,
+      pdfLogoUrl: true,
+      pdfHeaderTitle: true,
+      pdfHeaderAddress: true,
+      pdfHeaderTableJson: true,
+      pdfHeaderLayout: true,
+      aiCreditsBalance: true,
+      billingPlan: true,
+    } as const;
+
+    const user = userId
+      ? await prisma.user.findUnique({ where: { id: userId }, select: userSelect })
+      : payload.email
+        ? await prisma.user.findUnique({
+            where: { email: payload.email.trim().toLowerCase() },
+            select: userSelect,
+          })
+        : null;
+
+    if (user) {
+      return NextResponse.json({
+        email: user.email,
+        name: user.name || "",
+        isAdmin: isAdminEmail(user.email),
+        adminRole: adminRoleFromEmail(user.email),
+        imageUrl: user.imageUrl || "",
+        pdfHeaderText: user.pdfHeaderText || "",
+        pdfFooterText: user.pdfFooterText || "",
+        pdfHeaderImageUrl: user.pdfHeaderImageUrl || "",
+        pdfFooterImageUrl: user.pdfFooterImageUrl || "",
+        pdfLogoUrl: user.pdfLogoUrl || "",
+        pdfHeaderTitle: user.pdfHeaderTitle || "",
+        pdfHeaderAddress: user.pdfHeaderAddress || "",
+        pdfHeaderTableJson: user.pdfHeaderTableJson || "",
+        pdfHeaderLayout: user.pdfHeaderLayout || "stacked",
+        aiCreditsBalance: user.aiCreditsBalance ?? 0,
+        billingPlan: user.billingPlan || "starter",
       });
-      if (user) {
-        return NextResponse.json({
-          email: user.email,
-          name: user.name || "",
-          isAdmin: isAdminEmail(user.email),
-          adminRole: adminRoleFromEmail(user.email),
-          imageUrl: user.imageUrl || "",
-          pdfHeaderText: user.pdfHeaderText || "",
-          pdfFooterText: user.pdfFooterText || "",
-          pdfHeaderImageUrl: user.pdfHeaderImageUrl || "",
-          pdfFooterImageUrl: user.pdfFooterImageUrl || "",
-          pdfLogoUrl: user.pdfLogoUrl || "",
-          pdfHeaderTitle: user.pdfHeaderTitle || "",
-          pdfHeaderAddress: user.pdfHeaderAddress || "",
-          pdfHeaderTableJson: user.pdfHeaderTableJson || "",
-          pdfHeaderLayout: user.pdfHeaderLayout || "stacked",
-          aiCreditsBalance: user.aiCreditsBalance ?? 0,
-          billingPlan: user.billingPlan || "starter",
-        });
-      }
     }
     return NextResponse.json({
       email: payload.email,

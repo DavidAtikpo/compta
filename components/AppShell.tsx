@@ -15,6 +15,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [userImageUrl, setUserImageUrl] = useState("");
   const [showEnterpriseNav, setShowEnterpriseNav] = useState(false);
   const [showAdminNav, setShowAdminNav] = useState(false);
+  const [organizationName, setOrganizationName] = useState<string | null>(null);
 
   useEffect(() => {
     const load = () => {
@@ -22,6 +23,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if (!token) {
         setShowEnterpriseNav(false);
         setShowAdminNav(false);
+        setOrganizationName(null);
         return;
       }
       void (async () => {
@@ -37,10 +39,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             setUserName(typeof me.name === "string" ? me.name : "");
             setUserImageUrl(typeof me.imageUrl === "string" ? me.imageUrl : "");
             setShowAdminNav(!!me.isAdmin);
-            const mine = isEntreprisePlan(me.billingPlan);
-            const ownerOk = isEntreprisePlan(ent?.ownerBillingPlan);
-            const hasEnt = !!ent?.enterprise;
-            setShowEnterpriseNav(mine || (hasEnt && ownerOk));
+            // Plan utilisateur OU plan du propriétaire (membre invité / fallback API entreprise)
+            setShowEnterpriseNav(
+              isEntreprisePlan(me.billingPlan) || isEntreprisePlan(ent?.ownerBillingPlan),
+            );
+            const entName =
+              ent?.enterprise && typeof ent.enterprise.name === "string" ? ent.enterprise.name.trim() : "";
+            setOrganizationName(entName || null);
           }
         } catch {
           /* silent */
@@ -49,7 +54,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
     load();
     window.addEventListener("compta-profile-updated", load);
-    return () => window.removeEventListener("compta-profile-updated", load);
+    window.addEventListener("focus", load);
+    return () => {
+      window.removeEventListener("compta-profile-updated", load);
+      window.removeEventListener("focus", load);
+    };
   }, []);
 
   const handleLogout = () => {
@@ -67,6 +76,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           userEmail={userEmail}
           userImageUrl={userImageUrl || undefined}
           onLogout={handleLogout}
+          teamWorkspaceActive={showEnterpriseNav}
+          organizationName={organizationName}
         />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-y-contain pb-[calc(3.75rem+env(safe-area-inset-bottom,0px))] lg:pb-0">
           {children}

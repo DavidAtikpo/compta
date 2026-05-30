@@ -3,6 +3,7 @@ import { stripe } from "@/lib/stripe";
 import { pool } from "@/lib/postgres";
 import { SQL_TABLES } from "@/lib/sql-tables";
 import { prisma } from "@/lib/prisma";
+import { TEAM_MODE_UI } from "@/lib/plans";
 
 export const runtime = "nodejs";
 
@@ -63,7 +64,7 @@ export async function POST(request: Request) {
       const has = await prisma.enterprise.findFirst({ where: { ownerId: userId } });
       if (!has) {
         await prisma.enterprise.create({
-          data: { ownerId: userId, name: "Mon entreprise", siret: null },
+          data: { ownerId: userId, name: TEAM_MODE_UI.workspaceDraftName, siret: null },
         });
       }
     }

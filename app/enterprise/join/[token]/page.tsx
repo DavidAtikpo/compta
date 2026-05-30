@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { TEAM_MODE_UI } from "@/lib/plans";
 
 interface InviteInfo {
   email: string;
@@ -74,8 +75,8 @@ export default function JoinEnterprisePage() {
       <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
         <div className="max-w-md w-full rounded-2xl border border-green-100 bg-white p-8 text-center shadow-sm">
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-green-100 text-2xl">✅</div>
-          <h1 className="text-lg font-bold text-slate-800">Vous avez rejoint l&apos;entreprise !</h1>
-          <p className="mt-2 text-sm text-slate-500">Redirection vers votre espace entreprise…</p>
+          <h1 className="text-lg font-bold text-slate-800">Invitation acceptée</h1>
+          <p className="mt-2 text-sm text-slate-500">Redirection vers l’application…</p>
         </div>
       </div>
     );
@@ -93,7 +94,7 @@ export default function JoinEnterprisePage() {
     <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
       <div className="max-w-md w-full rounded-2xl border border-indigo-100 bg-white p-8 text-center shadow-sm">
         <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-100 text-3xl">🏢</div>
-        <h1 className="text-lg font-bold text-slate-800">Rejoindre une entreprise</h1>
+        <h1 className="text-lg font-bold text-slate-800">{TEAM_MODE_UI.joinInviteTitle}</h1>
         <p className="mt-2 text-sm text-slate-600">
           Vous êtes invité à rejoindre <span className="font-semibold text-indigo-700">{info.enterprise.name}</span>{" "}
           en tant que <span className="font-medium capitalize">{info.role}</span>.

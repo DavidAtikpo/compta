@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -54,6 +54,8 @@ export default function DashboardPage() {
   const [recentInvoices, setRecentInvoices] = useState<RecentInvoice[]>([]);
   const [recentSends, setRecentSends] = useState<RecentSend[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
+  const [analyticsSeries, setAnalyticsSeries] = useState<{ date: string; achat: number; vente: number }[]>([]);
+  const [byCategory, setByCategory] = useState<{ category: string; count: number }[]>([]);
 
   useEffect(() => {
     const token = window.localStorage.getItem("compta-token");
@@ -86,11 +88,12 @@ export default function DashboardPage() {
       const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
       const headers: Record<string, string> = {};
       if (t) headers.Authorization = `Bearer ${t}`;
-      const [invoicesRes, historyRes, allInvoicesRes, allHistoryRes] = await Promise.all([
+      const [invoicesRes, historyRes, allInvoicesRes, allHistoryRes, analyticsRes] = await Promise.all([
         fetch("/api/invoices?limit=5", { headers }),
         fetch("/api/history?limit=5", { headers }),
         fetch("/api/invoices?limit=1000", { headers }),
         fetch("/api/history?limit=1000", { headers }),
+        fetch("/api/analytics", { headers }),
       ]);
 
       const invoices: RecentInvoice[] = invoicesRes.ok ? await invoicesRes.json() : [];
@@ -107,12 +110,31 @@ export default function DashboardPage() {
       });
       setRecentInvoices(invoices.slice(0, 5));
       setRecentSends(history.slice(0, 5));
+
+      if (analyticsRes.ok) {
+        const analytics = await analyticsRes.json();
+        setAnalyticsSeries(Array.isArray(analytics.series) ? analytics.series : []);
+        setByCategory(Array.isArray(analytics.byCategory) ? analytics.byCategory : []);
+      }
     } catch (err) {
       console.error("Erreur chargement dashboard:", err);
     } finally {
       setLoadingStats(false);
     }
   };
+
+  const chartPath = useMemo(() => {
+    const w = 640;
+    const h = 180;
+    const pad = 24;
+    if (analyticsSeries.length < 2) return "";
+    const max = Math.max(1, ...analyticsSeries.flatMap((p) => [p.achat, p.vente]));
+    const step = (w - pad * 2) / (analyticsSeries.length - 1);
+    const toY = (v: number) => h - pad - (v / max) * (h - pad * 2);
+    const achatPts = analyticsSeries.map((p, i) => `${pad + i * step},${toY(p.achat)}`);
+    const ventePts = analyticsSeries.map((p, i) => `${pad + i * step},${toY(p.vente)}`);
+    return { w, h, achat: `M ${achatPts.join(" L ")}`, vente: `M ${ventePts.join(" L ")}` };
+  }, [analyticsSeries]);
 
   if (!ready) {
     return (
@@ -197,6 +219,35 @@ export default function DashboardPage() {
               <p className="mt-1.5 text-2xl font-bold text-blue-600">{stats.successRate}%</p>
               <p className="mt-0.5 text-[10px] text-slate-400">Envois réussis</p>
             </div>
+          </div>
+        )}
+
+        {/* Graphiques analytiques */}
+        {analyticsSeries.length > 1 && chartPath && typeof chartPath !== "string" && (
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h2 className="text-sm font-semibold text-slate-900">Activité (90 derniers jours)</h2>
+            <p className="mt-0.5 text-[10px] text-slate-500">Nombre de factures achat vs vente par jour</p>
+            <svg viewBox={`0 0 ${chartPath.w} ${chartPath.h}`} className="mt-3 h-auto w-full max-h-[200px]">
+              <rect width={chartPath.w} height={chartPath.h} fill="#fafafa" rx={8} />
+              <path d={chartPath.achat} fill="none" stroke="#4f46e5" strokeWidth={2} />
+              <path d={chartPath.vente} fill="none" stroke="#059669" strokeWidth={2} />
+            </svg>
+            <div className="mt-2 flex gap-4 text-[10px] text-slate-600">
+              <span className="inline-flex items-center gap-1"><span className="h-2 w-4 rounded-sm bg-indigo-600" /> Achats</span>
+              <span className="inline-flex items-center gap-1"><span className="h-2 w-4 rounded-sm bg-emerald-600" /> Ventes</span>
+            </div>
+            {byCategory.length > 0 && (
+              <div className="mt-4 border-t border-slate-100 pt-3">
+                <p className="text-[10px] font-medium text-slate-700">Répartition par catégorie</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {byCategory.map((c) => (
+                    <span key={c.category} className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-700">
+                      {c.category} ({c.count})
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { isEntreprisePlan } from "@/lib/plans";
+import { isEntreprisePlan, TEAM_MODE_UI } from "@/lib/plans";
 
 interface Enterprise {
   id: string;
@@ -48,7 +48,7 @@ export default function EnterprisePage() {
   }, [authHeaders]);
 
   const canUseEntrepriseUi =
-    isEntreprisePlan(myBillingPlan) || (enterprise != null && isEntreprisePlan(ownerBillingPlan));
+    isEntreprisePlan(myBillingPlan) || isEntreprisePlan(ownerBillingPlan);
 
   if (loading) {
     return (
@@ -59,10 +59,10 @@ export default function EnterprisePage() {
   if (!canUseEntrepriseUi) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-8 text-center">
-        <h2 className="text-base font-semibold text-slate-900">Plan Entreprise</h2>
+        <h2 className="text-base font-semibold text-slate-900">{TEAM_MODE_UI.planDisplayName}</h2>
         <p className="mt-2 text-sm text-slate-600">
-          Passez au plan Entreprise pour regrouper toutes les factures (y compris celles déjà ajoutées), inviter des
-          agents, et accéder aux analyses.
+          Passez au {TEAM_MODE_UI.planDisplayName} pour regrouper toutes les factures (y compris celles déjà ajoutées),
+          inviter des collaborateurs et accéder aux analyses. Votre profil affichera ensuite le contexte équipe.
         </p>
         <Link
           href="/settings?tab=overview"
@@ -77,10 +77,10 @@ export default function EnterprisePage() {
   if (!enterprise) {
     return (
       <div className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50/50 p-8 text-center">
-        <h2 className="text-base font-semibold text-slate-800">Finaliser l&apos;espace entreprise</h2>
+        <h2 className="text-base font-semibold text-slate-800">Configurer votre {TEAM_MODE_UI.navLabel}</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Donnez un nom à votre structure (le paiement Stripe crée souvent un brouillon « Mon entreprise » — vous pouvez
-          le renommer ici).
+          Donnez un nom à votre organisation (après paiement, un brouillon « {TEAM_MODE_UI.workspaceDraftName} » peut
+          être créé — renommez-le ici). Le nom apparaîtra aussi sous votre profil en haut de l’application.
         </p>
         <CreateEnterpriseForm authHeaders={authHeaders} onCreated={(e) => setEnterprise(e)} />
       </div>
@@ -111,24 +111,30 @@ export default function EnterprisePage() {
           <div className="flex gap-4 text-center text-sm">
             <div>
               <div className="text-xl font-bold text-indigo-700">{memberCount}</div>
-              <div className="text-xs text-slate-500">Agents actifs</div>
+              <div className="text-xs text-slate-500">Collaborateurs actifs</div>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
         <Link
           href="/enterprise/members"
           className="rounded-xl border border-slate-200 bg-white p-4 text-sm font-medium text-slate-800 shadow-sm hover:border-indigo-200 hover:bg-indigo-50/40"
         >
-          Gérer les agents →
+          Collaborateurs →
         </Link>
         <Link
           href="/enterprise/analyse"
           className="rounded-xl border border-slate-200 bg-white p-4 text-sm font-medium text-slate-800 shadow-sm hover:border-indigo-200 hover:bg-indigo-50/40"
         >
           Analyse achats / ventes →
+        </Link>
+        <Link
+          href="/enterprise/statistiques"
+          className="rounded-xl border border-slate-200 bg-white p-4 text-sm font-medium text-slate-800 shadow-sm hover:border-indigo-200 hover:bg-indigo-50/40"
+        >
+          Statistiques (courbes par mois) →
         </Link>
       </div>
     </div>

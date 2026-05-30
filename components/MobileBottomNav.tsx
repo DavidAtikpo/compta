@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { TEAM_MODE_UI } from "@/lib/plans";
 
 type NavItem = {
   href: string;
@@ -68,7 +69,7 @@ const items: NavItem[] = [
   },
   {
     href: "/enterprise",
-    short: "Entreprise",
+    short: TEAM_MODE_UI.navShort,
     requiresEnterprise: true,
     icon: (
       <svg className="mx-auto h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

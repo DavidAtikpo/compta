@@ -88,7 +88,7 @@ export default function EnterpriseMembersPage() {
   }
 
   async function handleRemove(memberId: string) {
-    if (!confirm("Retirer cet agent de l'entreprise ?")) return;
+    if (!confirm("Retirer ce collaborateur de l’espace équipe ?")) return;
     const res = await fetch(`/api/enterprise/members?memberId=${memberId}`, {
       method: "DELETE",
       headers: authHeaders,
@@ -128,8 +128,8 @@ export default function EnterpriseMembersPage() {
   if (noEnterprise) {
     return (
       <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500">
-        Créez d&apos;abord votre entreprise depuis la{" "}
-        <a href="/enterprise" className="text-indigo-600 underline">Vue d&apos;ensemble</a>.
+        Créez d&apos;abord votre espace depuis la{" "}
+        <a href="/enterprise" className="text-indigo-600 underline">vue d&apos;ensemble</a>.
       </div>
     );
   }
@@ -138,7 +138,7 @@ export default function EnterpriseMembersPage() {
     <div className="space-y-6">
       {/* Invite form */}
       <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-5">
-        <h2 className="mb-3 text-sm font-semibold text-slate-800">Inviter un agent</h2>
+        <h2 className="mb-3 text-sm font-semibold text-slate-800">Inviter un collaborateur</h2>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <div className="flex-1">
             <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>

@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { TEAM_MODE_UI } from "@/lib/plans";
 
 const settingsItem = {
   href: "/settings",
@@ -26,6 +27,8 @@ type NavItem = {
   icon: ReactNode;
   requiresEnterprise?: boolean;
   requiresAdmin?: boolean;
+  /** Si true, actif seulement sur l’URL exacte (évite que `/enterprise` reste actif sur les sous-pages). */
+  activeExact?: boolean;
 };
 
 const nav: NavItem[] = [
@@ -57,6 +60,15 @@ const nav: NavItem[] = [
     ),
   },
   {
+    href: "/comptabilite",
+    label: "Comptabilité",
+    icon: (
+      <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+      </svg>
+    ),
+  },
+  {
     href: "/optimize",
     label: "Optimisation IA",
     icon: (
@@ -76,11 +88,42 @@ const nav: NavItem[] = [
   },
   {
     href: "/enterprise",
-    label: "Entreprise",
+    label: "Vue d'ensemble",
+    requiresEnterprise: true,
+    activeExact: true,
+    icon: (
+      <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+      </svg>
+    ),
+  },
+  {
+    href: "/enterprise/members",
+    label: "Collaborateurs",
     requiresEnterprise: true,
     icon: (
       <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+      </svg>
+    ),
+  },
+  {
+    href: "/enterprise/analyse",
+    label: "Analyse",
+    requiresEnterprise: true,
+    icon: (
+      <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 3v18h18M7 16l4-4 4 4 6-8" />
+      </svg>
+    ),
+  },
+  {
+    href: "/enterprise/statistiques",
+    label: "Statistiques",
+    requiresEnterprise: true,
+    icon: (
+      <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
       </svg>
     ),
   },
@@ -115,6 +158,29 @@ export function Sidebar({
     return true;
   });
 
+  const mainItems = visible.filter((item) => !item.requiresEnterprise && !item.requiresAdmin);
+  const enterpriseItems = visible.filter((item) => item.requiresEnterprise);
+  const adminItems = visible.filter((item) => item.requiresAdmin);
+
+  const linkClass = (active: boolean) =>
+    `flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition ${
+      active
+        ? "bg-slate-900 text-white shadow-sm"
+        : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+    }`;
+
+  const renderLink = (item: NavItem) => {
+    const active =
+      pathname === item.href ||
+      (!item.activeExact && item.href !== "/" && pathname.startsWith(`${item.href}/`));
+    return (
+      <Link key={item.href} href={item.href} className={linkClass(active)}>
+        {item.icon}
+        {item.label}
+      </Link>
+    );
+  };
+
   return (
     <aside className="hidden h-dvh w-56 shrink-0 flex-col border-r border-slate-200 bg-white lg:flex">
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-slate-100 px-3">
@@ -131,23 +197,23 @@ export function Sidebar({
       </div>
       <nav className="flex min-h-0 flex-1 flex-col">
         <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
-          {visible.map((item) => {
-            const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-medium transition ${
-                  active
-                    ? "bg-slate-900 text-white shadow-sm"
-                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                }`}
-              >
-                {item.icon}
-                {item.label}
-              </Link>
-            );
-          })}
+          {mainItems.map(renderLink)}
+          {enterpriseItems.length > 0 && (
+            <>
+              <p className="px-2.5 pb-0.5 pt-3 text-[10px] font-semibold uppercase tracking-wide text-indigo-600">
+                {TEAM_MODE_UI.navLabel}
+              </p>
+              {enterpriseItems.map(renderLink)}
+            </>
+          )}
+          {adminItems.length > 0 && (
+            <>
+              <p className="px-2.5 pb-0.5 pt-3 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                Administration
+              </p>
+              {adminItems.map(renderLink)}
+            </>
+          )}
         </div>
         <div className="shrink-0 border-t border-slate-100 p-2">
           <Link

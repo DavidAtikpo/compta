@@ -3,25 +3,11 @@ import type { NextRequest } from "next/server";
 import { pool } from "../../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
+import { accountForCategory } from "@/lib/pcg";
 
 export const runtime = "nodejs";
 
 // FEC — Fichier des Écritures Comptables (format DGFiP)
-// Colonnes obligatoires : JournalCode|JournalLib|EcritureNum|EcritureDate|CompteNum|CompteLib|CompAuxNum|CompAuxLib|PieceRef|PieceDate|EcritureLib|Debit|Credit|EcritureLet|DateLet|ValidDate|Montantdevise|Idevise
-
-const categoryToAccount: Record<string, { num: string; lib: string }> = {
-  "Fournitures bureau":     { num: "60600", lib: "Achats fournitures bureau" },
-  "Déplacement / Transport":{ num: "62510", lib: "Frais déplacements" },
-  "Repas professionnel":    { num: "62500", lib: "Frais missions" },
-  "Informatique / Logiciel":{ num: "60500", lib: "Achats logiciels" },
-  "Téléphone / Internet":   { num: "62600", lib: "Frais télécommunications" },
-  "Loyer / Bureau":         { num: "61300", lib: "Loyers" },
-  "Formation":              { num: "63300", lib: "Formation professionnelle" },
-  "Publicité / Marketing":  { num: "62300", lib: "Publicité" },
-  "Assurance":              { num: "61600", lib: "Assurances" },
-  "Honoraires / Sous-traitance": { num: "62200", lib: "Honoraires" },
-  "Matériel / Équipement":  { num: "21500", lib: "Matériel" },
-};
 
 function formatDate(d: Date | string | null): string {
   if (!d) return "";
@@ -75,7 +61,9 @@ export async function GET(request: NextRequest) {
     let ecritureNum = 1;
 
     for (const inv of invoices) {
-      const account = categoryToAccount[inv.category] ?? { num: "60700", lib: "Achats divers" };
+      const account = inv.accountCode
+        ? { num: String(inv.accountCode).padEnd(6, "0").slice(0, 6), lib: "Compte PCG" }
+        : accountForCategory(inv.category);
       const montantTTC = inv.montantTTC ?? inv.amount ?? 0;
       const montantHT  = inv.montantHT ?? (montantTTC / 1.2);
       const montantTVA = inv.montantTVA ?? (montantTTC - montantHT);

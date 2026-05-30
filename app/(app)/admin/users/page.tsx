@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { TEAM_MODE_UI } from "@/lib/plans";
 
 type AdminOverview = {
   admin: { id: string; email: string; role: "super_admin" | "support_admin" | "read_only_admin" };
@@ -221,7 +222,7 @@ export default function AdminUsersPage() {
                 onClick={() => void updateUser(u.id, { billingPlan: "entreprise" })}
                 className="rounded bg-violet-100 px-2 py-1 text-xs text-violet-900 disabled:opacity-60"
               >
-                Plan entreprise
+                {TEAM_MODE_UI.planDisplayName}
               </button>
               <button
                 disabled={!canWrite || busyUserId === u.id}
