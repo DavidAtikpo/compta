@@ -307,10 +307,16 @@ export default function FichiersPage() {
     <div className="px-3 py-4 sm:px-4 sm:py-5 lg:px-6 lg:py-6">
       <div className="mx-auto max-w-6xl space-y-4">
         <div>
-          <h1 className="text-lg font-bold tracking-tight text-slate-900 sm:text-xl">Fichiers des factures</h1>
+          <h1 className="text-lg font-bold tracking-tight text-slate-900 sm:text-xl">Pièces jointes</h1>
           <p className="mt-0.5 text-[11px] leading-snug text-slate-500 sm:text-sm">
-            PDF et captures images enregistrés sur vos factures. Cliquez sur une carte pour prévisualiser.
+            Galerie visuelle des PDF et images enregistrés sur vos factures. Pour la saisie, l&apos;OCR et l&apos;envoi au cabinet, utilisez la page Factures.
           </p>
+          <Link
+            href="/invoices"
+            className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-indigo-700 hover:text-indigo-900 sm:text-xs"
+          >
+            → Gérer les factures (OCR, devises, cabinet)
+          </Link>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">

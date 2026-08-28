@@ -154,6 +154,9 @@ model Invoice {
   structureId     String?
   currency        String?   @default("EUR")
   accountCode     String?
+  accountantReviewStatus String?
+  accountantReviewNote   String?
+  accountantReviewedAt   DateTime?
   deletedAt       DateTime?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt

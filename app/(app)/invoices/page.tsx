@@ -96,6 +96,8 @@ interface Invoice {
   isPaid: boolean | null;
   paidDate: string | null;
   currency: string | null;
+  accountantReviewStatus?: string | null;
+  accountantReviewNote?: string | null;
   submittedByEmail?: string | null;
   submittedByName?: string | null;
 }
@@ -312,6 +314,7 @@ export default function InvoicesPage() {
   const [filterCategory, setFilterCategory] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterCurrency, setFilterCurrency] = useState("");
   const [loadingList, setLoadingList] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -539,17 +542,29 @@ export default function InvoicesPage() {
     } catch { /* silent */ }
   };
 
-  const loadInvoices = async (reg?: string, status?: string, categ?: string, dateFrom?: string, dateTo?: string, invoiceTypeFilter?: string) => {
+  const loadInvoices = async (
+    reg?: string,
+    status?: string,
+    categ?: string,
+    dateFrom?: string,
+    dateTo?: string,
+    invoiceTypeFilter?: string,
+    currencyFilter?: string,
+  ) => {
     setLoadingList(true);
     try {
       let url = "/api/invoices?limit=200";
-      if (reg) url += `&region=${reg}`;
-      if (status) url += `&status=${status}`;
+      if (reg) url += `&region=${encodeURIComponent(reg)}`;
+      if (status) url += `&status=${encodeURIComponent(status)}`;
+      if (currencyFilter) url += `&currency=${encodeURIComponent(currencyFilter)}`;
       const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
       const res = await fetch(url, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
       if (res.ok) {
         let data: Invoice[] = await res.json();
         if (invoiceTypeFilter) data = data.filter((inv) => inv.invoiceType === invoiceTypeFilter);
+        if (currencyFilter) {
+          data = data.filter((inv) => (inv.currency ?? "EUR") === currencyFilter);
+        }
         // Client-side filters for category and date
         if (categ) data = data.filter((inv) => inv.category === categ);
         if (dateFrom) {
@@ -581,14 +596,44 @@ export default function InvoicesPage() {
     }
   };
 
-  const applyFilters = (overrides: Partial<{ reg: string; status: string; invoiceType: string; categ: string; dateFrom: string; dateTo: string }> = {}) => {
+  const reloadInvoices = () =>
+    loadInvoices(
+      filterRegion || undefined,
+      filterStatus || undefined,
+      filterCategory || undefined,
+      filterDateFrom || undefined,
+      filterDateTo || undefined,
+      filterInvoiceType || undefined,
+      filterCurrency || undefined,
+    );
+
+  const applyFilters = (
+    overrides: Partial<{
+      reg: string;
+      status: string;
+      invoiceType: string;
+      categ: string;
+      dateFrom: string;
+      dateTo: string;
+      currency: string;
+    }> = {},
+  ) => {
     const reg = overrides.reg ?? filterRegion;
     const status = overrides.status ?? filterStatus;
     const invoiceTypeValue = overrides.invoiceType ?? filterInvoiceType;
     const categ = overrides.categ ?? filterCategory;
     const dateFrom = overrides.dateFrom ?? filterDateFrom;
     const dateTo = overrides.dateTo ?? filterDateTo;
-    loadInvoices(reg || undefined, status || undefined, categ || undefined, dateFrom || undefined, dateTo || undefined, invoiceTypeValue || undefined);
+    const currency = overrides.currency ?? filterCurrency;
+    loadInvoices(
+      reg || undefined,
+      status || undefined,
+      categ || undefined,
+      dateFrom || undefined,
+      dateTo || undefined,
+      invoiceTypeValue || undefined,
+      currency || undefined,
+    );
   };
 
   useEffect(() => {
@@ -624,8 +669,58 @@ export default function InvoicesPage() {
     setFilterCategory("");
     setFilterDateFrom("");
     setFilterDateTo("");
+    setFilterCurrency("");
     loadInvoices();
   };
+
+  const currencyTotals = useMemo(() => {
+    if (invoices.length === 0) return null;
+    let totalHT = 0;
+    let totalTTC = 0;
+    let withHT = 0;
+    let withTTC = 0;
+    for (const inv of invoices) {
+      const ttc = inv.montantTTC ?? inv.amount;
+      const ht = inv.montantHT;
+      if (ttc != null) {
+        totalTTC += ttc;
+        withTTC++;
+      }
+      if (ht != null) {
+        totalHT += ht;
+        withHT++;
+      }
+    }
+    const code = filterCurrency || null;
+    const symbol = currencySymbol(code ?? invoices[0]?.currency ?? "EUR");
+    return {
+      count: invoices.length,
+      totalHT,
+      totalTTC,
+      withHT,
+      withTTC,
+      code,
+      symbol,
+    };
+  }, [invoices, filterCurrency]);
+
+  const currencyBreakdown = useMemo(() => {
+    if (filterCurrency || invoices.length === 0) return [];
+    const map = new Map<string, { count: number; totalHT: number; totalTTC: number }>();
+    for (const inv of invoices) {
+      const c = inv.currency ?? "EUR";
+      const entry = map.get(c) ?? { count: 0, totalHT: 0, totalTTC: 0 };
+      entry.count++;
+      const ttc = inv.montantTTC ?? inv.amount;
+      const ht = inv.montantHT;
+      if (ttc != null) entry.totalTTC += ttc;
+      if (ht != null) entry.totalHT += ht;
+      map.set(c, entry);
+    }
+    return [...map.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([code, stats]) => ({ code, ...stats, symbol: currencySymbol(code) }));
+  }, [invoices, filterCurrency]);
 
   const runOcr = async (imageFiles: File[]): Promise<{ name: string; text: string }[]> => {
     const results: { name: string; text: string }[] = [];
@@ -840,7 +935,7 @@ export default function InvoicesPage() {
         setUploadResult(`${files.length} facture(s) enregistrée(s).`);
       }
       setOcrStatus("Traitement terminé.");
-      await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined, filterInvoiceType || undefined);
+      await reloadInvoices();
       handleClearAll();
       setCreateOpen(false);
     } catch {
@@ -964,7 +1059,7 @@ export default function InvoicesPage() {
         if (d.numeroFacture) parts.push(`N°${d.numeroFacture}`);
         const msg = parts.length > 0 ? `✓ ${parts.join(" · ")}` : "✓ Extrait (aucune donnée trouvée)";
         setExtractResults((prev) => ({ ...prev, [id]: { ok: true, msg } }));
-        await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined, filterInvoiceType || undefined);
+        await reloadInvoices();
       } else {
         setExtractResults((prev) => ({ ...prev, [id]: { ok: false, msg: `✗ ${json.error || `Erreur ${res.status}`}` } }));
       }
@@ -1185,14 +1280,7 @@ export default function InvoicesPage() {
         }
       }
       setSelectedIds([]);
-      await loadInvoices(
-        filterRegion || undefined,
-        filterStatus || undefined,
-        filterCategory || undefined,
-        filterDateFrom || undefined,
-        filterDateTo || undefined,
-        filterInvoiceType || undefined
-      );
+      await reloadInvoices();
       if (!anyFail) {
         showSendSuccessToast(
           parts.length <= 1
@@ -1287,7 +1375,7 @@ export default function InvoicesPage() {
           ? sendJson.message
           : "Facture envoyée au cabinet avec succès."
       );
-      await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined, filterInvoiceType || undefined);
+      await reloadInvoices();
     } catch {
       setMessage("Erreur réseau lors de l'envoi.");
     } finally {
@@ -1589,7 +1677,7 @@ export default function InvoicesPage() {
       const data = await res.json().catch(() => ({}));
       setImapResult(data);
       if (res.ok && (data.imported ?? 0) > 0) {
-        await loadInvoices(filterRegion || undefined, filterStatus || undefined, filterCategory || undefined, filterDateFrom || undefined, filterDateTo || undefined, filterInvoiceType || undefined);
+        await reloadInvoices();
         setActiveTab("invoices");
       }
     } catch (e) {
@@ -1599,7 +1687,14 @@ export default function InvoicesPage() {
     }
   };
 
-  const hasActiveFilters = filterRegion || filterInvoiceType || filterStatus || filterCategory || filterDateFrom || filterDateTo;
+  const hasActiveFilters =
+    filterRegion ||
+    filterInvoiceType ||
+    filterStatus ||
+    filterCategory ||
+    filterDateFrom ||
+    filterDateTo ||
+    filterCurrency;
 
   const allVisibleSelected =
     invoices.length > 0 && invoices.every((i) => selectedIds.includes(i.id));
@@ -1656,7 +1751,15 @@ export default function InvoicesPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-lg font-semibold text-slate-900">Factures et pièces justificatives</h1>
-            <p className="mt-0.5 text-xs text-slate-500">OCR, extraction (OCR), stockage, transmission cabinet</p>
+            <p className="mt-0.5 text-xs text-slate-500">OCR, extraction, devises, transmission cabinet</p>
+            <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
+              <Link href="/fichiers" className="font-medium text-indigo-700 hover:text-indigo-900">
+                → Galerie pièces jointes
+              </Link>
+              <Link href="/comptabilite/operations" className="font-medium text-indigo-700 hover:text-indigo-900">
+                → Écritures comptables
+              </Link>
+            </div>
           </div>
           <div className="flex flex-wrap gap-1.5">
             <button
@@ -1807,6 +1910,21 @@ export default function InvoicesPage() {
                   </select>
                 </div>
 
+                {/* Currency */}
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Devise</label>
+                  <select
+                    value={filterCurrency}
+                    onChange={(e) => { setFilterCurrency(e.target.value); applyFilters({ currency: e.target.value }); }}
+                    className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                  >
+                    <option value="">Toutes</option>
+                    {CURRENCY_OPTIONS.map((c) => (
+                      <option key={c.code} value={c.code}>{c.label}</option>
+                    ))}
+                  </select>
+                </div>
+
                 {/* Extraction (OCR) + AI provider for analysis */}
                 <div className="flex flex-col gap-0.5">
                   <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Extraction</label>
@@ -1866,6 +1984,65 @@ export default function InvoicesPage() {
                 )}
               </div>
             </div>
+
+            {/* Totaux par devise */}
+            {!loadingList && filterCurrency && currencyTotals && (
+              <div className="border-b border-slate-200 bg-indigo-50/60 px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                  <p className="text-[11px] font-semibold text-indigo-900">
+                    {invoiceKind === "vente" ? "Recettes" : "Dépenses"} — {filterCurrency}
+                    <span className="ml-1 font-normal text-indigo-700">
+                      ({currencyTotals.count} facture{currencyTotals.count > 1 ? "s" : ""})
+                    </span>
+                  </p>
+                  <div className="flex flex-wrap gap-4 text-[11px]">
+                    <span className="text-slate-600">
+                      Total HT{" "}
+                      <strong className="font-mono text-slate-900">
+                        {currencyTotals.withHT > 0
+                          ? `${currencyTotals.totalHT.toFixed(2)} ${currencyTotals.symbol}`
+                          : "—"}
+                      </strong>
+                    </span>
+                    <span className="text-slate-600">
+                      Total TTC{" "}
+                      <strong className="font-mono text-slate-900">
+                        {currencyTotals.withTTC > 0
+                          ? `${currencyTotals.totalTTC.toFixed(2)} ${currencyTotals.symbol}`
+                          : "—"}
+                      </strong>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!loadingList && !filterCurrency && currencyBreakdown.length > 1 && (
+              <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                  {invoiceKind === "vente" ? "Recettes par devise" : "Dépenses par devise"}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {currencyBreakdown.map((row) => (
+                    <button
+                      key={row.code}
+                      type="button"
+                      onClick={() => {
+                        setFilterCurrency(row.code);
+                        applyFilters({ currency: row.code });
+                      }}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-left text-[10px] shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50"
+                    >
+                      <span className="font-semibold text-slate-800">{row.code}</span>
+                      <span className="ml-1.5 font-mono text-slate-700">
+                        {row.totalTTC > 0 ? `${row.totalTTC.toFixed(2)} ${row.symbol}` : "—"}
+                      </span>
+                      <span className="ml-1 text-slate-400">({row.count})</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {selectedIds.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-2 py-2 text-[11px]">
@@ -2089,13 +2266,21 @@ export default function InvoicesPage() {
                               : <span className="text-slate-300 font-mono">—</span>}
                           </td>
                           <td className="px-2 py-1.5 whitespace-nowrap text-center">
-                            <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                              inv.status === "sent" ? "bg-emerald-100 text-emerald-700"
-                              : inv.status === "archived" ? "bg-slate-100 text-slate-600"
-                              : "bg-amber-100 text-amber-700"
-                            }`}>
-                              {inv.status === "sent" ? "Envoyé" : inv.status === "archived" ? "Archivé" : "En attente"}
-                            </span>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                inv.status === "sent" ? "bg-emerald-100 text-emerald-700"
+                                : inv.status === "archived" ? "bg-slate-100 text-slate-600"
+                                : "bg-amber-100 text-amber-700"
+                              }`}>
+                                {inv.status === "sent" ? "Envoyé" : inv.status === "archived" ? "Archivé" : "En attente"}
+                              </span>
+                              {inv.accountantReviewStatus === "validated" && (
+                                <span className="text-[9px] font-medium text-emerald-700" title={inv.accountantReviewNote ?? undefined}>✓ Cabinet</span>
+                              )}
+                              {inv.accountantReviewStatus === "rejected" && (
+                                <span className="text-[9px] font-medium text-rose-700" title={inv.accountantReviewNote ?? undefined}>✗ Cabinet</span>
+                              )}
+                            </div>
                           </td>
                           <td className="relative px-1 py-1.5 text-right align-top">
                             <div

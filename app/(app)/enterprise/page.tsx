@@ -117,7 +117,7 @@ export default function EnterprisePage() {
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         <Link
           href="/enterprise/members"
           className="rounded-xl border border-slate-200 bg-white p-4 text-sm font-medium text-slate-800 shadow-sm hover:border-indigo-200 hover:bg-indigo-50/40"
@@ -125,16 +125,10 @@ export default function EnterprisePage() {
           Collaborateurs →
         </Link>
         <Link
-          href="/enterprise/analyse"
+          href="/enterprise/reporting"
           className="rounded-xl border border-slate-200 bg-white p-4 text-sm font-medium text-slate-800 shadow-sm hover:border-indigo-200 hover:bg-indigo-50/40"
         >
-          Analyse achats / ventes →
-        </Link>
-        <Link
-          href="/enterprise/statistiques"
-          className="rounded-xl border border-slate-200 bg-white p-4 text-sm font-medium text-slate-800 shadow-sm hover:border-indigo-200 hover:bg-indigo-50/40"
-        >
-          Statistiques (courbes par mois) →
+          Reporting achats / ventes →
         </Link>
       </div>
     </div>

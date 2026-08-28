@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const region = searchParams.get("region");
   const status = searchParams.get("status");
+  const currency = searchParams.get("currency");
   const limit = parseInt(searchParams.get("limit") || "50", 10);
 
   try {
@@ -43,6 +44,10 @@ export async function GET(request: NextRequest) {
     if (status) {
       query += ` AND i.status = $${idx++}`;
       params.push(status);
+    }
+    if (currency) {
+      query += ` AND COALESCE(i.currency, 'EUR') = $${idx++}`;
+      params.push(currency.toUpperCase());
     }
 
     query += ` ORDER BY i."createdAt" DESC LIMIT $${idx}`;

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { INVOICE_CATEGORIES } from "@/lib/pcg-data";
 
 type JournalLine = {
@@ -92,6 +93,12 @@ export default function OperationsPage() {
 
   return (
     <div className="space-y-5">
+      <div className="rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs text-indigo-900">
+        Les écritures peuvent être générées depuis une facture (menu Actions → Écriture comptable).{" "}
+        <Link href="/invoices" className="font-semibold underline hover:text-indigo-950">
+          Voir les factures
+        </Link>
+      </div>
       <form onSubmit={(e) => void handleSubmit(e)} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="text-sm font-semibold text-slate-900">Nouvelle opération</h2>
         <p className="mt-0.5 text-xs text-slate-500">Saisie manuelle avec pièce jointe (URL Cloudinary ou lien).</p>

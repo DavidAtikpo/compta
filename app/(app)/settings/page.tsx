@@ -1356,8 +1356,12 @@ export default function SettingsPage() {
             <div className="border-b border-slate-100 px-6 py-4">
               <h2 className="font-semibold text-slate-900">Cabinets comptables</h2>
               <p className="mt-1 text-xs text-slate-500">
-                L’envoi « au cabinet » envoie une copie à <strong>toutes</strong> les adresses du pays concerné. Plusieurs
-                emails peuvent être enregistrés pour un même pays.
+                L&apos;envoi « au cabinet » envoie une copie à <strong>toutes</strong> les adresses du pays concerné. Vos
+                comptables peuvent se connecter au{" "}
+                <a href="/accountant/login" className="font-medium text-indigo-700 underline hover:text-indigo-900">
+                  portail comptable
+                </a>{" "}
+                pour consulter, filtrer par devise et valider les factures.
               </p>
             </div>
             <div className="space-y-5 p-6">

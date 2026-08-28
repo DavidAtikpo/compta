@@ -6,15 +6,35 @@ import { TEAM_MODE_UI } from "@/lib/plans";
 const titles: Record<string, string> = {
   "/": "Tableau de bord",
   "/invoices": "Factures",
-  "/fichiers": "Fichiers",
+  "/fichiers": "Pièces jointes",
+  "/comptabilite": "Comptabilité",
+  "/comptabilite/operations": "Opérations comptables",
+  "/comptabilite/banque": "Banque",
+  "/comptabilite/pcg": "Plan comptable",
+  "/comptabilite/tva": "TVA (CA3 / CA12)",
   "/optimize": "Optimisation IA",
   "/history": "Historique",
   "/settings": "Paramètres",
   "/enterprise": TEAM_MODE_UI.sectionTitle,
   "/enterprise/members": "Collaborateurs",
-  "/enterprise/analyse": "Analyse achats / ventes",
-  "/enterprise/statistiques": "Statistiques",
+  "/enterprise/reporting": "Reporting équipe",
+  "/enterprise/analyse": "Reporting équipe",
+  "/enterprise/statistiques": "Reporting équipe",
+  "/admin": "Administration",
+  "/admin/users": "Utilisateurs",
+  "/admin/invoices": "Factures (admin)",
+  "/admin/accountants": "Comptables",
+  "/admin/structures": "Structures",
+  "/admin/audit": "Audit",
 };
+
+function resolveTitle(pathname: string): string {
+  if (titles[pathname]) return titles[pathname]!;
+  if (pathname.startsWith("/comptabilite")) return "Comptabilité";
+  if (pathname.startsWith("/enterprise")) return TEAM_MODE_UI.sectionTitle;
+  if (pathname.startsWith("/admin")) return "Administration";
+  return "Compta IA";
+}
 
 type HeaderProps = {
   userName: string;
@@ -23,7 +43,7 @@ type HeaderProps = {
   onLogout: () => void;
   /** Mode multi-utilisateurs (plan Équipe ou membre actif) : affiche le contexte dans le profil. */
   teamWorkspaceActive?: boolean;
-  /** Nom de l’organisation (si déjà créée), affiché sous le nom d’utilisateur. */
+  /** Nom de l'organisation (si déjà créée), affiché sous le nom d'utilisateur. */
   organizationName?: string | null;
 };
 
@@ -36,9 +56,7 @@ export function Header({
   organizationName = null,
 }: HeaderProps) {
   const pathname = usePathname();
-  const title =
-    (titles[pathname as keyof typeof titles] as string | undefined) ??
-    (pathname.startsWith("/enterprise") ? TEAM_MODE_UI.sectionTitle : "Compta IA");
+  const title = resolveTitle(pathname);
   const isOptimize = pathname === "/optimize";
   const display = userName || userEmail || "…";
   const initial = (userName || userEmail || "?").slice(0, 1).toUpperCase();

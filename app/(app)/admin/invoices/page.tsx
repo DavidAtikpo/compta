@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { formatInvoiceAmount } from "@/lib/invoice-currency";
 
 type AdminOverview = {
   admin: { id: string; email: string; role: "super_admin" | "support_admin" | "read_only_admin" };
@@ -12,6 +13,8 @@ type AdminInvoice = {
   status: string;
   category: string | null;
   amount: number | null;
+  montantTTC: number | null;
+  currency: string | null;
   region: string;
   createdAt: string;
   user: { id: string; email: string; name: string | null } | null;
@@ -226,8 +229,16 @@ function AdminInvoicesPageContent() {
 
             <div className="mt-2 flex flex-wrap gap-2">
               <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700">Statut: {inv.status}</span>
-              {inv.amount != null && (
-                <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700">Montant: {inv.amount}€</span>
+              {(() => {
+                const ttc = inv.montantTTC ?? inv.amount;
+                return ttc != null ? (
+                  <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700">
+                    TTC: {formatInvoiceAmount(ttc, inv.currency)}
+                  </span>
+                ) : null;
+              })()}
+              {inv.currency && (
+                <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700">Devise: {inv.currency}</span>
               )}
               {inv.category && (
                 <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700">Catégorie: {inv.category}</span>

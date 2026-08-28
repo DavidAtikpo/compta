@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { formatInvoiceAmount } from "@/lib/invoice-currency";
 
 export const metadata: Metadata = {
   title: "Facture partagée — Compta IA",
@@ -26,6 +27,7 @@ interface InvoiceData {
   createdAt: string;
   sentAt: string | null;
   fileUrl: string | null;
+  currency: string | null;
   accountant_email: string | null;
 }
 
@@ -75,6 +77,7 @@ export default async function SharePage({
     sent: "Transmis", pending: "En attente", archived: "Archivé",
   };
   const amountTTC = invoice.montantTTC ?? invoice.amount;
+  const currency = invoice.currency ?? "EUR";
 
   return (
     <div className="min-h-dvh bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
@@ -116,6 +119,10 @@ export default async function SharePage({
                 <p className="text-sm font-medium text-slate-900">{invoice.category ?? "—"}</p>
               </div>
               <div>
+                <p className="text-xs text-slate-500 mb-0.5">Devise</p>
+                <p className="text-sm font-medium text-slate-900">{currency}</p>
+              </div>
+              <div>
                 <p className="text-xs text-slate-500 mb-0.5">Date facture</p>
                 <p className="text-sm font-medium text-slate-900">
                   {invoice.invoiceDate ? new Date(invoice.invoiceDate).toLocaleDateString("fr-FR") : "—"}
@@ -133,7 +140,7 @@ export default async function SharePage({
               <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">Montants extraits</p>
               <div className="flex justify-between text-sm">
                 <span className="text-slate-600">Montant HT</span>
-                <span className="font-medium text-slate-900">{invoice.montantHT != null ? `${invoice.montantHT.toFixed(2)} €` : "—"}</span>
+                <span className="font-medium text-slate-900">{formatInvoiceAmount(invoice.montantHT, currency)}</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-slate-600">Taux TVA</span>
@@ -141,11 +148,11 @@ export default async function SharePage({
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-slate-600">Montant TVA</span>
-                <span className="font-medium text-slate-900">{invoice.montantTVA != null ? `${invoice.montantTVA.toFixed(2)} €` : "—"}</span>
+                <span className="font-medium text-slate-900">{formatInvoiceAmount(invoice.montantTVA, currency)}</span>
               </div>
               <div className="flex justify-between text-sm font-semibold border-t border-slate-200 pt-2 mt-1">
                 <span className="text-slate-900">Total TTC</span>
-                <span className="text-slate-900">{amountTTC != null ? `${amountTTC.toFixed(2)} €` : "—"}</span>
+                <span className="text-slate-900">{formatInvoiceAmount(amountTTC, currency)}</span>
               </div>
             </div>
 
@@ -174,6 +181,10 @@ export default async function SharePage({
 
         <p className="text-center text-slate-500 text-xs mt-4">
           Document partagé via Compta IA — usage professionnel uniquement
+          {" · "}
+          <Link href="/accountant/login" className="text-slate-400 underline hover:text-slate-600">
+            Espace comptable
+          </Link>
         </p>
       </div>
     </div>

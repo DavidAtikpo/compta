@@ -14,7 +14,7 @@ export async function GET(
       `SELECT i.id, i."originalName", i.region, i.amount, i.category,
               i.status, i."ocrText", i."createdAt", i."sentAt", i."fileUrl",
               i."fournisseur", i."numeroFacture", i."montantHT", i."montantTVA",
-              i."montantTTC", i."tauxTVA", i."invoiceDate",
+              i."montantTTC", i."tauxTVA", i."invoiceDate", i.currency,
               a.email as accountant_email
        FROM invoices i
        LEFT JOIN accountants a ON i."accountantId" = a.id

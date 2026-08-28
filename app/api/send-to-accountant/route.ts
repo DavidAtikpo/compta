@@ -3,6 +3,7 @@ import nodemailer from "nodemailer";
 import { pool } from "../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
+import { accountantPortalLoginUrl, signAccountantPortalToken } from "@/lib/accountant-portal";
 
 export const runtime = "nodejs";
 
@@ -112,6 +113,11 @@ export async function POST(request: Request) {
   const regionLabel =
     region.charAt(0).toUpperCase() + region.slice(1);
 
+  const primaryRecipient = recipientEmails[0] ?? "";
+  const portalUrl = primaryRecipient
+    ? accountantPortalLoginUrl(signAccountantPortalToken(primaryRecipient))
+    : null;
+
   let sendSuccess = false;
   let sendError: string | undefined;
 
@@ -134,6 +140,15 @@ export async function POST(request: Request) {
               <strong>Expéditeur :</strong> ${senderName}<br>
               <strong>Fichiers joints :</strong> ${filteredAttachments.map((a) => a.filename).join(", ") || "aucun"}
             </p>
+            ${
+              portalUrl
+                ? `<p style="margin-top:16px;padding:12px;background:#eef2ff;border-radius:8px;font-size:13px;color:#3730a3">
+              <strong>Portail comptable :</strong> consultez et validez toutes les factures de vos clients sur
+              <a href="${portalUrl}" style="color:#4f46e5;font-weight:600">Compta IA — Espace comptable</a>
+              (lien valide 7 jours).
+            </p>`
+                : ""
+            }
           </div>
           <p style="font-size:11px;color:#94a3b8;margin-top:12px;text-align:center">Envoyé via Compta IA — Application de gestion comptable</p>
         </div>
@@ -170,17 +185,35 @@ export async function POST(request: Request) {
     try {
       const ids = invoiceIds.map((id) => id.toString()).filter(Boolean);
       if (ids.length > 0) {
-        const agentClause = restrictAgentToOwnSubmissions
-          ? ` AND "submittedByUserId" = $3`
-          : "";
-        const updParams = restrictAgentToOwnSubmissions
-          ? [ids, workspaceOwnerId, actorUserId]
-          : [ids, workspaceOwnerId];
-        await pool.query(
-          `UPDATE invoices SET status = 'sent', "sentAt" = NOW(), "updatedAt" = NOW()
-           WHERE id = ANY($1::text[]) AND "userId" = $2 AND ("deletedAt" IS NULL)${agentClause}`,
-          updParams
-        );
+        let accountantId: string | null = null;
+        if (primaryRecipient) {
+          const accRes = await pool.query(
+            `SELECT id FROM accountants
+             WHERE "userId" = $1 AND region = $2 AND LOWER(email) = LOWER($3) AND "deletedAt" IS NULL
+             ORDER BY "createdAt" ASC LIMIT 1`,
+            [workspaceOwnerId, region, primaryRecipient],
+          );
+          if (accRes.rows.length > 0) {
+            accountantId = accRes.rows[0].id as string;
+          }
+        }
+
+        const sets = [`status = 'sent'`, `"sentAt" = NOW()`, `"updatedAt" = NOW()`];
+        const params: unknown[] = [ids, workspaceOwnerId];
+        let idx = 3;
+
+        if (accountantId) {
+          sets.push(`"accountantId" = $${idx++}`);
+          params.push(accountantId);
+        }
+
+        let where = `id = ANY($1::text[]) AND "userId" = $2 AND ("deletedAt" IS NULL)`;
+        if (restrictAgentToOwnSubmissions) {
+          where += ` AND "submittedByUserId" = $${idx++}`;
+          params.push(actorUserId);
+        }
+
+        await pool.query(`UPDATE invoices SET ${sets.join(", ")} WHERE ${where}`, params);
       }
     } catch (dbError) {
       console.error("Erreur mise à jour statut factures:", dbError);

@@ -136,3 +136,26 @@ export function getExplicitCurrencyFromText(raw: string): string | null {
   if (fromChunk) return fromChunk;
   return currencyFromFragment(normalized.replace(/\s+/g, " "));
 }
+
+const CURRENCY_SYMBOLS: Record<InvoiceCurrencyCode, string> = {
+  EUR: "€",
+  GBP: "£",
+  USD: "$",
+  CNY: "¥",
+  GHS: "₵",
+  XAF: "FCFA",
+  XOF: "FCFA",
+};
+
+/** Symbole d'affichage pour une devise facture (partagé UI). */
+export function invoiceCurrencySymbol(code: string | null | undefined): string {
+  const c = (code ?? "EUR").toUpperCase();
+  if (isValidInvoiceCurrency(c)) return CURRENCY_SYMBOLS[c as InvoiceCurrencyCode];
+  return c;
+}
+
+/** Montant formaté avec la devise de la facture. */
+export function formatInvoiceAmount(amount: number | null | undefined, currency: string | null | undefined): string {
+  if (amount == null || Number.isNaN(amount)) return "—";
+  return `${amount.toFixed(2)} ${invoiceCurrencySymbol(currency)}`;
+}

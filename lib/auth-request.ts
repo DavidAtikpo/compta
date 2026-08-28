@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import { verifyAccountantPortalToken } from "./accountant-portal";
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 
@@ -10,11 +11,19 @@ export function getBearerToken(request: Request): string | null {
 export function getUserIdFromJwt(token: string): string | null {
   if (!JWT_SECRET) return null;
   try {
-    const p = jwt.verify(token, JWT_SECRET) as { sub?: string };
+    const p = jwt.verify(token, JWT_SECRET) as { sub?: string; role?: string };
+    if (p.role === "accountant") return null;
     return typeof p.sub === "string" ? p.sub : null;
   } catch {
     return null;
   }
+}
+
+export function getAccountantEmailFromRequest(request: Request): string | null {
+  const token = getBearerToken(request);
+  if (!token) return null;
+  const payload = verifyAccountantPortalToken(token);
+  return payload?.email ?? null;
 }
 
 export function getAuthenticatedUserId(request: Request): string | null {
