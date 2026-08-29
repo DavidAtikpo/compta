@@ -1,7 +1,15 @@
 import jwt from "jsonwebtoken";
-import { verifyAccountantPortalToken } from "./accountant-portal";
+import { verifyAccountantPortalToken, type AccountantPortalPayload } from "./accountant-portal";
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
+
+export type PortalRequestContext = AccountantPortalPayload;
+
+export function getPortalContextFromRequest(request: Request): PortalRequestContext | null {
+  const token = getBearerToken(request);
+  if (!token) return null;
+  return verifyAccountantPortalToken(token);
+}
 
 export function getBearerToken(request: Request): string | null {
   const auth = request.headers.get("authorization");
@@ -20,10 +28,7 @@ export function getUserIdFromJwt(token: string): string | null {
 }
 
 export function getAccountantEmailFromRequest(request: Request): string | null {
-  const token = getBearerToken(request);
-  if (!token) return null;
-  const payload = verifyAccountantPortalToken(token);
-  return payload?.email ?? null;
+  return getPortalContextFromRequest(request)?.email ?? null;
 }
 
 export function getAuthenticatedUserId(request: Request): string | null {

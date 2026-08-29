@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { IMAP_REGION_OPTIONS_SORTED } from "@/lib/country-regions";
+import { enterAccountantPortalFromUser } from "@/lib/accountant-portal-client";
 import { PdfHeaderPreview } from "@/components/PdfHeaderPreview";
 import {
   normalizePdfHeaderLayout,
@@ -83,6 +84,9 @@ export default function SettingsPage() {
   const [newCabinetLabel, setNewCabinetLabel] = useState("");
   const [cabinetMsg, setCabinetMsg] = useState("");
   const [cabinetSaving, setCabinetSaving] = useState(false);
+  const [portalBusy, setPortalBusy] = useState(false);
+  const [enterpriseName, setEnterpriseName] = useState<string | null>(null);
+  const [enterpriseSiret, setEnterpriseSiret] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [structures, setStructures] = useState<Structure[]>([]);
@@ -163,6 +167,7 @@ export default function SettingsPage() {
     loadStructures();
     void loadMe();
     void loadCredits();
+    void loadEnterprise();
     if (typeof window !== "undefined") {
       const r = window.localStorage.getItem(LS_DEFAULT_REGION);
       if (r?.trim()) setDefaultInvoiceRegion(r.trim().toLowerCase());
@@ -275,13 +280,30 @@ export default function SettingsPage() {
         headers: { Authorization: `Bearer ${t}` },
       });
       if (res.ok) {
-        const list: AccountantRow[] = await res.json();
-        setAccountants(list);
+        setAccountants(await res.json());
       }
     } catch (err) {
       console.error("Erreur chargement comptables:", err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadEnterprise = async () => {
+    const t = getToken();
+    if (!t) return;
+    try {
+      const res = await fetch("/api/enterprise", { headers: { Authorization: `Bearer ${t}` } });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok && d.enterprise?.name) {
+        setEnterpriseName(String(d.enterprise.name));
+        setEnterpriseSiret(d.enterprise.siret ? String(d.enterprise.siret) : null);
+      } else {
+        setEnterpriseName(null);
+        setEnterpriseSiret(null);
+      }
+    } catch {
+      /* silent */
     }
   };
 
@@ -654,6 +676,16 @@ export default function SettingsPage() {
   const setupDoneCount = [hasProfile, hasPdfConfig, hasCabinet, hasStructure].filter(Boolean).length;
   const setupPercent = Math.round((setupDoneCount / 4) * 100);
 
+  const openAccountantPortal = async () => {
+    setPortalBusy(true);
+    const result = await enterAccountantPortalFromUser();
+    if (!result.ok) {
+      setPortalBusy(false);
+      setCabinetMsg(result.error || "Impossible d’ouvrir le portail.");
+      setTimeout(() => setCabinetMsg(""), 4000);
+    }
+  };
+
   if (loading) {
     return (
       <div className="px-4 py-6 lg:px-6 lg:py-8">
@@ -711,6 +743,22 @@ export default function SettingsPage() {
               <p className="mt-1 text-xs text-blue-800">
                 {setupDoneCount}/4 sections configurées ({setupPercent}%)
               </p>
+            </div>
+
+            <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-5">
+              <h2 className="font-semibold text-indigo-950">Portail comptable</h2>
+              <p className="mt-1 text-sm text-indigo-900">
+                Vous êtes cabinet et avez déjà un compte Neurix ? Ouvrez le portail directement avec votre session
+                actuelle — sans attendre l’envoi d’un lien par email.
+              </p>
+              <button
+                type="button"
+                onClick={() => void openAccountantPortal()}
+                disabled={portalBusy}
+                className="mt-3 rounded-xl bg-indigo-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-800 disabled:opacity-60"
+              >
+                {portalBusy ? "Ouverture…" : "Ouvrir le portail comptable"}
+              </button>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
@@ -1355,14 +1403,36 @@ export default function SettingsPage() {
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 px-6 py-4">
               <h2 className="font-semibold text-slate-900">Cabinets comptables</h2>
-              <p className="mt-1 text-xs text-slate-500">
-                L&apos;envoi « au cabinet » envoie une copie à <strong>toutes</strong> les adresses du pays concerné. Vos
-                comptables peuvent se connecter au{" "}
-                <a href="/accountant/login" className="font-medium text-indigo-700 underline hover:text-indigo-900">
-                  portail comptable
-                </a>{" "}
-                pour consulter, filtrer par devise et valider les factures.
+              {enterpriseName ? (
+                <p className="mt-1 text-sm font-medium text-slate-800">
+                  Entreprise : <strong>{enterpriseName}</strong>
+                  {enterpriseSiret && <span className="ml-2 text-slate-600">· SIRET {enterpriseSiret}</span>}
+                </p>
+              ) : (
+                <p className="mt-1 text-sm text-slate-600">
+                  Compte individuel — vos cabinets sont associés à votre espace utilisateur.
+                </p>
+              )}
+              <p className="mt-2 text-sm text-slate-600">
+                Vous pouvez configurer <strong>plusieurs cabinets</strong> (par pays). À l&apos;envoi, cochez
+                un ou plusieurs destinataires — chaque cabinet reçoit la facture par email et la voit dans son portail.
               </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void openAccountantPortal()}
+                  disabled={portalBusy}
+                  className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                >
+                  {portalBusy ? "Ouverture…" : "Accéder au portail comptable"}
+                </button>
+                <a
+                  href="/accountant/login"
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 hover:bg-slate-50"
+                >
+                  Connexion par lien email
+                </a>
+              </div>
             </div>
             <div className="space-y-5 p-6">
               {accountants.length === 0 ? (
@@ -1383,8 +1453,13 @@ export default function SettingsPage() {
                             className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
                           >
                             <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-slate-900">{a.email}</p>
-                              {a.label && <p className="text-xs text-slate-600">{a.label}</p>}
+                              <p className="truncate text-sm font-semibold text-slate-900">
+                                {a.label || a.email}
+                              </p>
+                              {a.label && <p className="truncate text-xs text-slate-600">{a.email}</p>}
+                              {!a.label && a.email && (
+                                <p className="text-[10px] text-slate-500">Cabinet comptable</p>
+                              )}
                             </div>
                             <button
                               type="button"

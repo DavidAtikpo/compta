@@ -1,5 +1,2 @@
-import { redirect } from "next/navigation";
-
-export default function ComptabilitePage() {
-  redirect("/comptabilite/operations");
-}
+/** Affiche directement les opérations (évite redirect() → erreur Performance dev Turbopack). */
+export { default } from "./operations/page";

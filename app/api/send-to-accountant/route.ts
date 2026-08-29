@@ -4,14 +4,18 @@ import { pool } from "../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { accountantPortalLoginUrl, signAccountantPortalToken } from "@/lib/accountant-portal";
+import { persistInvoiceSendRecipients } from "@/lib/invoice-send-recipients";
 
 export const runtime = "nodejs";
 
 async function resolveRecipientEmails(region: string, userId: string): Promise<string[]> {
+  const regionKey = String(region || "").trim().toLowerCase();
   try {
     const result = await pool.query(
-      `SELECT email FROM accountants WHERE region = $1 AND "userId" = $2 ORDER BY "createdAt" ASC`,
-      [region, userId]
+      `SELECT email FROM accountants
+       WHERE LOWER(TRIM(region)) = $1 AND "userId" = $2 AND ("deletedAt" IS NULL)
+       ORDER BY "createdAt" ASC`,
+      [regionKey, userId],
     );
     return result.rows
       .map((r: { email: string }) => String(r.email || "").trim())
@@ -24,6 +28,37 @@ async function resolveRecipientEmails(region: string, userId: string): Promise<s
 
 const SIMPLE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+function dedupeEmails(emails: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of emails) {
+    const e = String(raw || "").trim();
+    if (!e || !SIMPLE_EMAIL.test(e)) continue;
+    const key = e.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
+}
+
+function parseRecipientEmailsFromForm(formData: FormData): string[] {
+  const fromList = formData
+    .getAll("recipientEmails")
+    .map((e) => String(e).trim())
+    .filter(Boolean);
+  if (fromList.length > 0) return dedupeEmails(fromList);
+
+  const override = formData.get("recipientEmail")?.toString().trim() ?? "";
+  if (!override) return [];
+  return dedupeEmails(
+    override
+      .split(/[,;]+/)
+      .map((e) => e.trim())
+      .filter(Boolean),
+  );
+}
+
 export async function POST(request: Request) {
   const userId = getAuthenticatedUserId(request);
   if (!userId) {
@@ -34,7 +69,7 @@ export async function POST(request: Request) {
     await resolveInvoiceWorkspace(userId);
 
   const formData = await request.formData();
-  const region = formData.get("region")?.toString() || "france";
+  const region = (formData.get("region")?.toString() || "france").trim().toLowerCase();
   const message =
     formData.get("message")?.toString() ||
     "Merci de trouver ci-joint les pièces justificatives comptables.";
@@ -42,14 +77,15 @@ export async function POST(request: Request) {
     formData.get("senderName")?.toString() || "Client Compta IA";
   const files = formData.getAll("files");
   const invoiceIds = formData.getAll("invoiceIds");
-  /** Si renseigné, envoi uniquement à cette adresse (choix utilisateur sur l’interface). */
-  const recipientEmailOverride = formData.get("recipientEmail")?.toString().trim() ?? "";
+  /** Destinataires choisis (liste ou champ legacy séparé par virgules). */
+  const recipientEmailsOverride = parseRecipientEmailsFromForm(formData);
 
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = Number(process.env.SMTP_PORT ?? 587);
   const smtpUser = process.env.SMTP_USER;
   const smtpPass = process.env.SMTP_PASS;
-  const fromEmail = process.env.FROM_EMAIL || smtpUser;
+  const fromEmail =
+    process.env.FROM_EMAIL || process.env.SMTP_FROM_EMAIL || process.env.SMTP_FROM || smtpUser;
 
   if (!smtpHost || !smtpUser || !smtpPass) {
     return NextResponse.json(
@@ -62,20 +98,14 @@ export async function POST(request: Request) {
   }
 
   let recipientEmails: string[];
-  if (recipientEmailOverride) {
-    if (!SIMPLE_EMAIL.test(recipientEmailOverride)) {
-      return NextResponse.json(
-        { error: "Adresse email du cabinet invalide." },
-        { status: 400 }
-      );
-    }
-    recipientEmails = [recipientEmailOverride];
+  if (recipientEmailsOverride.length > 0) {
+    recipientEmails = recipientEmailsOverride;
   } else {
     recipientEmails = await resolveRecipientEmails(region, workspaceOwnerId);
     if (recipientEmails.length === 0) {
       return NextResponse.json(
         {
-          error: `Aucune adresse email configurée pour la région "${region}". Saisissez une adresse ou ajoutez un cabinet dans Paramètres.`,
+          error: `Aucune adresse email configurée pour la région "${region}". Sélectionnez au moins un cabinet ou ajoutez-en dans Paramètres.`,
         },
         { status: 400 }
       );
@@ -114,20 +144,22 @@ export async function POST(request: Request) {
     region.charAt(0).toUpperCase() + region.slice(1);
 
   const primaryRecipient = recipientEmails[0] ?? "";
-  const portalUrl = primaryRecipient
-    ? accountantPortalLoginUrl(signAccountantPortalToken(primaryRecipient))
-    : null;
 
   let sendSuccess = false;
   let sendError: string | undefined;
+  const sendErrors: string[] = [];
 
-  try {
-    await transporter.sendMail({
-      from: `${senderName} <${fromEmail}>`,
-      to: recipientEmails,
-      subject: `[Compta IA] Transmission pièces justificatives – ${regionLabel}`,
-      text: `${message}\n\nRégion : ${regionLabel}\nExpéditeur : ${senderName}\nFichiers joints : ${filteredAttachments.length}`,
-      html: `
+  for (const to of recipientEmails) {
+    const portalUrl = to
+      ? accountantPortalLoginUrl(signAccountantPortalToken(to))
+      : null;
+    try {
+      await transporter.sendMail({
+        from: `${senderName} <${fromEmail}>`,
+        to: [to],
+        subject: `[Compta IA] Transmission pièces justificatives – ${regionLabel}`,
+        text: `${message}\n\nRégion : ${regionLabel}\nExpéditeur : ${senderName}\nFichiers joints : ${filteredAttachments.length}`,
+        html: `
         <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
           <div style="background:#1e293b;color:white;padding:20px 24px;border-radius:8px 8px 0 0">
             <h2 style="margin:0;font-size:18px">Compta IA — Transmission comptable</h2>
@@ -153,12 +185,29 @@ export async function POST(request: Request) {
           <p style="font-size:11px;color:#94a3b8;margin-top:12px;text-align:center">Envoyé via Compta IA — Application de gestion comptable</p>
         </div>
       `,
-      attachments: filteredAttachments,
-    });
-    sendSuccess = true;
-  } catch (error) {
-    sendError = (error as Error).message;
-    console.error("Erreur envoi email:", error);
+        attachments: filteredAttachments,
+      });
+      sendSuccess = true;
+    } catch (error) {
+      const msg = (error as Error).message;
+      console.error(`Erreur envoi email à ${to}:`, error);
+      if ((error as { code?: string }).code === "EAUTH") {
+        sendErrors.push(
+          "Connexion SMTP refusée (identifiants Gmail invalides). Utilisez un mot de passe d'application Google.",
+        );
+        sendError = sendErrors[0];
+        break;
+      }
+      sendErrors.push(`${to}: ${msg}`);
+    }
+  }
+
+  if (!sendSuccess && sendErrors.length === 0) {
+    sendError = "Aucun envoi effectué.";
+  } else if (sendErrors.length > 0 && sendSuccess) {
+    sendError = `Envoi partiel — échec pour : ${sendErrors.join(" ; ")}`;
+  } else if (sendErrors.length > 0) {
+    sendError = sendErrors.join(" ; ");
   }
 
   // Log to send_history (lié au compte utilisateur)
@@ -189,7 +238,7 @@ export async function POST(request: Request) {
         if (primaryRecipient) {
           const accRes = await pool.query(
             `SELECT id FROM accountants
-             WHERE "userId" = $1 AND region = $2 AND LOWER(email) = LOWER($3) AND "deletedAt" IS NULL
+             WHERE "userId" = $1 AND LOWER(TRIM(region)) = $2 AND LOWER(email) = LOWER($3) AND "deletedAt" IS NULL
              ORDER BY "createdAt" ASC LIMIT 1`,
             [workspaceOwnerId, region, primaryRecipient],
           );
@@ -214,6 +263,8 @@ export async function POST(request: Request) {
         }
 
         await pool.query(`UPDATE invoices SET ${sets.join(", ")} WHERE ${where}`, params);
+
+        await persistInvoiceSendRecipients(workspaceOwnerId, ids, recipientEmails, new Date());
       }
     } catch (dbError) {
       console.error("Erreur mise à jour statut factures:", dbError);
@@ -227,9 +278,21 @@ export async function POST(request: Request) {
     );
   }
 
+  const recipientLabel =
+    recipientEmails.length === 1
+      ? recipientEmails[0]
+      : `${recipientEmails.length} cabinets (${recipientEmail})`;
+
   return NextResponse.json({
     success: true,
-    message: `Email envoyé au cabinet ${regionLabel} (${recipientEmail}).`,
+    message:
+      sendErrors.length > 0
+        ? `Email envoyé partiellement — ${recipientLabel}. ${sendError}`
+        : recipientEmails.length === 1
+          ? `Email envoyé au cabinet ${regionLabel} (${recipientEmails[0]}).`
+          : `Email envoyé à ${recipientEmails.length} cabinets (${regionLabel}) : ${recipientEmail}.`,
     recipient: recipientEmail,
+    recipients: recipientEmails,
+    partial: sendErrors.length > 0,
   });
 }

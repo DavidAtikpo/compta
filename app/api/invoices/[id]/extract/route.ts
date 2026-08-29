@@ -31,6 +31,147 @@ function isOcrTextUsable(text: string | null): text is string {
   return true;
 }
 
+function isNetworkFetchError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err || "");
+  if (/fetch failed|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|ENETUNREACH|EAI_AGAIN|network/i.test(msg)) {
+    return true;
+  }
+  const cause = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined;
+  if (cause instanceof AggregateError) {
+    return cause.errors.some((e) => isNetworkFetchError(e));
+  }
+  if (cause && typeof cause === "object" && "code" in cause) {
+    const code = String((cause as { code?: string }).code || "");
+    return ["ETIMEDOUT", "ECONNREFUSED", "ENOTFOUND", "ENETUNREACH", "EAI_AGAIN"].includes(code);
+  }
+  return false;
+}
+
+async function resolveOcrTextForRules(
+  ocrText: string | null,
+  fileUrl: string | null,
+  originalName: string,
+  mimeType: string | null,
+  invoiceId: string,
+  workspaceOwnerId: string,
+): Promise<string | null> {
+  let ocrTextToUse = isOcrTextUsable(ocrText) ? String(ocrText).trim() : null;
+  if (isOcrTextUsable(ocrTextToUse) || !fileUrl) return ocrTextToUse;
+
+  const lowerName = String(originalName || "").toLowerCase();
+  const lowerMime = String(mimeType || "").toLowerCase();
+  const isPdf =
+    lowerMime.includes("pdf") || lowerName.endsWith(".pdf") || /\.pdf(\?|$)/i.test(fileUrl);
+  const isImage =
+    lowerMime.startsWith("image/") || /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(fileUrl);
+
+  let visionDataUrl: string | null = null;
+  if (isImage) visionDataUrl = await imageUrlToDataUrl(fileUrl);
+  else if (isPdf) visionDataUrl = await pdfCloudinaryToJpegDataUrl(fileUrl);
+
+  if (!visionDataUrl?.startsWith("data:image/")) return null;
+
+  const ocr = await ocrFromImageDataUrl(visionDataUrl);
+  if (!ocr) return null;
+
+  ocrTextToUse = ocr;
+  try {
+    await pool.query(
+      `UPDATE invoices SET "ocrText" = COALESCE(NULLIF("ocrText", ''), $1), "updatedAt" = NOW()
+       WHERE id = $2 AND "userId" = $3 AND ("deletedAt" IS NULL)`,
+      [ocr, invoiceId, workspaceOwnerId],
+    );
+  } catch (e) {
+    console.warn("OCR persist failed:", (e as Error).message);
+  }
+  return ocrTextToUse;
+}
+
+function rulesExtractHasData(extracted: Record<string, unknown>): boolean {
+  return (
+    Boolean(extracted.fournisseur) ||
+    Boolean(extracted.numeroFacture) ||
+    Boolean(extracted.dateFacture) ||
+    typeof extracted.montantTTC === "number" ||
+    typeof extracted.montantHT === "number" ||
+    typeof extracted.montantTVA === "number" ||
+    typeof extracted.tauxTVA === "number" ||
+    Boolean(extracted.description) ||
+    Boolean(extracted.compteComptable)
+  );
+}
+
+async function persistRulesExtract(
+  extracted: Record<string, unknown>,
+  ocrTextToUse: string,
+  invoiceId: string,
+  workspaceOwnerId: string,
+): Promise<Record<string, unknown>> {
+  let invoiceDateVal: Date | null = null;
+  if (extracted.dateFacture) {
+    const d = new Date(String(extracted.dateFacture));
+    if (!Number.isNaN(d.getTime())) invoiceDateVal = d;
+  }
+  const classification = resolveClassificationFromExtract(extracted);
+  await pool.query(
+    `UPDATE invoices SET
+      "fournisseur"   = COALESCE($1, "fournisseur"),
+      "numeroFacture" = COALESCE($2, "numeroFacture"),
+      "montantHT"     = COALESCE($3, "montantHT"),
+      "tauxTVA"       = COALESCE($4, "tauxTVA"),
+      "montantTVA"    = COALESCE($5, "montantTVA"),
+      "montantTTC"    = COALESCE($6, "montantTTC"),
+      amount          = COALESCE($6, amount),
+      "ocrText"       = COALESCE(NULLIF($13, ''), "ocrText"),
+      "invoiceDate"   = COALESCE($8::timestamptz, "invoiceDate"),
+      currency        = COALESCE($10, currency),
+      category        = COALESCE($11, category),
+      "accountCode"   = COALESCE($12, "accountCode"),
+      "updatedAt"     = NOW()
+    WHERE id = $7 AND "userId" = $9 AND ("deletedAt" IS NULL)`,
+    [
+      (extracted.fournisseur as string | null) || null,
+      (extracted.numeroFacture as string | null) || null,
+      (extracted.montantHT as number | null) ?? null,
+      (extracted.tauxTVA as number | null) ?? null,
+      (extracted.montantTVA as number | null) ?? null,
+      (extracted.montantTTC as number | null) ?? null,
+      invoiceId,
+      invoiceDateVal,
+      workspaceOwnerId,
+      (extracted.currency as string | null) || null,
+      classification.category,
+      classification.accountCode,
+      ocrTextToUse,
+    ],
+  );
+  return { ...extracted, ...classification };
+}
+
+async function tryRulesFallbackResponse(
+  ocrText: string | null,
+  fileUrl: string | null,
+  originalName: string,
+  mimeType: string | null,
+  invoiceId: string,
+  workspaceOwnerId: string,
+  warning: string,
+): Promise<NextResponse | null> {
+  const ocrTextToUse = await resolveOcrTextForRules(
+    ocrText,
+    fileUrl,
+    originalName,
+    mimeType,
+    invoiceId,
+    workspaceOwnerId,
+  );
+  if (!isOcrTextUsable(ocrTextToUse)) return null;
+  const extracted = extractStructuredFromOcr(ocrTextToUse!, originalName);
+  if (!rulesExtractHasData(extracted)) return null;
+  const data = await persistRulesExtract(extracted, ocrTextToUse!, invoiceId, workspaceOwnerId);
+  return NextResponse.json({ success: true, data, fallback: "rules", warning });
+}
+
 async function ocrFromImageDataUrl(imageDataUrl: string): Promise<string | null> {
   const key = process.env.OCR_API_KEY?.trim();
   if (!key) return null;
@@ -170,23 +311,35 @@ async function pdfCloudinaryToJpegDataUrl(fileUrl: string): Promise<string | nul
   return null;
 }
 
-/** For regular image URLs: fetch and return as base64 data URL */
+/** For regular image URLs: fetch and return as base64 data URL (public or signed Cloudinary). */
 async function imageUrlToDataUrl(url: string): Promise<string | null> {
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
-    if (!res.ok) {
-      console.warn(`Téléchargement image échoué: ${res.status} ${url.slice(0, 100)}`);
+  const tryFetch = async (fetchUrl: string): Promise<string | null> => {
+    try {
+      const res = await fetch(fetchUrl, { signal: AbortSignal.timeout(30000) });
+      if (!res.ok) return null;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 64) return null;
+      const ct = res.headers.get("content-type")?.split(";")[0]?.trim() || "image/jpeg";
+      if (!ct.startsWith("image/")) return null;
+      return `data:${ct};base64,${buf.toString("base64")}`;
+    } catch {
       return null;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 64) return null;
-    const ct = res.headers.get("content-type")?.split(";")[0]?.trim() || "image/jpeg";
-    if (!ct.startsWith("image/")) return null;
-    return `data:${ct};base64,${buf.toString("base64")}`;
-  } catch (e) {
-    console.warn("imageUrlToDataUrl:", (e as Error).message);
-    return null;
-  }
+  };
+
+  const direct = await tryFetch(url);
+  if (direct) return direct;
+
+  if (!setupCloudinary()) return null;
+  const parsed = extractPublicId(url);
+  if (!parsed) return null;
+  const signedUrl = cloudinary.url(parsed.publicId, {
+    resource_type: parsed.resourceType,
+    sign_url: true,
+    secure: true,
+    type: "upload",
+  });
+  return tryFetch(signedUrl);
 }
 
 function normalizeNumber(input: string): number | null {
@@ -402,50 +555,16 @@ export async function POST(
             ? "perplexity"
             : "openai";
 
-    // Extraction facture: OCR + règles uniquement (pas de LLM ici)
-    if (provider !== "rules") {
-      return NextResponse.json(
-        { error: "L’extraction facture utilise uniquement OCR + règles. Utilisez l’IA dans l’onglet Analyse.", code: "extract_rules_only" },
-        { status: 400 },
-      );
-    }
-
-    // No-AI extraction (OCR only)
+    // Extraction facture : « rules » = OCR + règles (sans LLM) ; autres = vision + LLM
     if (provider === "rules") {
-      let ocrTextToUse = ocrText;
-      if (!ocrTextToUse && fileUrl) {
-        // Attempt server-side OCR from the stored document (image/pdf) to unlock rules extraction
-        let visionDataUrl: string | null = null;
-        const lowerName = String(originalName || "").toLowerCase();
-        const lowerMime = String(mimeType || "").toLowerCase();
-        const isPdf =
-          lowerMime.includes("pdf") ||
-          lowerName.endsWith(".pdf") ||
-          /\.pdf(\?|$)/i.test(fileUrl);
-        const isImage =
-          lowerMime.startsWith("image/") ||
-          /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(fileUrl);
-        if (isImage) {
-          visionDataUrl = await imageUrlToDataUrl(fileUrl);
-        } else if (isPdf) {
-          visionDataUrl = await pdfCloudinaryToJpegDataUrl(fileUrl);
-        }
-        if (visionDataUrl?.startsWith("data:image/")) {
-          const ocr = await ocrFromImageDataUrl(visionDataUrl);
-          if (ocr) {
-            ocrTextToUse = ocr;
-            try {
-              await pool.query(
-                `UPDATE invoices SET "ocrText" = COALESCE(NULLIF("ocrText",'') , $1), "updatedAt" = NOW()
-                 WHERE id = $2 AND "userId" = $3 AND ("deletedAt" IS NULL)`,
-                [ocr, id, workspaceOwnerId],
-              );
-            } catch (e) {
-              console.warn("OCR persist failed:", (e as Error).message);
-            }
-          }
-        }
-      }
+      const ocrTextToUse = await resolveOcrTextForRules(
+        ocrText,
+        fileUrl,
+        originalName,
+        mimeType,
+        id,
+        workspaceOwnerId,
+      );
 
       if (!isOcrTextUsable(ocrTextToUse)) {
         console.warn("Extraction 422: provider=rules mais aucun ocrText", {
@@ -458,7 +577,7 @@ export async function POST(
         return NextResponse.json(
           {
             error:
-              "Extraction (OCR) indisponible : texte OCR manquant ou inutilisable. Ré-uploadez une image nette ou activez l’OCR serveur (clé OCR_API_KEY).",
+              "Extraction (OCR) indisponible : texte OCR manquant ou inutilisable. Ré-uploadez une image nette ou configurez OCR_API_KEY (Google Vision) dans .env.",
             ...(process.env.NODE_ENV !== "production"
               ? {
                   details: {
@@ -471,26 +590,16 @@ export async function POST(
                 }
               : {}),
           },
-          { status: 422 }
+          { status: 422 },
         );
       }
-      const extracted = extractStructuredFromOcr(ocrTextToUse, originalName);
+      const extracted = extractStructuredFromOcr(ocrTextToUse!, originalName);
 
-      const hasAny =
-        Boolean(extracted.fournisseur) ||
-        Boolean(extracted.numeroFacture) ||
-        Boolean(extracted.dateFacture) ||
-        typeof extracted.montantTTC === "number" ||
-        typeof extracted.montantHT === "number" ||
-        typeof extracted.montantTVA === "number" ||
-        typeof extracted.tauxTVA === "number" ||
-        Boolean(extracted.description) ||
-        Boolean(extracted.compteComptable);
-      if (!hasAny) {
+      if (!rulesExtractHasData(extracted)) {
         return NextResponse.json(
           {
             error:
-              "Extraction (OCR) effectuée mais aucune donnée exploitable n’a été trouvée. Essayez une photo plus nette ou vérifiez que le document est lisible.",
+              "Extraction (OCR) effectuée mais aucune donnée exploitable n’a été trouvée. Essayez une photo plus nette ou le mode « Avec IA ».",
             ...(process.env.NODE_ENV !== "production"
               ? { details: { provider, originalName, mimeType: mimeType || null } }
               : {}),
@@ -499,65 +608,11 @@ export async function POST(
         );
       }
 
-      let invoiceDateVal: Date | null = null;
-      if (extracted.dateFacture) {
-        const d = new Date(String(extracted.dateFacture));
-        if (!Number.isNaN(d.getTime())) invoiceDateVal = d;
-        if (!invoiceDateVal) {
-          console.warn("Extraction dateFacture invalide", {
-            invoiceId: id,
-            dateFacture: extracted.dateFacture,
-            originalName,
-          });
-          return NextResponse.json(
-            {
-              error:
-                "Extraction (OCR) : la date de facture détectée est invalide. Vérifiez la lisibilité de la date sur le document.",
-              ...(process.env.NODE_ENV !== "production"
-                ? { details: { dateFacture: extracted.dateFacture } }
-                : {}),
-            },
-            { status: 422 },
-          );
-        }
-      }
-
-      const classification = resolveClassificationFromExtract(extracted);
-
-      await pool.query(
-        `UPDATE invoices SET
-          "fournisseur"   = COALESCE($1, "fournisseur"),
-          "numeroFacture" = COALESCE($2, "numeroFacture"),
-          "montantHT"     = COALESCE($3, "montantHT"),
-          "tauxTVA"       = COALESCE($4, "tauxTVA"),
-          "montantTVA"    = COALESCE($5, "montantTVA"),
-          "montantTTC"    = COALESCE($6, "montantTTC"),
-          amount          = COALESCE($6, amount),
-          "invoiceDate"   = COALESCE($8::timestamptz, "invoiceDate"),
-          currency        = COALESCE($10, currency),
-          category        = COALESCE($11, category),
-          "accountCode"   = COALESCE($12, "accountCode"),
-          "updatedAt"     = NOW()
-        WHERE id = $7 AND "userId" = $9 AND ("deletedAt" IS NULL)`,
-        [
-          (extracted.fournisseur as string | null) || null,
-          (extracted.numeroFacture as string | null) || null,
-          (extracted.montantHT as number | null) ?? null,
-          (extracted.tauxTVA as number | null) ?? null,
-          (extracted.montantTVA as number | null) ?? null,
-          (extracted.montantTTC as number | null) ?? null,
-          id,
-          invoiceDateVal,
-          workspaceOwnerId,
-          (extracted.currency as string | null) || null,
-          classification.category,
-          classification.accountCode,
-        ]
-      );
-
-      return NextResponse.json({ success: true, data: { ...extracted, ...classification } });
+      const data = await persistRulesExtract(extracted, ocrTextToUse!, id, workspaceOwnerId);
+      return NextResponse.json({ success: true, data });
     }
 
+    // ── Extraction avec IA (vision + LLM) ──
     // Build vision data URL
     let visionDataUrl: string | null = null;
 
@@ -663,7 +718,24 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
       if (provider === "openai" && isOpenAiInsufficientQuotaError(e) && process.env.ANTHROPIC_API_KEY) {
         console.warn("OpenAI quota exceeded — fallback to Claude.");
         providerUsed = "claude";
-        raw = await extractWithProvider("claude", systemPrompt, messages, ocrText, originalName, visionDataUrl);
+        try {
+          raw = await extractWithProvider("claude", systemPrompt, messages, ocrText, originalName, visionDataUrl);
+        } catch (claudeErr) {
+          if (isNetworkFetchError(claudeErr)) {
+            console.warn("Extraction IA : Claude injoignable après repli OpenAI, OCR+règles…", claudeErr);
+            const fallback = await tryRulesFallbackResponse(
+              ocrText,
+              fileUrl,
+              originalName,
+              mimeType,
+              id,
+              workspaceOwnerId,
+              "L’API IA est injoignable (timeout réseau). Extraction effectuée en mode Sans IA (OCR).",
+            );
+            if (fallback) return fallback;
+          }
+          throw claudeErr;
+        }
       } else if (provider === "openai" && isOpenAiInsufficientQuotaError(e)) {
         return NextResponse.json(
           { error: "Quota OpenAI dépassé. Rechargez votre crédit ou choisissez Claude.", code: "insufficient_quota" },
@@ -677,6 +749,26 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
         return NextResponse.json(
           { error: (e as Error).message || "Clé API manquante.", code: "missing_api_key" },
           { status: 422 }
+        );
+      } else if (isNetworkFetchError(e)) {
+        console.warn("Extraction IA : erreur réseau, repli Sans IA (OCR+règles)…", e);
+        const fallback = await tryRulesFallbackResponse(
+          ocrText,
+          fileUrl,
+          originalName,
+          mimeType,
+          id,
+          workspaceOwnerId,
+          "L’API IA est injoignable (timeout réseau). Extraction effectuée en mode Sans IA (OCR).",
+        );
+        if (fallback) return fallback;
+        return NextResponse.json(
+          {
+            error:
+              "Connexion à l’API IA impossible (timeout réseau). Choisissez « Sans IA (OCR) » ou vérifiez votre connexion / pare-feu.",
+            code: "ai_network_error",
+          },
+          { status: 503 },
         );
       } else {
         throw e;
@@ -752,10 +844,18 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
     return NextResponse.json({ success: true, data: { ...extracted, ...classification } });
   } catch (error) {
     console.error("Erreur extraction comptable:", error);
-    return NextResponse.json(
-      { error: "Erreur lors de l'extraction comptable." },
-      { status: 500 }
-    );
+    if (isNetworkFetchError(error)) {
+      return NextResponse.json(
+        {
+          error:
+            "Erreur réseau lors de l’extraction. Utilisez « Sans IA (OCR) » ou vérifiez la connexion Internet et les clés API.",
+          code: "network_error",
+        },
+        { status: 503 },
+      );
+    }
+    const msg = error instanceof Error ? error.message : "Erreur lors de l'extraction comptable.";
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 
@@ -838,6 +938,7 @@ async function extractWithProvider(
         temperature: 0.1,
         messages: [{ role: "user", content }],
       }),
+      signal: AbortSignal.timeout(90000),
     });
     if (!res.ok) throw new Error(`Claude error: ${await res.text()}`);
     const payload = await res.json();
@@ -867,6 +968,7 @@ async function extractWithProvider(
         ],
         temperature: 0.1,
       }),
+      signal: AbortSignal.timeout(90000),
     });
     if (!res.ok) throw new Error(`Perplexity error: ${await res.text()}`);
     const payload = await res.json();
@@ -888,6 +990,7 @@ async function extractWithProvider(
       max_tokens: 500,
       response_format: { type: "json_object" },
     }),
+    signal: AbortSignal.timeout(90000),
   });
   if (!response.ok) {
     const txt = await response.text().catch(() => "");

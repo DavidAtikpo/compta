@@ -4,7 +4,7 @@ import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
-const LS_TOKEN = "compta-accountant-token";
+import { ACCOUNTANT_PORTAL_LS_TOKEN } from "@/lib/accountant-portal";
 
 function LoginContent() {
   const searchParams = useSearchParams();
@@ -45,8 +45,12 @@ function LoginContent() {
         <div className="mb-6 text-center">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Compta IA</p>
           <h1 className="mt-1 text-xl font-bold text-slate-900">Portail comptable</h1>
-          <p className="mt-2 text-sm text-slate-500">
+          <p className="mt-2 text-sm text-slate-600">
             Connectez-vous avec l&apos;adresse email configurée par vos clients dans leurs paramètres cabinet.
+          </p>
+          <p className="mt-2 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700">
+            Déjà un compte Neurix ? Connectez-vous à l&apos;application puis utilisez le bouton{" "}
+            <strong>Portail comptable</strong> en haut à droite, ou dans Paramètres.
           </p>
         </div>
 
@@ -102,4 +106,4 @@ export default function AccountantLoginPage() {
   );
 }
 
-export { LS_TOKEN };
+export { ACCOUNTANT_PORTAL_LS_TOKEN as LS_TOKEN };

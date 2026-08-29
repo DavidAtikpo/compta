@@ -21,7 +21,45 @@ export async function GET(request: NextRequest) {
       await resolveInvoiceWorkspace(userId);
 
     let query = `
-      SELECT i.*, a.email as accountant_email,
+      SELECT i.*,
+        COALESCE(
+          a.email,
+          (
+            SELECT TRIM(SPLIT_PART(sh."recipientEmail", ',', 1))
+            FROM send_history sh
+            WHERE sh."userId" = i."userId"
+              AND sh.region = i.region
+              AND sh.success = true
+              AND i."sentAt" IS NOT NULL
+            ORDER BY ABS(EXTRACT(EPOCH FROM (i."sentAt" - sh."sentAt")))
+            LIMIT 1
+          )
+        ) AS accountant_email,
+        COALESCE(
+          a.label,
+          (
+            SELECT ac.label
+            FROM accountants ac
+            WHERE ac."userId" = i."userId"
+              AND ac."deletedAt" IS NULL
+              AND LOWER(ac.email) = LOWER(
+                COALESCE(
+                  a.email,
+                  (
+                    SELECT TRIM(SPLIT_PART(sh."recipientEmail", ',', 1))
+                    FROM send_history sh
+                    WHERE sh."userId" = i."userId"
+                      AND sh.region = i.region
+                      AND sh.success = true
+                      AND i."sentAt" IS NOT NULL
+                    ORDER BY ABS(EXTRACT(EPOCH FROM (i."sentAt" - sh."sentAt")))
+                    LIMIT 1
+                  )
+                )
+              )
+            LIMIT 1
+          )
+        ) AS accountant_label,
         su.email as "submittedByEmail",
         su.name as "submittedByName"
       FROM invoices i
@@ -97,9 +135,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const normalizedRegion = String(region).trim().toLowerCase();
+
     const accountantResult = await pool.query(
-      `SELECT id FROM accountants WHERE region = $1 AND "userId" = $2 ORDER BY "createdAt" ASC LIMIT 1`,
-      [region, workspaceOwnerId]
+      `SELECT id FROM accountants
+       WHERE LOWER(TRIM(region)) = $1 AND "userId" = $2 AND ("deletedAt" IS NULL)
+       ORDER BY "createdAt" ASC LIMIT 1`,
+      [normalizedRegion, workspaceOwnerId],
     );
     const accountantId =
       accountantResult.rows.length > 0
@@ -129,7 +171,7 @@ export async function POST(request: NextRequest) {
         size || 0,
         mimeType || "application/octet-stream",
         ocrText || null,
-        region,
+        normalizedRegion,
         accountantId,
         amount || null,
         category || null,

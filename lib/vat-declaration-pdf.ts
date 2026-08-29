@@ -10,6 +10,17 @@ function monthLabel(month?: number): string {
   return new Date(2000, month - 1, 1).toLocaleDateString("fr-FR", { month: "long" });
 }
 
+/** StandardFonts pdf-lib = encodage WinAnsi (pas de flèches, tirets Unicode, etc.). */
+function pdfSafeText(text: string): string {
+  return text
+    .replace(/\u2192/g, "->")
+    .replace(/\u2190/g, "<-")
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\u00A0/g, " ")
+    .replace(/[^\u0009\u000A\u000D\u0020-\u00FF]/g, "?");
+}
+
 export async function buildVatDeclarationPdf(decl: VatDeclaration): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
   const page = pdf.addPage([595, 842]);
@@ -22,7 +33,7 @@ export async function buildVatDeclarationPdf(decl: VatDeclaration): Promise<Uint
 
   let y = 800;
   const draw = (text: string, size = 10, bold = false) => {
-    page.drawText(text, {
+    page.drawText(pdfSafeText(text), {
       x: 50,
       y,
       size,

@@ -34,7 +34,7 @@ export async function POST(request: Request) {
   const smtpPort = Number(process.env.SMTP_PORT ?? 587);
   const smtpUser = process.env.SMTP_USER;
   const smtpPass = process.env.SMTP_PASS;
-  const fromEmail = process.env.FROM_EMAIL || smtpUser;
+  const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_FROM_EMAIL || process.env.SMTP_FROM || smtpUser;
 
   let emailSent = false;
   if (smtpHost && smtpUser && smtpPass) {

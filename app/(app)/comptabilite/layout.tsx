@@ -49,7 +49,10 @@ export default function ComptabiliteLayout({ children }: { children: React.React
 
         <nav className="flex flex-wrap gap-2 border-b border-slate-100 pb-3" aria-label="Navigation comptabilité">
           {nav.map((item) => {
-            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const active =
+              pathname === item.href ||
+              pathname.startsWith(`${item.href}/`) ||
+              (item.href === "/comptabilite/operations" && pathname === "/comptabilite");
             return (
               <Link
                 key={item.href}

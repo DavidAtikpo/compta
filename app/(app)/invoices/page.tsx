@@ -9,7 +9,9 @@ import { UploadRingSpinner } from "@/components/UploadRingSpinner";
 import {
   IMAP_REGION_OPTIONS_SORTED,
   imapCountryFilterMatch,
+  normalizeRegionKey,
   regionDisplayLabel,
+  regionsMatch,
 } from "@/lib/country-regions";
 import { MAX_PDF_INVOICES } from "../../../lib/pdf-export";
 import {
@@ -84,6 +86,7 @@ interface Invoice {
   createdAt: string;
   sentAt: string | null;
   accountant_email: string | null;
+  accountant_label?: string | null;
   fileUrl: string | null;
   shareToken: string | null;
   fournisseur: string | null;
@@ -256,9 +259,79 @@ type Tab = "invoices" | "email";
 
 /** Largeur minimale du menu actions (aligné avec min-w-[11rem]) */
 const ACTION_MENU_WIDTH_PX = 176;
+const ACTION_MENU_GAP_PX = 4;
+const ACTION_MENU_VIEWPORT_PAD_PX = 8;
+/** Hauteur estimée avant mesure DOM (8 entrées + séparateurs). */
+const ACTION_MENU_ESTIMATED_HEIGHT_PX = 300;
 
-type AccountantRow = { id: string; region: string; email: string; label: string | null };
-type StructureRow = { id: string; name: string; region: string; type: string; siret: string | null };
+function computeActionMenuPlacement(
+  btnRect: DOMRect,
+  menuHeight: number,
+): { top: number; left: number } {
+  let left = btnRect.right - ACTION_MENU_WIDTH_PX;
+  left = Math.max(
+    ACTION_MENU_VIEWPORT_PAD_PX,
+    Math.min(left, window.innerWidth - ACTION_MENU_WIDTH_PX - ACTION_MENU_VIEWPORT_PAD_PX),
+  );
+
+  const maxVisibleHeight = window.innerHeight - ACTION_MENU_VIEWPORT_PAD_PX * 2;
+  const effectiveHeight = Math.min(menuHeight, maxVisibleHeight);
+  const spaceBelow =
+    window.innerHeight - btnRect.bottom - ACTION_MENU_GAP_PX - ACTION_MENU_VIEWPORT_PAD_PX;
+  const spaceAbove = btnRect.top - ACTION_MENU_GAP_PX - ACTION_MENU_VIEWPORT_PAD_PX;
+
+  let top: number;
+  if (effectiveHeight <= spaceBelow) {
+    top = btnRect.bottom + ACTION_MENU_GAP_PX;
+  } else if (effectiveHeight <= spaceAbove) {
+    top = btnRect.top - ACTION_MENU_GAP_PX - effectiveHeight;
+  } else if (spaceBelow >= spaceAbove) {
+    top = btnRect.bottom + ACTION_MENU_GAP_PX;
+  } else {
+    top = btnRect.top - ACTION_MENU_GAP_PX - effectiveHeight;
+  }
+
+  top = Math.max(
+    ACTION_MENU_VIEWPORT_PAD_PX,
+    Math.min(top, window.innerHeight - effectiveHeight - ACTION_MENU_VIEWPORT_PAD_PX),
+  );
+
+  return { top, left };
+}
+
+type AccountantRow = {
+  id: string;
+  region: string;
+  email: string;
+  label: string | null;
+  createdAt?: string;
+};
+
+function accountantsForRegion(rows: AccountantRow[], region: string): AccountantRow[] {
+  return rows
+    .filter((a) => regionsMatch(a.region, region))
+    .sort((a, b) => {
+      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return tb - ta;
+    });
+}
+
+function defaultCabinetEmailsForRegion(rows: AccountantRow[], region: string): string[] {
+  const first = accountantsForRegion(rows, region)[0]?.email;
+  return first ? [first] : [];
+}
+
+function initCabinetEmailsByRegion(
+  rows: AccountantRow[],
+  regions: string[],
+): Record<string, string[]> {
+  const init: Record<string, string[]> = {};
+  for (const r of regions) {
+    init[r] = defaultCabinetEmailsForRegion(rows, r);
+  }
+  return init;
+}
 
 type CabinetModalState =
   | null
@@ -267,6 +340,59 @@ type CabinetModalState =
   | { kind: "bulk"; byRegion: Record<string, Invoice[]> };
 
 const CABINET_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function mergeCabinetRecipients(selected: string[], extra: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [...selected, ...extra.split(/[,;]+/)]) {
+    const e = raw.trim();
+    if (!e || !CABINET_EMAIL_RE.test(e)) continue;
+    const key = e.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
+}
+
+function appendRecipientEmails(formData: FormData, emails: string[]) {
+  for (const email of emails) {
+    formData.append("recipientEmails", email);
+  }
+}
+type StructureRow = { id: string; name: string; region: string; type: string; siret: string | null };
+
+type InvoiceExtractProvider = "rules" | "claude" | "openai";
+
+function ocrTextForFile(name: string, texts: { name: string; text: string }[]): string | null {
+  const raw = texts.find((t) => t.name === name)?.text?.trim() ?? "";
+  if (!raw) return null;
+  if (/^erreur\s+ocr\b/i.test(raw)) return null;
+  if (/aucun\s+texte\s+d[ée]tect[ée]\b/i.test(raw)) return null;
+  if (raw.length < 20) return null;
+  return raw;
+}
+
+function isSentToCabinet(inv: Invoice): boolean {
+  return inv.status === "sent" || !!inv.sentAt;
+}
+
+function isSharedToCabinet(inv: Invoice): boolean {
+  return !!inv.shareToken;
+}
+
+function cabinetEmailKey(inv: Invoice): string {
+  return (inv.accountant_email ?? "").trim().toLowerCase().split(",")[0]?.trim() ?? "";
+}
+
+function cabinetDisplayName(inv: Invoice, accountants: AccountantRow[]): string {
+  const label = inv.accountant_label?.trim();
+  if (label) return label;
+  const email = cabinetEmailKey(inv);
+  if (!email) return "";
+  const configured = accountants.find((a) => a.email.trim().toLowerCase() === email);
+  return configured?.label?.trim() || email;
+}
 
 export default function InvoicesPage() {
   const router = useRouter();
@@ -315,6 +441,9 @@ export default function InvoicesPage() {
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterCurrency, setFilterCurrency] = useState("");
+  const [filterCabinetStatus, setFilterCabinetStatus] = useState("");
+  const [filterCabinetRecipient, setFilterCabinetRecipient] = useState("");
+  const [configuredAccountants, setConfiguredAccountants] = useState<AccountantRow[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -326,8 +455,8 @@ export default function InvoicesPage() {
 
   // Action states
   const [extractingId, setExtractingId] = useState<string | null>(null);
-  // Extraction facture: OCR + règles uniquement (pas de LLM)
-  const [extractProvider] = useState<"rules">("rules");
+  // Extraction facture : sans IA (OCR+règles) ou avec IA (vision)
+  const [extractProvider, setExtractProvider] = useState<InvoiceExtractProvider>("rules");
   // IA: uniquement pour l'analyse / recherche
   const [aiProvider, setAiProvider] = useState<"openai" | "claude" | "perplexity">("claude");
   const [savingPaymentId, setSavingPaymentId] = useState<string | null>(null);
@@ -372,15 +501,18 @@ export default function InvoicesPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [bulkSending, setBulkSending] = useState(false);
+  const [syncCabinetPending, setSyncCabinetPending] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [cabinetModal, setCabinetModal] = useState<CabinetModalState>(null);
-  const [cabinetEmailByRegion, setCabinetEmailByRegion] = useState<Record<string, string>>({});
+  const [cabinetEmailsByRegion, setCabinetEmailsByRegion] = useState<Record<string, string[]>>({});
+  const [cabinetExtraEmailByRegion, setCabinetExtraEmailByRegion] = useState<Record<string, string>>({});
   const [cabinetAccountantsList, setCabinetAccountantsList] = useState<AccountantRow[]>([]);
   /** Envoi au cabinet en cours (modale ouverte jusqu’à la fin de la requête). */
   const [cabinetSendPending, setCabinetSendPending] = useState(false);
   const [sendSuccessToast, setSendSuccessToast] = useState<string | null>(null);
   const sendSuccessToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectAllHeaderRef = useRef<HTMLInputElement>(null);
+  const actionMenuRef = useRef<HTMLDivElement>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -394,6 +526,7 @@ export default function InvoicesPage() {
       fetchMe(savedToken);
     }
     loadInvoices();
+    void loadAccountants().then(setConfiguredAccountants);
     // Pre-fill IMAP from env/settings if available
     const savedImapUser = window.localStorage.getItem("imap-user");
     if (savedImapUser) setImapUser(savedImapUser);
@@ -489,30 +622,32 @@ export default function InvoicesPage() {
       setActionMenuPlacement(null);
       return;
     }
-    const btn = document.querySelector(
-      `[data-invoice-menu-button="${openActionMenuId}"]`
-    ) as HTMLButtonElement | null;
-    if (!btn) {
-      setActionMenuPlacement(null);
-      return;
-    }
-    const r = btn.getBoundingClientRect();
-    let left = r.right - ACTION_MENU_WIDTH_PX;
-    left = Math.max(8, Math.min(left, window.innerWidth - ACTION_MENU_WIDTH_PX - 8));
-    setActionMenuPlacement({ top: r.bottom + 4, left });
+    const reposition = () => {
+      const btn = document.querySelector(
+        `[data-invoice-menu-button="${openActionMenuId}"]`,
+      ) as HTMLButtonElement | null;
+      if (!btn) {
+        setActionMenuPlacement(null);
+        return;
+      }
+      const menuHeight =
+        actionMenuRef.current?.offsetHeight ?? ACTION_MENU_ESTIMATED_HEIGHT_PX;
+      setActionMenuPlacement(computeActionMenuPlacement(btn.getBoundingClientRect(), menuHeight));
+    };
+    reposition();
+    requestAnimationFrame(reposition);
   }, [openActionMenuId, invoices]);
 
   useEffect(() => {
     if (!openActionMenuId) return;
     const reposition = () => {
       const btn = document.querySelector(
-        `[data-invoice-menu-button="${openActionMenuId}"]`
+        `[data-invoice-menu-button="${openActionMenuId}"]`,
       ) as HTMLButtonElement | null;
       if (!btn) return;
-      const r = btn.getBoundingClientRect();
-      let left = r.right - ACTION_MENU_WIDTH_PX;
-      left = Math.max(8, Math.min(left, window.innerWidth - ACTION_MENU_WIDTH_PX - 8));
-      setActionMenuPlacement({ top: r.bottom + 4, left });
+      const menuHeight =
+        actionMenuRef.current?.offsetHeight ?? ACTION_MENU_ESTIMATED_HEIGHT_PX;
+      setActionMenuPlacement(computeActionMenuPlacement(btn.getBoundingClientRect(), menuHeight));
     };
     window.addEventListener("scroll", reposition, true);
     window.addEventListener("resize", reposition);
@@ -525,14 +660,6 @@ export default function InvoicesPage() {
   useEffect(() => {
     setSelectedIds((prev) => prev.filter((id) => invoices.some((i) => i.id === id)));
   }, [invoices]);
-
-  useEffect(() => {
-    const el = selectAllHeaderRef.current;
-    if (!el) return;
-    const all =
-      invoices.length > 0 && invoices.every((i) => selectedIds.includes(i.id));
-    el.indeterminate = selectedIds.length > 0 && !all;
-  }, [selectedIds, invoices]);
 
   const fetchMe = async (t: string) => {
     try {
@@ -670,8 +797,79 @@ export default function InvoicesPage() {
     setFilterDateFrom("");
     setFilterDateTo("");
     setFilterCurrency("");
+    setFilterCabinetStatus("");
+    setFilterCabinetRecipient("");
     loadInvoices();
   };
+
+  const cabinetFilterOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of configuredAccountants) {
+      const email = a.email.trim().toLowerCase();
+      if (email) map.set(email, a.label?.trim() || a.email);
+    }
+    for (const inv of invoices) {
+      const email = cabinetEmailKey(inv);
+      if (email && !map.has(email)) {
+        map.set(email, cabinetDisplayName(inv, configuredAccountants) || email);
+      }
+    }
+    return Array.from(map.entries())
+      .map(([email, label]) => ({ email, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, "fr"));
+  }, [configuredAccountants, invoices]);
+
+  const cabinetBreakdown = useMemo(() => {
+    const kindList = invoices.filter((i) => (i.invoiceType ?? "achat") === invoiceKind);
+    const counts = new Map<string, { label: string; sent: number }>();
+    for (const inv of kindList) {
+      if (!isSentToCabinet(inv)) continue;
+      const email = cabinetEmailKey(inv);
+      if (!email) continue;
+      const label = cabinetDisplayName(inv, configuredAccountants) || email;
+      const prev = counts.get(email) ?? { label, sent: 0 };
+      prev.sent += 1;
+      counts.set(email, prev);
+    }
+    return Array.from(counts.entries()).map(([email, v]) => ({ email, ...v }));
+  }, [invoices, invoiceKind, configuredAccountants]);
+
+  const displayedInvoices = useMemo(() => {
+    let list = invoices;
+    if (filterCabinetStatus === "sent") {
+      list = list.filter((i) => isSentToCabinet(i));
+    } else if (filterCabinetStatus === "not_sent") {
+      list = list.filter((i) => !isSentToCabinet(i));
+    } else if (filterCabinetStatus === "shared") {
+      list = list.filter((i) => isSharedToCabinet(i));
+    }
+    if (filterCabinetRecipient) {
+      list = list.filter((i) => cabinetEmailKey(i) === filterCabinetRecipient);
+    }
+    return list;
+  }, [invoices, filterCabinetStatus, filterCabinetRecipient]);
+
+  const cabinetStats = useMemo(() => {
+    const kindList = invoices.filter((i) => (i.invoiceType ?? "achat") === invoiceKind);
+    const sent = kindList.filter((i) => isSentToCabinet(i));
+    const pending = kindList.filter((i) => i.fileUrl && !isSentToCabinet(i));
+    const shared = kindList.filter((i) => isSharedToCabinet(i));
+    return {
+      total: kindList.length,
+      sent: sent.length,
+      pending: pending.length,
+      shared: shared.length,
+      pendingWithFile: pending.length,
+    };
+  }, [invoices, invoiceKind]);
+
+  useEffect(() => {
+    const el = selectAllHeaderRef.current;
+    if (!el) return;
+    const all =
+      displayedInvoices.length > 0 && displayedInvoices.every((i) => selectedIds.includes(i.id));
+    el.indeterminate = selectedIds.length > 0 && !all;
+  }, [selectedIds, displayedInvoices]);
 
   const currencyTotals = useMemo(() => {
     if (invoices.length === 0) return null;
@@ -800,7 +998,9 @@ export default function InvoicesPage() {
         setOcrStatus(`OCR terminé — ${texts.length} image(s) analysée(s).`);
       }
       if (pdfFiles.length > 0) {
-        setOcrStatus((s) => `${s} ${pdfFiles.length} PDF(s) prêt(s) — texte extrait via IA après enregistrement.`);
+        setOcrStatus((s) =>
+          `${s} ${pdfFiles.length} PDF — l’OCR sera fait côté serveur à l’enregistrement (Sans IA ou IA vision).`,
+        );
       }
       setDraftUploadMessage("Enregistrement sécurisé sur Cloudinary…");
       setOcrStatus((s) => `${s} Enregistrement sur Cloudinary…`);
@@ -881,7 +1081,7 @@ export default function InvoicesPage() {
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const ocrText = extractedTexts[i]?.text || null;
+        const ocrText = ocrTextForFile(file.name, extractedTexts);
         const fileUrl = uploadedUrls.find((u) => u.name === file.name)?.url || null;
         setOcrStatus(`Enregistrement ${i + 1}/${files.length} : ${file.name}`);
         const authT = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
@@ -917,7 +1117,7 @@ export default function InvoicesPage() {
                   "Content-Type": "application/json",
                   ...(authT ? { Authorization: `Bearer ${authT}` } : {}),
                 },
-                body: JSON.stringify({ provider: "rules" }),
+                body: JSON.stringify({ provider: extractProvider }),
               });
               const exJson = await exRes.json().catch(() => ({}));
               if (exRes.ok && exJson?.success) autoExtractOk++;
@@ -970,19 +1170,20 @@ export default function InvoicesPage() {
     }
     const rows = await loadAccountants();
     setCabinetAccountantsList(rows);
-    const first = rows.find((a) => a.region === region)?.email ?? "";
-    setCabinetEmailByRegion({ [region]: first });
+    setConfiguredAccountants(rows);
+    setCabinetExtraEmailByRegion({});
+    setCabinetEmailsByRegion(initCabinetEmailsByRegion(rows, [region]));
     setCabinetModal({ kind: "draft" });
   };
 
-  const handleSendToAccountantWithEmail = async (recipientEmail: string) => {
+  const handleSendToAccountantWithEmail = async (recipientEmails: string[]) => {
     setSending(true);
     setSendResult("");
     const formData = new FormData();
     formData.append("region", region);
     formData.append("message", message || `Transmission de ${files.length} pièce(s).\nRégion : ${region}`);
     formData.append("senderName", userEmail || "Utilisateur Compta IA");
-    formData.append("recipientEmail", recipientEmail);
+    appendRecipientEmails(formData, recipientEmails);
     files.forEach((file) => formData.append("files", file));
     try {
       const res = await fetch("/api/send-to-accountant", {
@@ -1058,7 +1259,8 @@ export default function InvoicesPage() {
         if (d.montantHT)     parts.push(`HT: ${Number(d.montantHT).toFixed(2)} ${sym}`);
         if (d.numeroFacture) parts.push(`N°${d.numeroFacture}`);
         const msg = parts.length > 0 ? `✓ ${parts.join(" · ")}` : "✓ Extrait (aucune donnée trouvée)";
-        setExtractResults((prev) => ({ ...prev, [id]: { ok: true, msg } }));
+        const fullMsg = json.warning ? `${msg} — ${json.warning}` : msg;
+        setExtractResults((prev) => ({ ...prev, [id]: { ok: true, msg: fullMsg } }));
         await reloadInvoices();
       } else {
         setExtractResults((prev) => ({ ...prev, [id]: { ok: false, msg: `✗ ${json.error || `Erreur ${res.status}`}` } }));
@@ -1195,21 +1397,33 @@ export default function InvoicesPage() {
     }
   };
 
-  const openBulkCabinetModal = async () => {
+  const openBulkCabinetModal = async (invoiceList?: Invoice[]) => {
     const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
     if (!t) {
       setMessage("Connectez-vous pour envoyer au cabinet.");
       return;
     }
-    const selected = invoices.filter((i) => selectedIds.includes(i.id));
+    const selected = invoiceList ?? invoices.filter((i) => selectedIds.includes(i.id));
     const withFiles = selected.filter((i) => i.fileUrl);
     if (withFiles.length === 0) {
-      setMessage("Aucun fichier pour les factures sélectionnées.");
+      setMessage(
+        invoiceList
+          ? "Aucune facture avec fichier à synchroniser."
+          : "Aucun fichier pour les factures sélectionnées.",
+      );
       return;
     }
 
+    const alreadySent = withFiles.filter((i) => isSentToCabinet(i));
+    const toSend = withFiles.filter((i) => !isSentToCabinet(i));
+    if (toSend.length === 0 && alreadySent.length > 0) {
+      setMessage("Les factures sélectionnées sont déjà transmises au cabinet.");
+      return;
+    }
+    const target = toSend.length > 0 ? toSend : withFiles;
+
     const byRegion = new Map<string, Invoice[]>();
-    for (const inv of withFiles) {
+    for (const inv of target) {
       const list = byRegion.get(inv.region) ?? [];
       list.push(inv);
       byRegion.set(inv.region, list);
@@ -1217,16 +1431,53 @@ export default function InvoicesPage() {
 
     const rows = await loadAccountants();
     setCabinetAccountantsList(rows);
-    const init: Record<string, string> = {};
-    for (const r of byRegion.keys()) {
-      init[r] = rows.find((a) => a.region === r)?.email ?? "";
-    }
-    setCabinetEmailByRegion(init);
+    setConfiguredAccountants(rows);
+    setCabinetExtraEmailByRegion({});
+    setCabinetEmailsByRegion(initCabinetEmailsByRegion(rows, [...byRegion.keys()]));
     setCabinetModal({ kind: "bulk", byRegion: Object.fromEntries(byRegion) });
   };
 
+  const openSyncAllCabinetModal = async () => {
+    setSyncCabinetPending(true);
+    try {
+      const pending = invoices.filter(
+        (i) =>
+          (i.invoiceType ?? "achat") === invoiceKind &&
+          i.fileUrl &&
+          !isSentToCabinet(i),
+      );
+      if (pending.length === 0) {
+        setMessage(
+          `Toutes les factures ${invoiceKind === "vente" ? "de vente" : "d'achat"} sont déjà transmises au cabinet (ou sans fichier joint).`,
+        );
+        return;
+      }
+      const label = invoiceKind === "vente" ? "de vente" : "d'achat";
+      if (
+        !window.confirm(
+          `Synchroniser ${pending.length} facture(s) ${label} non transmise(s) avec le cabinet ?\n\nUn email sera envoyé par région.`,
+        )
+      ) {
+        return;
+      }
+      setSelectedIds(pending.map((i) => i.id));
+      await openBulkCabinetModal(pending);
+    } finally {
+      setSyncCabinetPending(false);
+    }
+  };
+
+  const selectAllPendingForCabinet = () => {
+    const ids = displayedInvoices.filter((i) => i.fileUrl && !isSentToCabinet(i)).map((i) => i.id);
+    setSelectedIds(ids);
+    if (ids.length === 0) {
+      setMessage("Aucune facture en attente de transmission dans la liste affichée.");
+    }
+  };
+
   const handleBulkSendWithEmails = async (
-    emailsByRegion: Record<string, string>,
+    emailsByRegion: Record<string, string[]>,
+    extraByRegion: Record<string, string>,
     byRegionRecord: Record<string, Invoice[]>
   ) => {
     const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
@@ -1239,11 +1490,11 @@ export default function InvoicesPage() {
       let anyFail = false;
       const byRegion = new Map(Object.entries(byRegionRecord));
       for (const [reg, list] of byRegion) {
-        const recipientEmail = (emailsByRegion[reg] ?? "").trim();
+        const recipientEmails = mergeCabinetRecipients(emailsByRegion[reg] ?? [], extraByRegion[reg] ?? "");
         const formData = new FormData();
         formData.append("region", reg);
         formData.append("senderName", userEmail || "Utilisateur Compta IA");
-        formData.append("recipientEmail", recipientEmail);
+        appendRecipientEmails(formData, recipientEmails);
         formData.append(
           "message",
           `Transmission groupée de ${list.length} facture(s).\nRégion : ${reg}`
@@ -1329,12 +1580,13 @@ export default function InvoicesPage() {
     }
     const rows = await loadAccountants();
     setCabinetAccountantsList(rows);
-    const first = rows.find((a) => a.region === inv.region)?.email ?? "";
-    setCabinetEmailByRegion({ [inv.region]: first });
+    setConfiguredAccountants(rows);
+    setCabinetExtraEmailByRegion({});
+    setCabinetEmailsByRegion(initCabinetEmailsByRegion(rows, [inv.region]));
     setCabinetModal({ kind: "single", invoice: inv });
   };
 
-  const handleSendSingleInvoice = async (inv: Invoice, recipientEmail: string) => {
+  const handleSendSingleInvoice = async (inv: Invoice, recipientEmails: string[]) => {
     const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
     if (!t) {
       setMessage("Connectez-vous pour envoyer la facture.");
@@ -1356,7 +1608,7 @@ export default function InvoicesPage() {
       formData.append("region", inv.region);
       formData.append("senderName", userEmail || "Utilisateur Compta IA");
       formData.append("message", `Transmission facture ${inv.numeroFacture ?? inv.originalName}.\nRégion : ${inv.region}`);
-      formData.append("recipientEmail", recipientEmail);
+      appendRecipientEmails(formData, recipientEmails);
       formData.append("invoiceIds", inv.id);
       formData.append("files", new File([fileBlob], inv.originalName || "facture.pdf", { type: fileBlob.type || "application/pdf" }));
       const sendRes = await fetch("/api/send-to-accountant", {
@@ -1394,8 +1646,17 @@ export default function InvoicesPage() {
           : [region];
 
     for (const r of regions) {
-      const em = (cabinetEmailByRegion[r] ?? "").trim();
-      if (!CABINET_EMAIL_RE.test(em)) {
+      const emails = mergeCabinetRecipients(
+        cabinetEmailsByRegion[r] ?? [],
+        cabinetExtraEmailByRegion[normalizeRegionKey(r)] ?? cabinetExtraEmailByRegion[r] ?? "",
+      );
+      if (emails.length === 0) {
+        const err = `Sélectionnez au moins un cabinet pour ${regionDisplayLabel(r)}.`;
+        if (cabinetModal.kind === "draft") setSendResult(err);
+        else setMessage(err);
+        return;
+      }
+      if (emails.some((em) => !CABINET_EMAIL_RE.test(em))) {
         const err = `Adresse email invalide pour ${regionDisplayLabel(r)}.`;
         if (cabinetModal.kind === "draft") setSendResult(err);
         else setMessage(err);
@@ -1404,15 +1665,24 @@ export default function InvoicesPage() {
     }
 
     const snapshot = cabinetModal;
-    const emailsSnapshot = { ...cabinetEmailByRegion };
+    const emailsSnapshot = { ...cabinetEmailsByRegion };
+    const extraSnapshot = { ...cabinetExtraEmailByRegion };
     setCabinetSendPending(true);
     try {
       if (snapshot.kind === "single") {
-        await handleSendSingleInvoice(snapshot.invoice, emailsSnapshot[snapshot.invoice.region].trim());
+        await handleSendSingleInvoice(
+          snapshot.invoice,
+          mergeCabinetRecipients(
+            emailsSnapshot[snapshot.invoice.region] ?? [],
+            extraSnapshot[normalizeRegionKey(snapshot.invoice.region)] ?? "",
+          ),
+        );
       } else if (snapshot.kind === "draft") {
-        await handleSendToAccountantWithEmail(emailsSnapshot[region].trim());
+        await handleSendToAccountantWithEmail(
+          mergeCabinetRecipients(emailsSnapshot[region] ?? [], extraSnapshot[normalizeRegionKey(region)] ?? ""),
+        );
       } else {
-        await handleBulkSendWithEmails(emailsSnapshot, snapshot.byRegion);
+        await handleBulkSendWithEmails(emailsSnapshot, extraSnapshot, snapshot.byRegion);
       }
     } finally {
       setCabinetSendPending(false);
@@ -1694,13 +1964,23 @@ export default function InvoicesPage() {
     filterCategory ||
     filterDateFrom ||
     filterDateTo ||
-    filterCurrency;
+    filterCurrency ||
+    filterCabinetStatus ||
+    filterCabinetRecipient;
 
   const allVisibleSelected =
-    invoices.length > 0 && invoices.every((i) => selectedIds.includes(i.id));
+    displayedInvoices.length > 0 && displayedInvoices.every((i) => selectedIds.includes(i.id));
+
+  const selectedPendingCabinetCount = useMemo(
+    () =>
+      invoices.filter(
+        (i) => selectedIds.includes(i.id) && i.fileUrl && !isSentToCabinet(i),
+      ).length,
+    [invoices, selectedIds],
+  );
 
   const actionMenuInvoice = openActionMenuId
-    ? invoices.find((i) => i.id === openActionMenuId)
+    ? displayedInvoices.find((i) => i.id === openActionMenuId)
     : undefined;
 
   const draftAllOnCloudinary =
@@ -1818,7 +2098,7 @@ export default function InvoicesPage() {
           </button>
         </div>
 
-        <div className="border-b border-slate-200 bg-slate-50/70 px-3 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50/70 px-3 py-2">
           <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1">
             <button
               type="button"
@@ -1841,6 +2121,50 @@ export default function InvoicesPage() {
               }`}
             >
               Vente
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[10px] text-slate-500">
+              Cabinet :{" "}
+              <strong className="text-emerald-700">{cabinetStats.sent} transmise(s)</strong>
+              {" · "}
+              <strong className="text-amber-700">{cabinetStats.pending} en attente</strong>
+              {cabinetStats.shared > 0 && (
+                <>
+                  {" · "}
+                  <strong className="text-indigo-700">{cabinetStats.shared} lien(s) partagé(s)</strong>
+                </>
+              )}
+              {cabinetBreakdown.length > 0 && (
+                <span className="ml-2 inline-flex flex-wrap items-center gap-1">
+                  {cabinetBreakdown.map((c) => (
+                    <button
+                      key={c.email}
+                      type="button"
+                      onClick={() =>
+                        setFilterCabinetRecipient(filterCabinetRecipient === c.email ? "" : c.email)
+                      }
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                        filterCabinetRecipient === c.email
+                          ? "bg-indigo-600 text-white"
+                          : "bg-indigo-100 text-indigo-900 hover:bg-indigo-200"
+                      }`}
+                      title={`Filtrer : ${c.label}`}
+                    >
+                      {c.label} ({c.sent})
+                    </button>
+                  ))}
+                </span>
+              )}
+            </span>
+            <button
+              type="button"
+              disabled={syncCabinetPending || bulkSending || cabinetStats.pending === 0}
+              onClick={() => void openSyncAllCabinetModal()}
+              title={`Envoyer toutes les factures ${invoiceKind} non transmises au cabinet`}
+              className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-medium text-indigo-800 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {syncCabinetPending ? "Préparation…" : `Synchroniser tout (${invoiceKind}) avec le cabinet`}
             </button>
           </div>
         </div>
@@ -1925,16 +2249,52 @@ export default function InvoicesPage() {
                   </select>
                 </div>
 
-                {/* Extraction (OCR) + AI provider for analysis */}
+                {/* Statut envoi cabinet */}
                 <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Extraction</label>
+                  <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Statut envoi</label>
                   <select
-                    value={extractProvider}
-                    onChange={() => {}}
-                    disabled
+                    value={filterCabinetStatus}
+                    onChange={(e) => setFilterCabinetStatus(e.target.value)}
                     className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
                   >
+                    <option value="">Toutes</option>
+                    <option value="sent">Transmises au cabinet</option>
+                    <option value="not_sent">Non transmises</option>
+                    <option value="shared">Lien de partage actif</option>
+                  </select>
+                </div>
+
+                {/* Cabinet destinataire */}
+                {cabinetFilterOptions.length > 0 && (
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Cabinet</label>
+                    <select
+                      value={filterCabinetRecipient}
+                      onChange={(e) => setFilterCabinetRecipient(e.target.value)}
+                      className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                    >
+                      <option value="">Tous les cabinets</option>
+                      {cabinetFilterOptions.map((c) => (
+                        <option key={c.email} value={c.email}>
+                          {c.label}
+                          {c.label !== c.email ? ` (${c.email})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Extraction facture */}
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[10px] font-medium uppercase tracking-wide text-slate-700">Extraction</label>
+                  <select
+                    value={extractProvider}
+                    onChange={(e) => setExtractProvider(e.target.value as InvoiceExtractProvider)}
+                    className="min-w-[9rem] rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-medium text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                  >
                     <option value="rules">Sans IA (OCR)</option>
+                    <option value="claude">Avec IA (Claude vision)</option>
+                    <option value="openai">Avec IA (GPT vision)</option>
                   </select>
                 </div>
 
@@ -2045,24 +2405,36 @@ export default function InvoicesPage() {
             )}
 
             {selectedIds.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-2 py-2 text-[11px]">
+              <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-indigo-50/40 px-2 py-2 text-[11px]">
                 <span className="font-medium text-slate-700">
                   {selectedIds.length} sélectionné(s)
+                  {selectedPendingCabinetCount > 0 && (
+                    <span className="ml-1 font-normal text-indigo-700">
+                      · {selectedPendingCabinetCount} à transmettre au cabinet
+                    </span>
+                  )}
                 </span>
                 <button
                   type="button"
                   disabled={bulkSending}
                   onClick={() => void openBulkCabinetModal()}
-                  className="inline-flex items-center gap-1.5 rounded border border-slate-300 bg-white px-2 py-1 font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded border border-indigo-300 bg-white px-2 py-1 font-semibold text-indigo-900 hover:bg-indigo-50 disabled:opacity-50"
                 >
                   {bulkSending ? (
                     <>
                       <UploadRingSpinner className="h-3.5 w-3.5" aria-hidden />
-                      Envoi…
+                      Envoi au cabinet…
                     </>
                   ) : (
-                    "Envoyer au cabinet"
+                    "Envoyer la sélection au cabinet"
                   )}
+                </button>
+                <button
+                  type="button"
+                  onClick={selectAllPendingForCabinet}
+                  className="rounded border border-slate-300 bg-white px-2 py-1 font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Sélect. non transmises
                 </button>
                 <button
                   type="button"
@@ -2091,7 +2463,7 @@ export default function InvoicesPage() {
                 <div className="p-4 space-y-2">
                   {[0, 1, 2, 3].map((i) => <div key={i} className="h-8 rounded bg-slate-100 animate-pulse" />)}
                 </div>
-              ) : invoices.length === 0 ? (
+              ) : displayedInvoices.length === 0 ? (
                 <div className="p-8 text-center text-slate-400">
                   <p className="text-xs font-medium text-slate-600">Aucune facture trouvée</p>
                   <p className="mt-1 text-[11px] text-slate-500">{hasActiveFilters ? "Modifiez les filtres ou " : ""}ajoutez une facture ou importez depuis votre email.</p>
@@ -2123,7 +2495,7 @@ export default function InvoicesPage() {
                           checked={allVisibleSelected}
                           onChange={(e) => {
                             if (e.target.checked) {
-                              setSelectedIds(invoices.map((i) => i.id));
+                              setSelectedIds(displayedInvoices.map((i) => i.id));
                             } else {
                               setSelectedIds([]);
                             }
@@ -2146,6 +2518,7 @@ export default function InvoicesPage() {
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant HT</th>
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Règlé</th>
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant TTC</th>
+                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Cabinet</th>
                       <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Statut</th>
                       <th className="min-w-[8.5rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">
                         Actions
@@ -2153,7 +2526,7 @@ export default function InvoicesPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {invoices.map((inv) => {
+                    {displayedInvoices.map((inv) => {
                       const montantTTC = inv.montantTTC ?? inv.amount;
                       const montantHT  = inv.montantHT;
                       const invCurrency = inv.currency ?? "EUR";
@@ -2213,7 +2586,6 @@ export default function InvoicesPage() {
                           )}
                           <td className="px-2 py-1.5 max-w-[120px]">
                             <p className="truncate text-[10px] text-slate-500">{inv.originalName}</p>
-                            {inv.accountant_email && <p className="truncate text-[10px] text-slate-400">{inv.accountant_email}</p>}
                           </td>
                           <td className="px-2 py-1.5 whitespace-nowrap text-center">
                             <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold ${
@@ -2264,6 +2636,55 @@ export default function InvoicesPage() {
                             {montantTTC != null
                               ? <span className="font-mono font-medium text-slate-900">{montantTTC.toFixed(2)} <span className="text-[10px] text-slate-400">{invSymbol}</span></span>
                               : <span className="text-slate-300 font-mono">—</span>}
+                          </td>
+                          <td className="px-2 py-1.5 whitespace-nowrap text-center align-top">
+                            <div className="flex flex-col items-center gap-0.5 min-w-[88px]">
+                              {isSentToCabinet(inv) ? (
+                                <>
+                                  <span className="inline-flex rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
+                                    Transmise
+                                  </span>
+                                  {cabinetEmailKey(inv) ? (
+                                    <>
+                                      <span
+                                        className="max-w-[120px] truncate text-[11px] font-semibold text-slate-900"
+                                        title={cabinetEmailKey(inv)}
+                                      >
+                                        {cabinetDisplayName(inv, configuredAccountants)}
+                                      </span>
+                                      {inv.accountant_label && inv.accountant_email && (
+                                        <span
+                                          className="max-w-[120px] truncate text-[9px] text-slate-500"
+                                          title={inv.accountant_email}
+                                        >
+                                          {inv.accountant_email}
+                                        </span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <span className="text-[10px] text-amber-700">Cabinet non identifié</span>
+                                  )}
+                                  {inv.sentAt && (
+                                    <span className="text-[9px] text-slate-400">
+                                      {new Date(inv.sentAt).toLocaleDateString("fr-FR")}
+                                    </span>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-[10px] text-slate-400">Non transmise</span>
+                              )}
+                              {isSharedToCabinet(inv) && shareLinks[inv.id] && (
+                                <a
+                                  href={shareLinks[inv.id]}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[9px] font-medium text-indigo-600 hover:underline"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  Lien partagé
+                                </a>
+                              )}
+                            </div>
                           </td>
                           <td className="px-2 py-1.5 whitespace-nowrap text-center">
                             <div className="flex flex-col items-center gap-0.5">
@@ -2970,6 +3391,42 @@ export default function InvoicesPage() {
                 </div>
               )}
 
+              {files.length > 0 && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-[11px] font-semibold text-slate-800">Mode d&apos;extraction</p>
+                  <p className="mt-0.5 text-[10px] text-slate-600">
+                    Choisissez comment lire la facture à l&apos;enregistrement (images et PDF).
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {(
+                      [
+                        { id: "rules" as const, label: "Sans IA (OCR)", hint: "Gratuit · OCR + règles" },
+                        { id: "claude" as const, label: "Avec IA (Claude)", hint: "Vision · clé API requise" },
+                        { id: "openai" as const, label: "Avec IA (GPT)", hint: "Vision · clé API requise" },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setExtractProvider(opt.id)}
+                        className={`rounded-lg border px-3 py-2 text-left text-xs transition ${
+                          extractProvider === opt.id
+                            ? "border-slate-900 bg-slate-900 text-white"
+                            : "border-slate-300 bg-white text-slate-800 hover:border-slate-400"
+                        }`}
+                      >
+                        <span className="block font-semibold">{opt.label}</span>
+                        <span
+                          className={`block text-[10px] ${extractProvider === opt.id ? "text-slate-300" : "text-slate-500"}`}
+                        >
+                          {opt.hint}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {ocrStatus && (
                 <div className="rounded border border-blue-100 bg-blue-50 px-3 py-2">
                   <p className="text-[11px] text-blue-900">{ocrStatus}</p>
@@ -3025,12 +3482,17 @@ export default function InvoicesPage() {
       )}
 
       {/* Menu actions : fixed = pas coupé par overflow du main / du tableau */}
-      {openActionMenuId && actionMenuPlacement && actionMenuInvoice && (
+      {openActionMenuId && actionMenuInvoice && (
         <div
+          ref={actionMenuRef}
           role="menu"
           data-invoice-action-menu
           className="fixed z-[100] max-h-[min(70vh,calc(100dvh-2rem))] min-w-[11rem] overflow-y-auto rounded border border-slate-200 bg-white py-0.5 shadow-lg"
-          style={{ top: actionMenuPlacement.top, left: actionMenuPlacement.left }}
+          style={{
+            top: actionMenuPlacement?.top ?? -9999,
+            left: actionMenuPlacement?.left ?? 0,
+            visibility: actionMenuPlacement ? "visible" : "hidden",
+          }}
         >
           <ul className="text-left text-[11px] text-slate-700">
             <li>
@@ -3073,7 +3535,11 @@ export default function InvoicesPage() {
                 }}
                 className="w-full px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:opacity-40"
               >
-                {extractingId === actionMenuInvoice.id ? "Extraction (OCR)…" : "Extraction (OCR)"}
+                {extractingId === actionMenuInvoice.id
+                  ? "Extraction…"
+                  : extractProvider === "rules"
+                    ? "Extraction (OCR)"
+                    : "Extraction (IA vision)"}
               </button>
             </li>
             <li>
@@ -3178,7 +3644,7 @@ export default function InvoicesPage() {
                 Envoyer au cabinet
               </h2>
               <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                Sélectionnez une adresse déjà enregistrée (suggestions) ou saisissez l&apos;e-mail du destinataire.
+                Cochez un ou plusieurs cabinets pour ce pays. Chaque destinataire recevra un email avec la pièce jointe.
               </p>
             </div>
             <div className="max-h-[min(60dvh,420px)] space-y-3 overflow-y-auto px-4 py-3">
@@ -3188,8 +3654,10 @@ export default function InvoicesPage() {
                   ? [cabinetModal.invoice.region]
                   : [region]
               ).map((r) => {
-                const suggestions = cabinetAccountantsList.filter((a) => a.region === r);
-                const listId = `cabinet-datalist-${r.replace(/[^a-z0-9_-]/gi, "-")}`;
+                const suggestions = accountantsForRegion(cabinetAccountantsList, r);
+                const regionKey = normalizeRegionKey(r);
+                const selected = cabinetEmailsByRegion[r] ?? [];
+                const extra = cabinetExtraEmailByRegion[regionKey] ?? "";
                 return (
                   <div key={r}>
                     <label className="mb-1 block text-[11px] font-medium text-slate-700">
@@ -3201,34 +3669,76 @@ export default function InvoicesPage() {
                         </span>
                       )}
                     </label>
-                    <input
-                      type="email"
-                      autoComplete="email"
-                      enterKeyHint="send"
-                      disabled={cabinetSendPending}
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:opacity-70"
-                      list={listId}
-                      value={cabinetEmailByRegion[r] ?? ""}
-                      onChange={(e) =>
-                        setCabinetEmailByRegion((prev) => ({ ...prev, [r]: e.target.value }))
-                      }
-                      placeholder="cabinet@exemple.fr"
-                    />
-                    <datalist id={listId}>
-                      {suggestions.map((a) => (
-                        <option key={a.id} value={a.email}>
-                          {a.label ? `${a.label} · ` : ""}
-                          {a.email}
-                        </option>
-                      ))}
-                    </datalist>
-                    {suggestions.length === 0 && (
-                      <p className="mt-1 text-[10px] text-amber-800">
+                    {suggestions.length > 0 ? (
+                      <ul className="mb-2 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50/80 p-2">
+                        {suggestions.map((a) => {
+                          const checked = selected.some(
+                            (e) => e.trim().toLowerCase() === a.email.trim().toLowerCase(),
+                          );
+                          return (
+                            <li key={a.id}>
+                              <label className="flex cursor-pointer items-start gap-2 rounded-md px-1 py-0.5 hover:bg-white">
+                                <input
+                                  type="checkbox"
+                                  disabled={cabinetSendPending}
+                                  checked={checked}
+                                  className="mt-0.5 shrink-0"
+                                  onChange={(e) => {
+                                    setCabinetEmailsByRegion((prev) => {
+                                      const current = prev[r] ?? [];
+                                      if (e.target.checked) {
+                                        if (current.some((x) => x.toLowerCase() === a.email.toLowerCase())) {
+                                          return prev;
+                                        }
+                                        return { ...prev, [r]: [...current, a.email] };
+                                      }
+                                      return {
+                                        ...prev,
+                                        [r]: current.filter((x) => x.toLowerCase() !== a.email.toLowerCase()),
+                                      };
+                                    });
+                                  }}
+                                />
+                                <span className="min-w-0 text-sm text-slate-800">
+                                  {a.label ? (
+                                    <>
+                                      <span className="font-medium">{a.label}</span>
+                                      <span className="block truncate text-xs text-slate-500">{a.email}</span>
+                                    </>
+                                  ) : (
+                                    a.email
+                                  )}
+                                </span>
+                              </label>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="mb-2 text-[10px] text-amber-800">
                         Aucun cabinet enregistré pour ce pays.{" "}
                         <Link href="/settings" className="font-medium underline hover:text-amber-950">
                           Paramètres (Cabinets)
-                        </Link>{" "}
-                        ou saisissez l&apos;adresse ci-dessus.
+                        </Link>
+                      </p>
+                    )}
+                    <label className="mb-1 block text-[10px] font-medium text-slate-600">
+                      Autre adresse (optionnel, séparer par virgule)
+                    </label>
+                    <input
+                      type="text"
+                      autoComplete="off"
+                      disabled={cabinetSendPending}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:opacity-70"
+                      value={extra}
+                      onChange={(e) =>
+                        setCabinetExtraEmailByRegion((prev) => ({ ...prev, [regionKey]: e.target.value }))
+                      }
+                      placeholder="autre@cabinet.fr"
+                    />
+                    {mergeCabinetRecipients(selected, extra).length > 1 && (
+                      <p className="mt-1 text-[10px] text-indigo-700">
+                        {mergeCabinetRecipients(selected, extra).length} destinataires sélectionnés.
                       </p>
                     )}
                   </div>

@@ -104,6 +104,17 @@ export const IMAP_REGION_OPTIONS_SORTED = [...IMAP_REGION_OPTIONS_FLAT].sort((a,
   a.label.localeCompare(b.label, "fr", { sensitivity: "base" }),
 );
 
+export function normalizeRegionKey(region: string): string {
+  return String(region || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+}
+
+export function regionsMatch(a: string, b: string): boolean {
+  return normalizeRegionKey(a) === normalizeRegionKey(b);
+}
+
 export function regionDisplayLabel(regionValue: string): string {
   return (
     IMAP_REGION_OPTIONS_FLAT.find((o) => o.value === regionValue)?.label ??

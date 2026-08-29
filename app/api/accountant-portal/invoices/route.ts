@@ -1,12 +1,16 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { getAccountantEmailFromRequest } from "@/lib/auth-request";
-import { listInvoicesForAccountant } from "@/lib/accountant-portal-invoices";
+import { getPortalContextFromRequest } from "@/lib/auth-request";
+import {
+  listCabinetsForOwner,
+  listInvoicesForAccountant,
+  listInvoicesForOwnerPortal,
+} from "@/lib/accountant-portal-invoices";
 import { VALID_INVOICE_CURRENCY_CODES } from "@/lib/invoice-currency";
 
 export async function GET(request: NextRequest) {
-  const email = getAccountantEmailFromRequest(request);
-  if (!email) {
+  const ctx = getPortalContextFromRequest(request);
+  if (!ctx) {
     return NextResponse.json({ error: "Connexion comptable requise." }, { status: 401 });
   }
 
@@ -18,8 +22,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Devise invalide." }, { status: 400 });
   }
 
+  const mode = ctx.mode === "owner" && ctx.ownerUserId ? "owner" : "cabinet";
+
   try {
-    const invoices = await listInvoicesForAccountant(email, { currency, reviewStatus });
+    const cabinets =
+      mode === "owner" && ctx.ownerUserId ? await listCabinetsForOwner(ctx.ownerUserId) : [];
+
+    const invoices =
+      mode === "owner" && ctx.ownerUserId
+        ? await listInvoicesForOwnerPortal(ctx.ownerUserId, { currency, reviewStatus })
+        : await listInvoicesForAccountant(ctx.email, { currency, reviewStatus });
 
     const totalsByCurrency: Record<string, { count: number; totalHT: number; totalTTC: number }> = {};
     for (const inv of invoices) {
@@ -32,7 +44,9 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      email,
+      email: ctx.email,
+      mode,
+      cabinets,
       invoices,
       totalsByCurrency,
       counts: {
