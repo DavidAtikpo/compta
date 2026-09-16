@@ -47,6 +47,52 @@ const CURRENCY_OPTIONS = [
   { code: "XOF", label: "Franc CFA UEMOA (XOF)",     symbol: "FCFA" },
 ] as const;
 
+type ExtractionItemStatus = "queued" | "extracting" | "done" | "error";
+
+function ExtractionStatusIndicator({ status }: { status?: ExtractionItemStatus }) {
+  if (!status) return null;
+  if (status === "extracting") {
+    return (
+      <UploadRingSpinner
+        className="h-4 w-4"
+        trackClassName="border-blue-100"
+        spinClassName="border-t-blue-600 border-r-blue-500/80"
+        aria-label="Extraction en cours"
+      />
+    );
+  }
+  if (status === "queued") {
+    return (
+      <div
+        className="relative h-4 w-4 shrink-0"
+        role="status"
+        aria-label="En attente d'extraction"
+      >
+        <div className="absolute inset-0 rounded-full border-2 border-slate-200" />
+        <div className="absolute inset-[3px] rounded-full bg-blue-100 motion-safe:animate-pulse" />
+      </div>
+    );
+  }
+  if (status === "done") {
+    return (
+      <span
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-green-100 text-[9px] font-bold text-green-700"
+        aria-label="Extraction terminée"
+      >
+        ✓
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-red-100 text-[9px] font-bold text-red-700"
+      aria-label="Erreur d'extraction"
+    >
+      ✗
+    </span>
+  );
+}
+
 function currencySymbol(code: string | null | undefined): string {
   const found = CURRENCY_OPTIONS.find((c) => c.code === (code ?? "EUR"));
   return found?.symbol ?? "€";
@@ -460,6 +506,7 @@ export default function InvoicesPage() {
 
   // Action states
   const [extractingId, setExtractingId] = useState<string | null>(null);
+  const [extractionItemStatus, setExtractionItemStatus] = useState<Record<string, ExtractionItemStatus>>({});
   // Extraction facture : sans IA (OCR+règles) ou avec IA (vision)
   const [extractProvider, setExtractProvider] = useState<InvoiceExtractProvider>("rules");
   // IA: uniquement pour l'analyse / recherche
@@ -934,6 +981,11 @@ export default function InvoicesPage() {
   ): Promise<{ ok: number; fail: number }> => {
     if (items.length === 0) return { ok: 0, fail: 0 };
 
+    const itemIds = items.map((it) => it.id);
+    setExtractionItemStatus((prev) => ({
+      ...prev,
+      ...Object.fromEntries(itemIds.map((id) => [id, "queued" as const])),
+    }));
     setExtractionQueue({ total: items.length, current: 0, currentLabel: "", ok: 0, fail: 0 });
     const authT = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
     let ok = 0;
@@ -944,6 +996,7 @@ export default function InvoicesPage() {
         const { id, label } = items[i]!;
         setExtractionQueue({ total: items.length, current: i + 1, currentLabel: label, ok, fail });
         setExtractingId(id);
+        setExtractionItemStatus((prev) => ({ ...prev, [id]: "extracting" }));
         try {
           const res = await fetch(`/api/invoices/${id}/extract`, {
             method: "POST",
@@ -954,10 +1007,16 @@ export default function InvoicesPage() {
             body: JSON.stringify({ provider: extractProvider }),
           });
           const json = await res.json().catch(() => ({}));
-          if (res.ok && json.success) ok++;
-          else fail++;
+          if (res.ok && json.success) {
+            ok++;
+            setExtractionItemStatus((prev) => ({ ...prev, [id]: "done" }));
+          } else {
+            fail++;
+            setExtractionItemStatus((prev) => ({ ...prev, [id]: "error" }));
+          }
         } catch {
           fail++;
+          setExtractionItemStatus((prev) => ({ ...prev, [id]: "error" }));
         }
         setExtractingId(null);
       }
@@ -968,6 +1027,13 @@ export default function InvoicesPage() {
     } finally {
       setExtractionQueue(null);
       setExtractingId(null);
+      window.setTimeout(() => {
+        setExtractionItemStatus((prev) => {
+          const next = { ...prev };
+          for (const id of itemIds) delete next[id];
+          return next;
+        });
+      }, 5000);
     }
     return { ok, fail };
   };
@@ -1273,7 +1339,9 @@ export default function InvoicesPage() {
 
   const handleExtract = async (id: string) => {
     setExtractingId(id);
+    setExtractionItemStatus((prev) => ({ ...prev, [id]: "extracting" }));
     setExtractResults((prev) => ({ ...prev, [id]: { ok: true, msg: "" } }));
+    let extractOk = false;
     try {
       const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
       const res = await fetch(`/api/invoices/${id}/extract`, {
@@ -1286,6 +1354,7 @@ export default function InvoicesPage() {
       });
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
+        extractOk = true;
         const d = json.data ?? {};
         const parts: string[] = [];
         const sym = currencySymbol(d.currency ?? null);
@@ -1304,7 +1373,16 @@ export default function InvoicesPage() {
       setExtractResults((prev) => ({ ...prev, [id]: { ok: false, msg: "✗ Erreur réseau" } }));
     } finally {
       setExtractingId(null);
+      setExtractionItemStatus((prev) => ({ ...prev, [id]: extractOk ? "done" : "error" }));
       setTimeout(() => setExtractResults((prev) => { const n = { ...prev }; delete n[id]; return n; }), 6000);
+      setTimeout(() => {
+        setExtractionItemStatus((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      }, 5000);
     }
   };
 
@@ -2684,7 +2762,15 @@ export default function InvoicesPage() {
                             </td>
                           )}
                           <td className="px-2 py-1.5 max-w-[120px]">
-                            <p className="truncate text-[10px] text-slate-500">{inv.originalName}</p>
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <ExtractionStatusIndicator
+                                status={
+                                  extractionItemStatus[inv.id]
+                                  ?? (extractingId === inv.id ? "extracting" : undefined)
+                                }
+                              />
+                              <p className="truncate text-[10px] text-slate-500">{inv.originalName}</p>
+                            </div>
                           </td>
                           <td className="px-2 py-1.5 whitespace-nowrap text-center">
                             <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold ${
