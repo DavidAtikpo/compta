@@ -3,7 +3,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import Tesseract from "tesseract.js";
 import { InvoicePhotoCropModal } from "@/components/InvoicePhotoCropModal";
 import { UploadRingSpinner } from "@/components/UploadRingSpinner";
 import {
@@ -17,7 +16,6 @@ import { MAX_PDF_INVOICES } from "../../../lib/pdf-export";
 import {
   detectCurrencyFromOcrText,
   getExplicitCurrencyFromText,
-  mergeOcrCurrencyMarker,
 } from "@/lib/invoice-currency";
 
 /** Réglages IMAP Gmail recommandés (identiques pour tous les comptes Gmail). */
@@ -364,14 +362,15 @@ type StructureRow = { id: string; name: string; region: string; type: string; si
 
 type InvoiceExtractProvider = "rules" | "claude" | "openai";
 
-function ocrTextForFile(name: string, texts: { name: string; text: string }[]): string | null {
-  const raw = texts.find((t) => t.name === name)?.text?.trim() ?? "";
-  if (!raw) return null;
-  if (/^erreur\s+ocr\b/i.test(raw)) return null;
-  if (/aucun\s+texte\s+d[ée]tect[ée]\b/i.test(raw)) return null;
-  if (raw.length < 20) return null;
-  return raw;
-}
+type DraftExtractPreview = {
+  loading?: boolean;
+  fournisseur?: string | null;
+  dateFacture?: string | null;
+  montant?: string | null;
+  currency?: string | null;
+  textSample?: string;
+  error?: string;
+};
 
 function isSentToCabinet(inv: Invoice): boolean {
   return inv.status === "sent" || !!inv.sentAt;
@@ -417,7 +416,7 @@ export default function InvoicesPage() {
   const [structureInlineMsg, setStructureInlineMsg] = useState("");
   const [message, setMessage] = useState("");
   const [ocrStatus, setOcrStatus] = useState("");
-  const [extractedTexts, setExtractedTexts] = useState<{ name: string; text: string }[]>([]);
+  const [draftExtractPreviews, setDraftExtractPreviews] = useState<Record<string, DraftExtractPreview>>({});
   const [uploadedUrls, setUploadedUrls] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState("");
@@ -552,6 +551,9 @@ export default function InvoicesPage() {
   useEffect(() => {
     if (!createOpen) return;
     setCreateCountryFilter("");
+    setDraftExtractPreviews({});
+    setOcrStatus("");
+    setUploadResult("");
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") setCreateOpen(false);
     };
@@ -920,43 +922,58 @@ export default function InvoicesPage() {
       .map(([code, stats]) => ({ code, ...stats, symbol: currencySymbol(code) }));
   }, [invoices, filterCurrency]);
 
-  const runOcr = async (imageFiles: File[]): Promise<{ name: string; text: string }[]> => {
-    const results: { name: string; text: string }[] = [];
-    for (const file of imageFiles) {
-      setOcrStatus(`OCR en cours : ${file.name}…`);
-      try {
-        const result = await Tesseract.recognize(file, "fra+eng", {
-          logger: ({ status, progress }) => {
-            if (status === "recognizing text") {
-              setOcrStatus(`OCR ${file.name} — ${Math.round(progress * 100)}%`);
-            }
-          },
-        });
-        const text = result.data.text.trim();
-        if (text) {
-          const detected = detectCurrencyFromOcrText(text);
-          const explicit = getExplicitCurrencyFromText(text);
-          if (explicit) setCurrency(explicit);
-          const stamped = mergeOcrCurrencyMarker(text, detected);
-          results.push({ name: file.name, text: stamped });
-          if (!amount) {
-            const m = text.match(
-              /(?:total|montant|ttc|ht|balance\s+due|amount\s+due)[^\d]{0,40}(\d[\d\s.,]{0,14})(?:\s*(€|eur|\$|usd|£|gbp|¥|元|cny|₵|ghs|fcfa|xaf|xof))?/i,
-            );
-            if (m?.[1]) {
-              const num = m[1].replace(/\s/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(/,(?=\d{3}(\D|$))/g, "").replace(",", ".");
-              const n = parseFloat(num);
-              if (!Number.isNaN(n)) setAmount(String(n));
-            }
-          }
-        } else {
-          results.push({ name: file.name, text: "Aucun texte détecté." });
-        }
-      } catch (err) {
-        results.push({ name: file.name, text: `Erreur OCR: ${(err as Error).message}` });
+  const fetchServerOcrPreview = async (file: File, fileUrl: string) => {
+    setDraftExtractPreviews((prev) => ({
+      ...prev,
+      [file.name]: { loading: true },
+    }));
+    setOcrStatus(`Analyse serveur (Google Vision) : ${file.name}…`);
+    try {
+      const authT = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
+      const res = await fetch("/api/invoices/ocr-preview", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(authT ? { Authorization: `Bearer ${authT}` } : {}),
+        },
+        body: JSON.stringify({
+          fileUrl,
+          originalName: file.name,
+          mimeType: file.type,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.preview) {
+        setDraftExtractPreviews((prev) => ({
+          ...prev,
+          [file.name]: { error: data?.error || "Lecture impossible" },
+        }));
+        return;
       }
+      const p = data.preview as DraftExtractPreview;
+      setDraftExtractPreviews((prev) => ({
+        ...prev,
+        [file.name]: {
+          fournisseur: p.fournisseur ?? null,
+          dateFacture: p.dateFacture ?? null,
+          montant: p.montant ?? null,
+          currency: p.currency ?? null,
+          textSample: p.textSample,
+        },
+      }));
+      if (p.currency) setCurrency(String(p.currency));
+      else if (p.textSample) {
+        const detected = detectCurrencyFromOcrText(p.textSample);
+        const explicit = getExplicitCurrencyFromText(p.textSample);
+        if (explicit) setCurrency(explicit);
+        else if (detected) setCurrency(detected);
+      }
+    } catch {
+      setDraftExtractPreviews((prev) => ({
+        ...prev,
+        [file.name]: { error: "Erreur réseau lors de l’analyse" },
+      }));
     }
-    return results;
   };
 
   const uploadToCloudinary = async (file: File): Promise<{ url: string } | { error: string }> => {
@@ -989,21 +1006,9 @@ export default function InvoicesPage() {
       setUploadResult("");
       setSendResult("");
       setOcrStatus("Traitement en cours…");
-      const imageFiles = validFiles.filter((f) => f.type.startsWith("image/"));
-      const pdfFiles = validFiles.filter((f) => f.type === "application/pdf");
-      if (imageFiles.length > 0) {
-        setDraftUploadMessage("Analyse du texte sur l’appareil (OCR)…");
-        const texts = await runOcr(imageFiles);
-        setExtractedTexts((prev) => [...prev, ...texts]);
-        setOcrStatus(`OCR terminé — ${texts.length} image(s) analysée(s).`);
-      }
-      if (pdfFiles.length > 0) {
-        setOcrStatus((s) =>
-          `${s} ${pdfFiles.length} PDF — l’OCR sera fait côté serveur à l’enregistrement (Sans IA ou IA vision).`,
-        );
-      }
+      setDraftExtractPreviews({});
       setDraftUploadMessage("Enregistrement sécurisé sur Cloudinary…");
-      setOcrStatus((s) => `${s} Enregistrement sur Cloudinary…`);
+      setOcrStatus("Enregistrement sur Cloudinary…");
       const urls: { name: string; url: string }[] = [];
       const uploadErrors: string[] = [];
       for (const file of validFiles) {
@@ -1021,7 +1026,12 @@ export default function InvoicesPage() {
         setUploadResult(`⚠️ Erreur upload Cloudinary : ${uploadErrors.join(" | ")}`);
         setOcrStatus(`${urls.length}/${validFiles.length} fichier(s) sur Cloudinary. Corrigez ou retirez les fichiers en erreur.`);
       } else {
-        setOcrStatus(`✓ ${urls.length} pièce(s) enregistrée(s) sur Cloudinary — vous pouvez prévisualiser, télécharger ou envoyer au cabinet.`);
+        setOcrStatus(`✓ ${urls.length} pièce(s) sur Cloudinary — analyse serveur en cours…`);
+        for (const file of validFiles) {
+          const url = urls.find((u) => u.name === file.name)?.url;
+          if (url) await fetchServerOcrPreview(file, url);
+        }
+        setOcrStatus(`✓ Document analysé. Cliquez « Enregistrer et extraire » pour finaliser.`);
       }
     } finally {
       setDraftUploading(false);
@@ -1078,10 +1088,11 @@ export default function InvoicesPage() {
     setUploadResult("");
     let autoExtractOk = 0;
     let autoExtractFail = 0;
+    const autoExtractErrors: string[] = [];
+    const autoExtractSummaries: string[] = [];
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const ocrText = ocrTextForFile(file.name, extractedTexts);
         const fileUrl = uploadedUrls.find((u) => u.name === file.name)?.url || null;
         setOcrStatus(`Enregistrement ${i + 1}/${files.length} : ${file.name}`);
         const authT = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
@@ -1096,9 +1107,9 @@ export default function InvoicesPage() {
             originalName: file.name,
             size: file.size,
             mimeType: file.type,
-            ocrText,
+            ocrText: null,
             region,
-            amount: amount ? parseFloat(amount) : null,
+            amount: null,
             category: category || null,
             invoiceType,
             structureId: selectedStructureId || null,
@@ -1120,24 +1131,55 @@ export default function InvoicesPage() {
                 body: JSON.stringify({ provider: extractProvider }),
               });
               const exJson = await exRes.json().catch(() => ({}));
-              if (exRes.ok && exJson?.success) autoExtractOk++;
-              else autoExtractFail++;
+              if (exRes.ok && exJson?.success) {
+                autoExtractOk++;
+                const d = exJson.data as Record<string, unknown> | undefined;
+                const parts: string[] = [];
+                if (typeof d?.fournisseur === "string" && d.fournisseur.trim()) {
+                  parts.push(d.fournisseur.trim());
+                }
+                if (typeof d?.montantTTC === "number" && !Number.isNaN(d.montantTTC)) {
+                  parts.push(`${d.montantTTC} ${typeof d?.currency === "string" ? d.currency : ""}`.trim());
+                } else if (typeof d?.dateFacture === "string") {
+                  parts.push(String(d.dateFacture));
+                }
+                autoExtractSummaries.push(
+                  parts.length > 0 ? `${file.name} → ${parts.join(" · ")}` : `${file.name} → extrait`,
+                );
+              } else {
+                autoExtractFail++;
+                autoExtractErrors.push(
+                  `${file.name} : ${exJson?.error || `erreur ${exRes.status}`}`,
+                );
+              }
             } catch { autoExtractFail++; }
           }
         }
       }
       const totalExtract = autoExtractOk + autoExtractFail;
       if (totalExtract > 0) {
+        const summary = autoExtractSummaries.slice(0, 2).join(" | ");
         setUploadResult(
-          `${files.length} facture(s) enregistrée(s). Extraction (OCR) auto : ${autoExtractOk} OK${autoExtractFail ? `, ${autoExtractFail} en erreur (relancer depuis le menu)` : ""}.`
+          `${files.length} facture(s) enregistrée(s). Extraction : ${autoExtractOk} OK${
+            autoExtractFail
+              ? `, ${autoExtractFail} en erreur${autoExtractErrors.length ? ` — ${autoExtractErrors.slice(0, 2).join(" | ")}` : ""}`
+              : summary
+                ? ` — ${summary}`
+                : ""
+          }.`,
         );
+        if (autoExtractOk > 0 && summary) {
+          showSendSuccessToast(`Extraction réussie : ${summary}`);
+        }
       } else {
         setUploadResult(`${files.length} facture(s) enregistrée(s).`);
       }
-      setOcrStatus("Traitement terminé.");
+      setOcrStatus(autoExtractOk > 0 ? "Extraction terminée — consultez la liste des factures." : "Traitement terminé.");
       await reloadInvoices();
-      handleClearAll();
-      setCreateOpen(false);
+      if (autoExtractFail === 0) {
+        handleClearAll();
+        setCreateOpen(false);
+      }
     } catch {
       setUploadResult("Erreur lors de l'enregistrement.");
     } finally {
@@ -1810,9 +1852,16 @@ export default function InvoicesPage() {
   };
 
   const handleDeleteFile = (index: number) => {
+    const removed = files[index];
     setFiles((prev) => prev.filter((_, i) => i !== index));
-    setExtractedTexts((prev) => prev.filter((_, i) => i !== index));
     setUploadedUrls((prev) => prev.filter((_, i) => i !== index));
+    if (removed?.name) {
+      setDraftExtractPreviews((prev) => {
+        const next = { ...prev };
+        delete next[removed.name];
+        return next;
+      });
+    }
   };
 
   const handleClearAll = () => {
@@ -1820,7 +1869,7 @@ export default function InvoicesPage() {
       if (pc?.src) URL.revokeObjectURL(pc.src);
       return null;
     });
-    setFiles([]); setExtractedTexts([]); setUploadedUrls([]);
+    setFiles([]); setDraftExtractPreviews({}); setUploadedUrls([]);
     setOcrStatus(""); setUploadResult(""); setSendResult("");
     setAmount(""); setCategory(""); setCurrency("EUR"); setMessage("");
     setInvoiceType("achat");
@@ -3433,15 +3482,42 @@ export default function InvoicesPage() {
                 </div>
               )}
 
-              {extractedTexts.length > 0 && (
-                <div className="space-y-1.5">
-                  <p className="text-[11px] font-medium text-slate-600">OCR</p>
-                  {extractedTexts.map((item, i) => (
-                    <div key={i} className="rounded border border-slate-200 bg-white p-2">
-                      <p className="mb-1 text-[10px] font-medium text-slate-500">{item.name}</p>
-                      <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap text-[10px] leading-relaxed text-slate-700">{item.text}</pre>
-                    </div>
-                  ))}
+              {files.map((file) => {
+                const preview = draftExtractPreviews[file.name];
+                if (!preview) return null;
+                return (
+                  <div key={`preview-${file.name}`} className="rounded border border-slate-200 bg-white p-3">
+                    <p className="mb-1 text-[11px] font-semibold text-slate-800">Aperçu extraction (serveur)</p>
+                    {preview.loading ? (
+                      <p className="text-[11px] text-slate-500">Analyse Google Vision en cours…</p>
+                    ) : preview.error ? (
+                      <p className="text-[11px] text-rose-700">{preview.error}</p>
+                    ) : (
+                      <div className="space-y-1 text-[11px] text-slate-700">
+                        {preview.fournisseur && <p><span className="font-medium">Fournisseur :</span> {preview.fournisseur}</p>}
+                        {preview.dateFacture && <p><span className="font-medium">Date :</span> {preview.dateFacture}</p>}
+                        {preview.montant && (
+                          <p>
+                            <span className="font-medium">Montant :</span> {preview.montant}
+                            {preview.currency ? ` ${preview.currency}` : ""}
+                          </p>
+                        )}
+                        {preview.textSample && (
+                          <pre className="mt-2 max-h-24 overflow-y-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-[10px] text-slate-600">
+                            {preview.textSample}
+                          </pre>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {files.length > 0 && draftAllOnCloudinary && !Object.values(draftExtractPreviews).some((p) => p.loading) && (
+                <div className="rounded border border-emerald-100 bg-emerald-50 px-3 py-2">
+                  <p className="text-[11px] text-emerald-900">
+                    Cliquez <strong>Enregistrer et extraire</strong> pour créer la facture avec ces données.
+                  </p>
                 </div>
               )}
 
@@ -3452,7 +3528,7 @@ export default function InvoicesPage() {
                   disabled={uploading || draftUploading || files.length === 0 || !draftAllOnCloudinary}
                   className="rounded-lg border-2 border-slate-200 bg-slate-100 px-3 py-2.5 text-[11px] font-semibold text-slate-900 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {uploading ? "Enregistrement…" : "Enregistrer"}
+                  {uploading ? "Enregistrement…" : "Enregistrer et extraire"}
                 </button>
                 <button
                   type="button"

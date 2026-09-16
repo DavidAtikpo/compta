@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
-import { v2 as cloudinary } from "cloudinary";
 import { pool } from "../../../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { detectCurrencyFromOcrText, isValidInvoiceCurrency } from "@/lib/invoice-currency";
 import { resolveClassificationFromExtract } from "@/lib/classification";
+import { ocrFromImageDataUrl } from "@/lib/server-ocr";
+import { isOcrTextQualityGood, isOcrTextUsable } from "@/lib/ocr-quality";
+import { resolveDocumentImageDataUrl } from "@/lib/invoice-document-vision";
+import { parseFournisseurFromOcr, parseMontantTTCFromOcr } from "@/lib/invoice-ocr-parse";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 type ExtractProvider = "openai" | "claude" | "perplexity" | "rules";
 
@@ -19,16 +22,6 @@ function isOpenAiInsufficientQuotaError(err: unknown): boolean {
 function isMissingApiKeyError(err: unknown, keyName: string): boolean {
   const msg = err instanceof Error ? err.message : String(err || "");
   return msg.toLowerCase().includes(keyName.toLowerCase()) && msg.toLowerCase().includes("non configur");
-}
-
-function isOcrTextUsable(text: string | null): text is string {
-  const t = String(text || "").trim();
-  if (!t) return false;
-  if (/^erreur\s+ocr\b/i.test(t)) return false;
-  if (/aucun\s+texte\s+d[ée]tect[ée]\b/i.test(t)) return false;
-  // Heuristic: too short / mostly punctuation isn't useful for rules extraction
-  if (t.length < 20) return false;
-  return true;
 }
 
 function isNetworkFetchError(err: unknown): boolean {
@@ -54,32 +47,41 @@ async function resolveOcrTextForRules(
   mimeType: string | null,
   invoiceId: string,
   workspaceOwnerId: string,
+  options?: { forceServer?: boolean },
 ): Promise<string | null> {
-  let ocrTextToUse = isOcrTextUsable(ocrText) ? String(ocrText).trim() : null;
-  if (isOcrTextUsable(ocrTextToUse) || !fileUrl) return ocrTextToUse;
+  const forceServer = options?.forceServer === true;
+  const clientText = isOcrTextQualityGood(ocrText) ? String(ocrText).trim() : null;
+  const hasVisionKey = Boolean(process.env.OCR_API_KEY?.trim());
+  const needServer = forceServer || hasVisionKey || !clientText;
 
-  const lowerName = String(originalName || "").toLowerCase();
-  const lowerMime = String(mimeType || "").toLowerCase();
-  const isPdf =
-    lowerMime.includes("pdf") || lowerName.endsWith(".pdf") || /\.pdf(\?|$)/i.test(fileUrl);
-  const isImage =
-    lowerMime.startsWith("image/") || /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(fileUrl);
+  if (!fileUrl) return clientText;
+  if (!needServer) return clientText;
 
-  let visionDataUrl: string | null = null;
-  if (isImage) visionDataUrl = await imageUrlToDataUrl(fileUrl);
-  else if (isPdf) visionDataUrl = await pdfCloudinaryToJpegDataUrl(fileUrl);
+  const visionDataUrl = await resolveDocumentImageDataUrl(fileUrl, originalName, mimeType);
 
   if (!visionDataUrl?.startsWith("data:image/")) return null;
 
   const ocr = await ocrFromImageDataUrl(visionDataUrl);
-  if (!ocr) return null;
+  if (!ocr) return clientText;
 
-  ocrTextToUse = ocr;
+  const ocrTextToUse =
+    isOcrTextQualityGood(ocr) || !clientText
+      ? ocr
+      : isOcrTextQualityGood(clientText)
+        ? clientText
+        : ocr.length >= clientText.length
+          ? ocr
+          : clientText;
   try {
+    const replaceOcr =
+      forceServer || !isOcrTextQualityGood(clientText) || isOcrTextQualityGood(ocrTextToUse);
     await pool.query(
-      `UPDATE invoices SET "ocrText" = COALESCE(NULLIF("ocrText", ''), $1), "updatedAt" = NOW()
-       WHERE id = $2 AND "userId" = $3 AND ("deletedAt" IS NULL)`,
-      [ocr, invoiceId, workspaceOwnerId],
+      replaceOcr
+        ? `UPDATE invoices SET "ocrText" = $1, "updatedAt" = NOW()
+           WHERE id = $2 AND "userId" = $3 AND ("deletedAt" IS NULL)`
+        : `UPDATE invoices SET "ocrText" = COALESCE(NULLIF("ocrText", ''), $1), "updatedAt" = NOW()
+           WHERE id = $2 AND "userId" = $3 AND ("deletedAt" IS NULL)`,
+      [ocrTextToUse, invoiceId, workspaceOwnerId],
     );
   } catch (e) {
     console.warn("OCR persist failed:", (e as Error).message);
@@ -121,7 +123,7 @@ async function persistRulesExtract(
       "tauxTVA"       = COALESCE($4, "tauxTVA"),
       "montantTVA"    = COALESCE($5, "montantTVA"),
       "montantTTC"    = COALESCE($6, "montantTTC"),
-      amount          = COALESCE($6, amount),
+      amount          = CASE WHEN $6 IS NOT NULL THEN $6 ELSE amount END,
       "ocrText"       = COALESCE(NULLIF($13, ''), "ocrText"),
       "invoiceDate"   = COALESCE($8::timestamptz, "invoiceDate"),
       currency        = COALESCE($10, currency),
@@ -170,176 +172,6 @@ async function tryRulesFallbackResponse(
   if (!rulesExtractHasData(extracted)) return null;
   const data = await persistRulesExtract(extracted, ocrTextToUse!, invoiceId, workspaceOwnerId);
   return NextResponse.json({ success: true, data, fallback: "rules", warning });
-}
-
-async function ocrFromImageDataUrl(imageDataUrl: string): Promise<string | null> {
-  const key = process.env.OCR_API_KEY?.trim();
-  if (!key) return null;
-  const m = imageDataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-  if (!m?.[2]) return null;
-  const content = m[2];
-  const res = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(key)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      requests: [
-        {
-          image: { content },
-          features: [{ type: "DOCUMENT_TEXT_DETECTION" }],
-        },
-      ],
-    }),
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) {
-    console.warn("OCR Vision API error:", res.status, await res.text().catch(() => ""));
-    return null;
-  }
-  const payload = (await res.json()) as any;
-  const text =
-    payload?.responses?.[0]?.fullTextAnnotation?.text ||
-    payload?.responses?.[0]?.textAnnotations?.[0]?.description ||
-    "";
-  const out = String(text || "").trim();
-  return out ? out : null;
-}
-
-function setupCloudinary(): boolean {
-  const name = process.env.CLOUDINARY_CLOUD_NAME?.toLowerCase().trim();
-  const key  = process.env.CLOUDINARY_API_KEY?.trim();
-  const sec  = process.env.CLOUDINARY_API_SECRET?.trim();
-  if (!name || !key || !sec) return false;
-  cloudinary.config({ cloud_name: name, api_key: key, api_secret: sec, secure: true });
-  return true;
-}
-
-/** Extract public_id from a Cloudinary URL (strips version prefix, keeps folder/name.ext) */
-function extractPublicId(url: string): { publicId: string; resourceType: "image" | "raw" } | null {
-  const m = url.match(
-    /^https:\/\/res\.cloudinary\.com\/[^/]+\/(image|raw)\/upload\/(?:v\d+\/)?(.+)$/i
-  );
-  if (!m) return null;
-  return { publicId: m[2], resourceType: m[1].toLowerCase() as "image" | "raw" };
-}
-
-/**
- * Convert a Cloudinary PDF (stored as image/upload) to JPEG data URL.
- * Strategy 1 (fast): Apply inline transformation pg_1,f_jpg on the image/upload URL directly.
- * Strategy 2 (fallback): Re-upload using base64 from a Cloudinary eager transform.
- */
-async function pdfCloudinaryToJpegDataUrl(fileUrl: string): Promise<string | null> {
-  // Strategy 1: image/upload URL → add transformation pg_1,f_jpg inline (no re-upload needed)
-  // Works when the PDF was uploaded as image type (our new default)
-  const imgUploadMatch = fileUrl.match(
-    /^(https:\/\/res\.cloudinary\.com\/[^/]+\/image\/upload\/)(?:(v\d+\/))?(.+\.pdf)$/i
-  );
-  if (imgUploadMatch) {
-    const base = imgUploadMatch[1];
-    const version = imgUploadMatch[2] || "";
-    const rest = imgUploadMatch[3];
-    const transformedUrl = `${base}pg_1,f_jpg,q_auto,w_1600,c_limit/${version}${rest}`;
-    console.log("Tentative transformation inline:", transformedUrl.slice(0, 100));
-    const result = await imageUrlToDataUrl(transformedUrl);
-    if (result) return result;
-    if (version) {
-      // Try without version segment
-      const noVersionUrl = `${base}pg_1,f_jpg,q_auto,w_1600,c_limit/${rest}`;
-      const result2 = await imageUrlToDataUrl(noVersionUrl);
-      if (result2) return result2;
-    }
-  }
-
-  // Strategy 2 (for old raw/upload PDFs): re-upload the PDF bytes via Cloudinary API
-  if (!setupCloudinary()) {
-    console.warn("Cloudinary non configuré");
-    return null;
-  }
-
-  const parsed = extractPublicId(fileUrl);
-  if (!parsed) {
-    console.warn("URL Cloudinary non reconnue:", fileUrl);
-    return null;
-  }
-
-  // Generate a signed URL for our own asset — Cloudinary SDK can access it
-  const signedUrl = cloudinary.url(parsed.publicId, {
-    resource_type: parsed.resourceType,
-    sign_url: true,
-    secure: true,
-    type: "upload",
-  });
-
-  console.log("Téléchargement PDF signé…");
-  const pdfRes = await fetch(signedUrl, { signal: AbortSignal.timeout(30000) });
-  if (!pdfRes.ok) {
-    console.warn(`PDF 401/404 même avec URL signée (${pdfRes.status}). Ce fichier est inaccessible.`);
-    return null;
-  }
-
-  const pdfBuf = Buffer.from(await pdfRes.arrayBuffer());
-  if (pdfBuf.length < 100) return null;
-
-  const tempPublicId = `compta-ia/extract-tmp-${Date.now()}`;
-  let uploadedPublicId: string | null = null;
-
-  try {
-    const up = await cloudinary.uploader.upload(
-      `data:application/pdf;base64,${pdfBuf.toString("base64")}`,
-      {
-        public_id: tempPublicId,
-        resource_type: "image",
-        overwrite: true,
-        eager: [{ width: 1600, crop: "limit", format: "jpg", page: 1 }],
-        eager_async: false,
-      }
-    );
-    uploadedPublicId = up.public_id;
-    const jpgUrl = up?.eager?.[0]?.secure_url as string | undefined;
-    if (jpgUrl) {
-      const data = await imageUrlToDataUrl(jpgUrl);
-      if (data) return data;
-    }
-  } catch (e) {
-    console.error("pdfCloudinaryToJpegDataUrl re-upload:", e);
-  } finally {
-    if (uploadedPublicId) {
-      try {
-        await cloudinary.uploader.destroy(uploadedPublicId, { resource_type: "image", invalidate: true });
-      } catch { /* ignore */ }
-    }
-  }
-  return null;
-}
-
-/** For regular image URLs: fetch and return as base64 data URL (public or signed Cloudinary). */
-async function imageUrlToDataUrl(url: string): Promise<string | null> {
-  const tryFetch = async (fetchUrl: string): Promise<string | null> => {
-    try {
-      const res = await fetch(fetchUrl, { signal: AbortSignal.timeout(30000) });
-      if (!res.ok) return null;
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length < 64) return null;
-      const ct = res.headers.get("content-type")?.split(";")[0]?.trim() || "image/jpeg";
-      if (!ct.startsWith("image/")) return null;
-      return `data:${ct};base64,${buf.toString("base64")}`;
-    } catch {
-      return null;
-    }
-  };
-
-  const direct = await tryFetch(url);
-  if (direct) return direct;
-
-  if (!setupCloudinary()) return null;
-  const parsed = extractPublicId(url);
-  if (!parsed) return null;
-  const signedUrl = cloudinary.url(parsed.publicId, {
-    resource_type: parsed.resourceType,
-    sign_url: true,
-    secure: true,
-    type: "upload",
-  });
-  return tryFetch(signedUrl);
 }
 
 function normalizeNumber(input: string): number | null {
@@ -431,6 +263,8 @@ function extractStructuredFromOcr(ocrText: string, originalName: string): Record
     pickFirstMatch(normalized, [
       new RegExp(String.raw`(?:total\s+ttc|montant\s+ttc|ttc)\s*[:\-]?\s*([0-9][0-9\s.,]{0,18})${CUR_AFTER}`, "i"),
       new RegExp(String.raw`(?:net\s+[àa]\s+payer|total\s+[àa]\s+payer|balance\s+due|amount\s+due)\s*[:\-]?\s*([0-9][0-9\s.,]{0,18})${CUR_AFTER}`, "i"),
+      new RegExp(String.raw`(?:^|\n)\s*montant\s*[:\-]?\s*([0-9][0-9\s.,]{2,18})${CUR_AFTER}`, "im"),
+      new RegExp(String.raw`(?:d[ée]p[oô]t|transaction|cr[ée]dit)\b[^\n]{0,80}?\b([0-9][0-9\s.,]{2,18})${CUR_AFTER}`, "i"),
     ]);
   const montantHTStr =
     pickFirstMatch(normalized, [
@@ -441,7 +275,8 @@ function extractStructuredFromOcr(ocrText: string, originalName: string): Record
       new RegExp(String.raw`(?:montant\s+tva|total\s+tva|tva)\s*[:\-]?\s*([0-9][0-9\s.,]{0,18})${CUR_AFTER}`, "i"),
     ]);
 
-  const montantTTC = montantTTCStr ? normalizeNumber(montantTTCStr) : null;
+  let montantTTC = montantTTCStr ? normalizeNumber(montantTTCStr) : null;
+  if (montantTTC == null) montantTTC = parseMontantTTCFromOcr(raw);
   const montantHT = montantHTStr ? normalizeNumber(montantHTStr) : null;
   const montantTVA = montantTVAStr ? normalizeNumber(montantTVAStr) : null;
 
@@ -464,24 +299,7 @@ function extractStructuredFromOcr(ocrText: string, originalName: string): Record
     /\b(pay[ée]e?|r[ée]gl[ée]e?|acquitt[ée]e?|paid|settled)\b/i.test(flat) ? true : null;
   const montantRegle = estReglee ? montantTTC : null;
 
-  // fournisseur: heuristic (first meaningful line) else fallback to filename
-  let fournisseur: string | null = null;
-  const lines = normalized
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  for (const line of lines.slice(0, 8)) {
-    if (line.length < 3) continue;
-    if (/^(facture|invoice|reçu|receipt)\b/i.test(line)) continue;
-    if (/(siret|tva\s*intracom|iban|bic|rccm|rcs)\b/i.test(line)) continue;
-    if ((line.match(/\d/g)?.length || 0) > Math.max(6, Math.floor(line.length / 2))) continue;
-    fournisseur = line.slice(0, 120);
-    break;
-  }
-  if (!fournisseur) {
-    const base = String(originalName || "").replace(/\.(pdf|png|jpg|jpeg|webp)$/i, "").trim();
-    fournisseur = base && base.length <= 80 ? base : null;
-  }
+  const fournisseur = parseFournisseurFromOcr(raw, originalName);
 
   const description =
     pickFirstMatch(normalized, [
@@ -538,7 +356,7 @@ export async function POST(
       return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });
     }
 
-    const { ocrText, originalName, fileUrl, mimeType } = invoiceRes.rows[0] as {
+    let { ocrText, originalName, fileUrl, mimeType } = invoiceRes.rows[0] as {
       ocrText: string | null;
       originalName: string;
       fileUrl: string | null;
@@ -555,18 +373,25 @@ export async function POST(
             ? "perplexity"
             : "openai";
 
-    // Extraction facture : « rules » = OCR + règles (sans LLM) ; autres = vision + LLM
-    if (provider === "rules") {
-      const ocrTextToUse = await resolveOcrTextForRules(
+    // Toujours tenter un OCR serveur (Google Vision) si le texte client est absent ou bruité.
+    if (fileUrl) {
+      const serverOcr = await resolveOcrTextForRules(
         ocrText,
         fileUrl,
         originalName,
         mimeType,
         id,
         workspaceOwnerId,
+        { forceServer: !isOcrTextQualityGood(ocrText) },
       );
+      if (isOcrTextQualityGood(serverOcr)) ocrText = serverOcr;
+    }
 
-      if (!isOcrTextUsable(ocrTextToUse)) {
+    // Extraction facture : « rules » = OCR + règles (sans LLM) ; autres = vision + LLM
+    if (provider === "rules") {
+      const ocrTextToUse = isOcrTextUsable(ocrText) ? String(ocrText).trim() : null;
+
+      if (!ocrTextToUse) {
         console.warn("Extraction 422: provider=rules mais aucun ocrText", {
           invoiceId: id,
           provider,
@@ -577,7 +402,7 @@ export async function POST(
         return NextResponse.json(
           {
             error:
-              "Extraction (OCR) indisponible : texte OCR manquant ou inutilisable. Ré-uploadez une image nette ou configurez OCR_API_KEY (Google Vision) dans .env.",
+              "Extraction (OCR) indisponible : impossible de lire le texte du document. Ré-uploadez une image plus nette ou un PDF lisible.",
             ...(process.env.NODE_ENV !== "production"
               ? {
                   details: {
@@ -593,7 +418,7 @@ export async function POST(
           { status: 422 },
         );
       }
-      const extracted = extractStructuredFromOcr(ocrTextToUse!, originalName);
+      const extracted = extractStructuredFromOcr(ocrTextToUse, originalName);
 
       if (!rulesExtractHasData(extracted)) {
         return NextResponse.json(
@@ -608,7 +433,7 @@ export async function POST(
         );
       }
 
-      const data = await persistRulesExtract(extracted, ocrTextToUse!, id, workspaceOwnerId);
+      const data = await persistRulesExtract(extracted, ocrTextToUse, id, workspaceOwnerId);
       return NextResponse.json({ success: true, data });
     }
 
@@ -617,24 +442,9 @@ export async function POST(
     let visionDataUrl: string | null = null;
 
     if (fileUrl) {
-      const lowerName = String(originalName || "").toLowerCase();
-      const lowerMime = String(mimeType || "").toLowerCase();
-      const isPdf =
-        lowerMime.includes("pdf") ||
-        lowerName.endsWith(".pdf") ||
-        /\.pdf(\?|$)/i.test(fileUrl);
-      const isImage =
-        lowerMime.startsWith("image/") ||
-        /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(fileUrl);
-
-      if (isImage) {
-        visionDataUrl = await imageUrlToDataUrl(fileUrl);
-      } else if (isPdf) {
-        console.log("Conversion PDF→JPG via Cloudinary API…");
-        visionDataUrl = await pdfCloudinaryToJpegDataUrl(fileUrl);
-        if (!visionDataUrl) {
-          console.warn("Conversion PDF échouée — repli sur OCR si disponible");
-        }
+      visionDataUrl = await resolveDocumentImageDataUrl(fileUrl, originalName, mimeType);
+      if (!visionDataUrl) {
+        console.warn("Conversion document→image échouée — repli sur OCR si disponible");
       }
     }
 
@@ -812,7 +622,7 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
         "tauxTVA"       = COALESCE($4, "tauxTVA"),
         "montantTVA"    = COALESCE($5, "montantTVA"),
         "montantTTC"    = COALESCE($6, "montantTTC"),
-        amount          = COALESCE($6, amount),
+        amount          = CASE WHEN $6 IS NOT NULL THEN $6 ELSE amount END,
         "ocrText"       = CASE
                             WHEN $9::text IS NULL OR $9::text = '' THEN "ocrText"
                             WHEN "ocrText" IS NULL OR "ocrText" = '' THEN $9::text
