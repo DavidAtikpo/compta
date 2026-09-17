@@ -194,6 +194,13 @@ export async function POST(request: NextRequest) {
   }
 }
 
+function parsePatchAmount(value: unknown): number | null | "invalid" {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(String(value).replace(/\s/g, "").replace(",", "."));
+  if (!Number.isFinite(n) || n < 0) return "invalid";
+  return n;
+}
+
 export async function PATCH(request: NextRequest) {
   const userId = getAuthenticatedUserId(request);
   if (!userId) {
@@ -204,7 +211,7 @@ export async function PATCH(request: NextRequest) {
     const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
       await resolveInvoiceWorkspace(userId);
     const body = await request.json();
-    const { id, status, amount, category, isPaid, paidDate, currency } = body;
+    const { id, status, amount, category, isPaid, paidDate, currency, montantHT, montantTTC } = body;
 
     if (!id) {
       return NextResponse.json({ error: "id requis" }, { status: 400 });
@@ -216,33 +223,64 @@ export async function PATCH(request: NextRequest) {
         ? currency.toUpperCase()
         : null;
 
+    const sets: string[] = ['"updatedAt" = NOW()'];
+    const patchParams: (string | number | Date | boolean | null)[] = [];
+    let idx = 1;
+
+    const pushCoalesce = (column: string, value: unknown) => {
+      if (value === undefined) return;
+      sets.push(`${column} = COALESCE($${idx++}, ${column})`);
+      patchParams.push(value as string | number | Date | boolean | null);
+    };
+
+    const pushDirect = (column: string, value: unknown) => {
+      sets.push(`${column} = $${idx++}`);
+      patchParams.push(value as string | number | Date | boolean | null);
+    };
+
+    pushCoalesce("status", status ?? null);
+    pushCoalesce("category", category ?? null);
+    pushCoalesce(`"isPaid"`, typeof isPaid === "boolean" ? isPaid : null);
+    pushCoalesce(`"paidDate"`, paidDate ? new Date(String(paidDate)) : paidDate === null ? null : undefined);
+    pushCoalesce("currency", normalizedCurrency);
+
+    if ("montantHT" in body) {
+      const ht = parsePatchAmount(montantHT);
+      if (ht === "invalid") {
+        return NextResponse.json({ error: "Montant HT invalide." }, { status: 400 });
+      }
+      pushDirect('"montantHT"', ht);
+    }
+
+    if ("montantTTC" in body) {
+      const ttc = parsePatchAmount(montantTTC);
+      if (ttc === "invalid") {
+        return NextResponse.json({ error: "Montant TTC invalide." }, { status: 400 });
+      }
+      pushDirect('"montantTTC"', ttc);
+      pushDirect("amount", ttc);
+    } else if (amount !== undefined) {
+      const amt = parsePatchAmount(amount);
+      if (amt === "invalid") {
+        return NextResponse.json({ error: "Montant invalide." }, { status: 400 });
+      }
+      pushCoalesce("amount", amt);
+    }
+
+    const idParam = idx++;
+    const userParam = idx++;
+    patchParams.push(id, workspaceOwnerId);
+
     const agentClause = restrictAgentToOwnSubmissions
-      ? ` AND "submittedByUserId" = $9`
+      ? ` AND "submittedByUserId" = $${idx++}`
       : "";
-    const patchParams: (string | number | Date | boolean | null)[] = [
-      id,
-      status ?? null,
-      amount ?? null,
-      category ?? null,
-      typeof isPaid === "boolean" ? isPaid : null,
-      paidDate ? new Date(String(paidDate)) : null,
-      workspaceOwnerId,
-      normalizedCurrency,
-    ];
     if (restrictAgentToOwnSubmissions) {
       patchParams.push(actorUserId);
     }
 
     const result = await pool.query(
-      `UPDATE invoices SET
-        status = COALESCE($2, status),
-        amount = COALESCE($3, amount),
-        category = COALESCE($4, category),
-        "isPaid" = COALESCE($5::boolean, "isPaid"),
-        "paidDate" = COALESCE($6::timestamptz, "paidDate"),
-        currency = COALESCE($8, currency),
-        "updatedAt" = NOW()
-       WHERE id = $1 AND "userId" = $7 AND ("deletedAt" IS NULL)${agentClause}
+      `UPDATE invoices SET ${sets.join(", ")}
+       WHERE id = $${idParam} AND "userId" = $${userParam} AND ("deletedAt" IS NULL)${agentClause}
        RETURNING *`,
       patchParams,
     );

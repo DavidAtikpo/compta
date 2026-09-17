@@ -512,6 +512,7 @@ export default function InvoicesPage() {
   // IA: uniquement pour l'analyse / recherche
   const [aiProvider, setAiProvider] = useState<"openai" | "claude" | "perplexity">("claude");
   const [savingPaymentId, setSavingPaymentId] = useState<string | null>(null);
+  const [savingMontantKey, setSavingMontantKey] = useState<string | null>(null);
   const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
   const [fiscalAiAnalyzingId, setFiscalAiAnalyzingId] = useState<string | null>(null);
   const [fiscalAiModal, setFiscalAiModal] = useState<{ title: string; body: string } | null>(null);
@@ -1386,6 +1387,63 @@ export default function InvoicesPage() {
     }
   };
 
+  const parseManualAmountInput = (raw: string): number | null | "invalid" => {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed.replace(/\s/g, "").replace(",", "."));
+    if (!Number.isFinite(n) || n < 0) return "invalid";
+    return n;
+  };
+
+  const handleSaveMontant = async (
+    inv: Invoice,
+    field: "ht" | "ttc",
+    raw: string,
+  ) => {
+    const parsed = parseManualAmountInput(raw);
+    if (parsed === "invalid") {
+      setMessage("Montant invalide.");
+      return;
+    }
+
+    const current =
+      field === "ttc"
+        ? inv.montantTTC ?? inv.amount ?? null
+        : inv.montantHT ?? null;
+    if (parsed === current) return;
+
+    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+    if (!t) return;
+
+    const saveKey = `${inv.id}:${field}`;
+    setSavingMontantKey(saveKey);
+    try {
+      const payload: Record<string, unknown> = { id: inv.id };
+      if (field === "ttc") payload.montantTTC = parsed;
+      else payload.montantHT = parsed;
+
+      const res = await fetch("/api/invoices", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${t}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setMessage(typeof err.error === "string" ? err.error : "Erreur lors de l'enregistrement du montant.");
+        return;
+      }
+      const updated = (await res.json()) as Partial<Invoice> & { id: string };
+      setInvoices((prev) =>
+        prev.map((it) => (it.id === inv.id ? { ...it, ...updated } : it)),
+      );
+    } finally {
+      setSavingMontantKey(null);
+    }
+  };
+
   const handleSetPayment = async (inv: Invoice, isPaid: boolean, paidDate?: string) => {
     const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
     if (!t) return;
@@ -2110,13 +2168,11 @@ export default function InvoicesPage() {
 
   const pendingExtractionInvoices = useMemo(
     () =>
-      invoices.filter(
-        (inv) =>
-          inv.fileUrl &&
-          !inv.fournisseur &&
-          inv.montantTTC == null &&
-          (inv.amount == null || inv.amount <= 0),
-      ),
+      invoices.filter((inv) => {
+        if (!inv.fileUrl) return false;
+        const ttc = inv.montantTTC ?? inv.amount;
+        return ttc == null || ttc < 10;
+      }),
     [invoices],
   );
   const structuresForRegion = structures.filter((s) => s.region === region);
@@ -2350,7 +2406,7 @@ export default function InvoicesPage() {
         {/* TAB: FACTURES */}
         {/* ============================================================ */}
         {activeTab === "invoices" && (
-          <div className="w-full min-w-0">
+          <div className="w-full min-w-0 max-w-full overflow-hidden">
             {/* Filters bar */}
             <div className="border-b border-slate-200 py-2">
               <div className="flex flex-wrap items-end gap-2">
@@ -2635,7 +2691,7 @@ export default function InvoicesPage() {
             )}
 
             {/* Table */}
-            <div className="overflow-x-auto">
+            <div className="min-w-0 max-w-full overflow-x-auto lg:overflow-x-hidden">
               {loadingList ? (
                 <div className="p-4 space-y-2">
                   {[0, 1, 2, 3].map((i) => <div key={i} className="h-8 rounded bg-slate-100 animate-pulse" />)}
@@ -2662,10 +2718,10 @@ export default function InvoicesPage() {
                   </div>
                 </div>
               ) : (
-                <table className="w-full text-[11px]">
+                <table className="w-full max-w-full table-fixed text-[11px]">
                   <thead>
                     <tr className="border-b border-slate-100 bg-slate-50 text-left">
-                      <th className="w-8 px-1 py-2 text-center">
+                      <th className="w-7 px-0.5 py-2 text-center">
                         <input
                           ref={selectAllHeaderRef}
                           type="checkbox"
@@ -2681,23 +2737,23 @@ export default function InvoicesPage() {
                           className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900"
                         />
                       </th>
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">N° Facture</th>
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap" title="Date d'ajout">Ajout</th>
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap" title="Date sur la facture (IA)">Date facture</th>
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Client / Fournisseur</th>
+                      <th className="w-[4.25rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">N° Facture</th>
+                      <th className="w-[4.25rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500" title="Date d'ajout">Ajout</th>
+                      <th className="w-[4.25rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500" title="Date sur la facture (IA)">Date facture</th>
+                      <th className="min-w-0 px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Client / Fournisseur</th>
                       {showAddedByColumn && (
-                        <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">
+                        <th className="w-[5.5rem] min-w-0 px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                           Ajouté par
                         </th>
                       )}
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap">Référence</th>
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Devise</th>
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant HT</th>
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Règlé</th>
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">Montant TTC</th>
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Cabinet</th>
-                      <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-center">Statut</th>
-                      <th className="min-w-[8.5rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap text-right">
+                      <th className="min-w-0 px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Référence</th>
+                      <th className="w-9 px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-center">Devise</th>
+                      <th className="w-[4.25rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-right">Montant HT</th>
+                      <th className="w-[3.75rem] px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-center">Règlé</th>
+                      <th className="w-[4.25rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-right">Montant TTC</th>
+                      <th className="w-[5.5rem] min-w-0 px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-center">Cabinet</th>
+                      <th className="w-[3.75rem] px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-center">Statut</th>
+                      <th className="w-[5.25rem] px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-right">
                         Actions
                       </th>
                     </tr>
@@ -2716,7 +2772,7 @@ export default function InvoicesPage() {
                       const regionLabel = regionDisplayLabel(inv.region);
                       return (
                         <tr key={inv.id} className="hover:bg-slate-50 transition-colors">
-                          <td className="w-8 px-1 py-1.5 text-center align-middle">
+                          <td className="w-7 px-0.5 py-1.5 text-center align-middle">
                             <input
                               type="checkbox"
                               checked={selectedIds.includes(inv.id)}
@@ -2732,17 +2788,17 @@ export default function InvoicesPage() {
                               className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900"
                             />
                           </td>
-                          <td className="px-2 py-1.5 whitespace-nowrap">
-                            <div className="flex flex-col gap-0">
-                              <span className="font-mono text-[11px] font-semibold text-slate-800">
+                          <td className="min-w-0 px-1 py-1.5">
+                            <div className="flex min-w-0 flex-col gap-0">
+                              <span className="truncate font-mono text-[11px] font-semibold text-slate-800">
                                 {inv.numeroFacture ?? <span className="text-slate-300 font-normal italic">—</span>}
                               </span>
-                              <span className="text-[10px] text-slate-400">{regionLabel}</span>
+                              <span className="truncate text-[10px] text-slate-400">{regionLabel}</span>
                             </div>
                           </td>
-                          <td className="px-2 py-1.5 whitespace-nowrap text-[11px] text-slate-600">{dateAjout}</td>
-                          <td className="px-2 py-1.5 whitespace-nowrap text-[11px] text-slate-600">{dateFacture}</td>
-                          <td className="px-2 py-1.5 max-w-[140px]">
+                          <td className="px-1 py-1.5 text-[11px] text-slate-600">{dateAjout}</td>
+                          <td className="px-1 py-1.5 text-[11px] text-slate-600">{dateFacture}</td>
+                          <td className="min-w-0 px-1 py-1.5">
                             <p className="truncate text-[11px] font-medium text-slate-900">
                               {inv.fournisseur ?? <span className="text-slate-400 font-normal italic">{inv.originalName}</span>}
                             </p>
@@ -2752,7 +2808,7 @@ export default function InvoicesPage() {
                             {inv.category && <p className="truncate text-[10px] text-slate-400">{inv.category}</p>}
                           </td>
                           {showAddedByColumn && (
-                            <td className="px-2 py-1.5 max-w-[100px]">
+                            <td className="min-w-0 px-1 py-1.5">
                               <p className="truncate text-[10px] font-medium text-slate-700">
                                 {inv.submittedByName || inv.submittedByEmail || "—"}
                               </p>
@@ -2761,7 +2817,7 @@ export default function InvoicesPage() {
                               )}
                             </td>
                           )}
-                          <td className="px-2 py-1.5 max-w-[120px]">
+                          <td className="min-w-0 px-1 py-1.5">
                             <div className="flex min-w-0 items-center gap-1.5">
                               <ExtractionStatusIndicator
                                 status={
@@ -2772,8 +2828,8 @@ export default function InvoicesPage() {
                               <p className="truncate text-[10px] text-slate-500">{inv.originalName}</p>
                             </div>
                           </td>
-                          <td className="px-2 py-1.5 whitespace-nowrap text-center">
-                            <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                          <td className="px-0.5 py-1.5 text-center">
+                            <span className={`inline-flex rounded px-1 py-0.5 text-[10px] font-semibold ${
                               invCurrency === "EUR" ? "bg-blue-50 text-blue-700"
                               : invCurrency === "GBP" ? "bg-violet-50 text-violet-700"
                               : invCurrency === "USD" ? "bg-green-50 text-green-700"
@@ -2784,11 +2840,27 @@ export default function InvoicesPage() {
                               {invCurrency}
                             </span>
                           </td>
-                          <td className="px-2 py-1.5 whitespace-nowrap text-right font-mono text-[11px] text-slate-700">
-                            {montantHT != null ? <span>{montantHT.toFixed(2)} <span className="text-[10px] text-slate-400">{invSymbol}</span></span> : <span className="text-slate-300">—</span>}
+                          <td className="px-1 py-1.5 text-right font-mono text-[11px] text-slate-700">
+                            <div className="flex items-center justify-end gap-0.5">
+                              <input
+                                key={`ht-${inv.id}-${montantHT ?? "empty"}`}
+                                type="text"
+                                inputMode="decimal"
+                                defaultValue={montantHT != null ? montantHT.toFixed(2) : ""}
+                                placeholder="—"
+                                disabled={savingMontantKey === `${inv.id}:ht`}
+                                title="Modifier le montant HT"
+                                onBlur={(e) => void handleSaveMontant(inv, "ht", e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") e.currentTarget.blur();
+                                }}
+                                className="w-full min-w-0 max-w-[4.5rem] rounded border border-transparent bg-transparent px-0.5 py-0 text-right text-[11px] text-slate-700 placeholder:text-slate-300 hover:border-slate-200 focus:border-slate-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-300 disabled:opacity-50"
+                              />
+                              <span className="shrink-0 text-[10px] text-slate-400">{invSymbol}</span>
+                            </div>
                           </td>
-                          <td className="px-2 py-1.5 whitespace-nowrap text-center">
-                            <div className="flex flex-col items-center gap-1">
+                          <td className="px-0.5 py-1.5 text-center">
+                            <div className="flex flex-col items-center gap-0.5">
                               <select
                                 value={isPaidManual ? "yes" : "no"}
                                 onChange={(e) => {
@@ -2817,13 +2889,27 @@ export default function InvoicesPage() {
                               )}
                             </div>
                           </td>
-                          <td className="px-2 py-1.5 whitespace-nowrap text-right">
-                            {montantTTC != null
-                              ? <span className="font-mono font-medium text-slate-900">{montantTTC.toFixed(2)} <span className="text-[10px] text-slate-400">{invSymbol}</span></span>
-                              : <span className="text-slate-300 font-mono">—</span>}
+                          <td className="px-1 py-1.5 text-right">
+                            <div className="flex items-center justify-end gap-0.5">
+                              <input
+                                key={`ttc-${inv.id}-${montantTTC ?? "empty"}`}
+                                type="text"
+                                inputMode="decimal"
+                                defaultValue={montantTTC != null ? montantTTC.toFixed(2) : ""}
+                                placeholder="—"
+                                disabled={savingMontantKey === `${inv.id}:ttc`}
+                                title="Modifier le montant TTC"
+                                onBlur={(e) => void handleSaveMontant(inv, "ttc", e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") e.currentTarget.blur();
+                                }}
+                                className="w-full min-w-0 max-w-[4.5rem] rounded border border-transparent bg-transparent px-0.5 py-0 text-right font-mono text-[11px] font-medium text-slate-900 placeholder:font-normal placeholder:text-slate-300 hover:border-slate-200 focus:border-slate-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-300 disabled:opacity-50"
+                              />
+                              <span className="shrink-0 text-[10px] text-slate-400">{invSymbol}</span>
+                            </div>
                           </td>
-                          <td className="px-2 py-1.5 whitespace-nowrap text-center align-top">
-                            <div className="flex flex-col items-center gap-0.5 min-w-[88px]">
+                          <td className="min-w-0 px-1 py-1.5 text-center align-top">
+                            <div className="flex min-w-0 flex-col items-center gap-0.5">
                               {isSentToCabinet(inv) ? (
                                 <>
                                   <span className="inline-flex rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
@@ -2832,14 +2918,14 @@ export default function InvoicesPage() {
                                   {cabinetEmailKey(inv) ? (
                                     <>
                                       <span
-                                        className="max-w-[120px] truncate text-[11px] font-semibold text-slate-900"
+                                        className="max-w-full truncate text-[11px] font-semibold text-slate-900"
                                         title={cabinetEmailKey(inv)}
                                       >
                                         {cabinetDisplayName(inv, configuredAccountants)}
                                       </span>
                                       {inv.accountant_label && inv.accountant_email && (
                                         <span
-                                          className="max-w-[120px] truncate text-[9px] text-slate-500"
+                                          className="max-w-full truncate text-[9px] text-slate-500"
                                           title={inv.accountant_email}
                                         >
                                           {inv.accountant_email}
@@ -2871,9 +2957,9 @@ export default function InvoicesPage() {
                               )}
                             </div>
                           </td>
-                          <td className="px-2 py-1.5 whitespace-nowrap text-center">
+                          <td className="px-0.5 py-1.5 text-center">
                             <div className="flex flex-col items-center gap-0.5">
-                              <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                              <span className={`inline-flex rounded px-1 py-0.5 text-[10px] font-medium ${
                                 inv.status === "sent" ? "bg-emerald-100 text-emerald-700"
                                 : inv.status === "archived" ? "bg-slate-100 text-slate-600"
                                 : "bg-amber-100 text-amber-700"
@@ -2888,20 +2974,24 @@ export default function InvoicesPage() {
                               )}
                             </div>
                           </td>
-                          <td className="relative px-1 py-1.5 text-right align-top">
+                          <td className="relative min-w-0 px-0.5 py-1.5 text-right align-top">
                             <div
-                              className="relative inline-flex flex-col items-end gap-1"
+                              className="relative inline-flex max-w-full flex-col items-end gap-1"
                               data-invoice-action-menu={inv.id}
                             >
-                              <div className="flex flex-wrap items-center justify-end gap-1">
+                              <div className="flex items-center justify-end gap-0.5">
                                 <button
                                   type="button"
-                                  disabled={fiscalAiAnalyzingId === inv.id}
-                                  onClick={() => void handleFiscalAiAnalyze(inv)}
-                                  className="inline-flex shrink-0 items-center rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-[10px] font-semibold text-blue-900 shadow-sm transition hover:border-blue-300 hover:bg-blue-100 disabled:cursor-wait disabled:opacity-60"
-                                  title="Envoyer cette facture au conseiller fiscal IA (OCR + données extraites)"
+                                  disabled={extractingId === inv.id || !inv.fileUrl}
+                                  onClick={() => void handleExtract(inv.id)}
+                                  className="inline-flex shrink-0 items-center rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-1 text-[10px] font-semibold text-emerald-900 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                  title={
+                                    extractProvider === "rules"
+                                      ? "Extraire les données (OCR + règles)"
+                                      : "Extraire les données (IA vision)"
+                                  }
                                 >
-                                  {fiscalAiAnalyzingId === inv.id ? "Analyse…" : "Analyse IA"}
+                                  {extractingId === inv.id ? "Extraction…" : "Extraction"}
                                 </button>
                                 <button
                                   type="button"
@@ -2920,7 +3010,7 @@ export default function InvoicesPage() {
                               </div>
                               {extractResults[inv.id]?.msg && (
                                 <span
-                                  className={`max-w-[120px] truncate text-left text-[9px] leading-tight ${
+                                  className={`max-w-full truncate text-left text-[9px] leading-tight ${
                                     extractResults[inv.id].ok ? "text-slate-600" : "text-slate-700"
                                   }`}
                                   title={extractResults[inv.id].msg}
@@ -3729,18 +3819,14 @@ export default function InvoicesPage() {
               <button
                 type="button"
                 role="menuitem"
-                disabled={extractingId === actionMenuInvoice.id}
+                disabled={fiscalAiAnalyzingId === actionMenuInvoice.id}
                 onClick={() => {
                   setOpenActionMenuId(null);
-                  void handleExtract(actionMenuInvoice.id);
+                  void handleFiscalAiAnalyze(actionMenuInvoice);
                 }}
                 className="w-full px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:opacity-40"
               >
-                {extractingId === actionMenuInvoice.id
-                  ? "Extraction…"
-                  : extractProvider === "rules"
-                    ? "Extraction (OCR)"
-                    : "Extraction (IA vision)"}
+                {fiscalAiAnalyzingId === actionMenuInvoice.id ? "Analyse IA…" : "Analyse IA fiscale"}
               </button>
             </li>
             <li>

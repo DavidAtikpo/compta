@@ -2,12 +2,16 @@ import { NextResponse } from "next/server";
 import { pool } from "../../../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
-import { detectCurrencyFromOcrText, isValidInvoiceCurrency } from "@/lib/invoice-currency";
+import {
+  detectCurrencyFromOcrText,
+  getExplicitCurrencyFromText,
+  isValidInvoiceCurrency,
+} from "@/lib/invoice-currency";
 import { resolveClassificationFromExtract } from "@/lib/classification";
 import { ocrFromImageDataUrl } from "@/lib/server-ocr";
 import { isOcrTextQualityGood, isOcrTextUsable } from "@/lib/ocr-quality";
 import { resolveDocumentImageDataUrl } from "@/lib/invoice-document-vision";
-import { parseFournisseurFromOcr, parseMontantTTCFromOcr } from "@/lib/invoice-ocr-parse";
+import { parseFournisseurFromOcr, resolveMontantTTCFromOcr } from "@/lib/invoice-ocr-parse";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -261,8 +265,8 @@ function extractStructuredFromOcr(ocrText: string, originalName: string): Record
   const CUR_AFTER = String.raw`(?:\s*(?:€|eur|£|gbp|\$|usd|¥|元|cny|₵|ghs|fcfa|f\.cfa|cfa|xaf|xof))?`;
   const montantTTCStr =
     pickFirstMatch(normalized, [
-      new RegExp(String.raw`(?:total\s+ttc|montant\s+ttc|ttc)\s*[:\-]?\s*([0-9][0-9\s.,]{0,18})${CUR_AFTER}`, "i"),
-      new RegExp(String.raw`(?:net\s+[àa]\s+payer|total\s+[àa]\s+payer|balance\s+due|amount\s+due)\s*[:\-]?\s*([0-9][0-9\s.,]{0,18})${CUR_AFTER}`, "i"),
+      new RegExp(String.raw`(?:total\s+ttc|montant\s+ttc|ttc)\s*[:\-]?\s*([0-9][0-9\s.,]{1,18})${CUR_AFTER}`, "i"),
+      new RegExp(String.raw`(?:net\s+[àa]\s+payer|total\s+[àa]\s+payer|balance\s+due|amount\s+due)\s*[:\-]?\s*([0-9][0-9\s.,]{1,18})${CUR_AFTER}`, "i"),
       new RegExp(String.raw`(?:^|\n)\s*montant\s*[:\-]?\s*([0-9][0-9\s.,]{2,18})${CUR_AFTER}`, "im"),
       new RegExp(String.raw`(?:d[ée]p[oô]t|transaction|cr[ée]dit)\b[^\n]{0,80}?\b([0-9][0-9\s.,]{2,18})${CUR_AFTER}`, "i"),
     ]);
@@ -275,8 +279,11 @@ function extractStructuredFromOcr(ocrText: string, originalName: string): Record
       new RegExp(String.raw`(?:montant\s+tva|total\s+tva|tva)\s*[:\-]?\s*([0-9][0-9\s.,]{0,18})${CUR_AFTER}`, "i"),
     ]);
 
-  let montantTTC = montantTTCStr ? normalizeNumber(montantTTCStr) : null;
-  if (montantTTC == null) montantTTC = parseMontantTTCFromOcr(raw);
+  const currency = detectCurrencyFromOcrText(raw);
+  const montantTTC = resolveMontantTTCFromOcr(raw, montantTTCStr, {
+    labeledContext: normalized,
+    currencyHint: currency !== "EUR" ? currency : getExplicitCurrencyFromText(raw),
+  });
   const montantHT = montantHTStr ? normalizeNumber(montantHTStr) : null;
   const montantTVA = montantTVAStr ? normalizeNumber(montantTVAStr) : null;
 
@@ -307,8 +314,6 @@ function extractStructuredFromOcr(ocrText: string, originalName: string): Record
     ]) || null;
 
   const compteComptable = pickAccountingCode(flat);
-
-  const currency = detectCurrencyFromOcrText(raw);
 
   return {
     fournisseur,
@@ -434,7 +439,11 @@ export async function POST(
       }
 
       const data = await persistRulesExtract(extracted, ocrTextToUse, id, workspaceOwnerId);
-      return NextResponse.json({ success: true, data });
+      const warning =
+        extracted.montantTTC == null
+          ? "Fournisseur ou date détecté(s), mais montant introuvable dans le document. Essayez « Avec IA (Claude) » ou une capture plus nette."
+          : undefined;
+      return NextResponse.json({ success: true, data, ...(warning ? { warning } : {}) });
     }
 
     // ── Extraction avec IA (vision + LLM) ──
