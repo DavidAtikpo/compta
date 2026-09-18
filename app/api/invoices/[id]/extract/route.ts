@@ -16,6 +16,7 @@ import {
   resolveMontantHTFromOcr,
   resolveMontantTTCFromOcr,
 } from "@/lib/invoice-ocr-parse";
+import { appendExtractionOkMarker } from "@/lib/invoice-extraction-marker";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -152,7 +153,7 @@ async function persistRulesExtract(
       (extracted.currency as string | null) || null,
       classification.category,
       classification.accountCode,
-      ocrTextToUse,
+      appendExtractionOkMarker(ocrTextToUse),
     ],
   );
   return { ...extracted, ...classification };
@@ -618,7 +619,9 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
     const aiPaidMarkerParts: string[] = [];
     if (paidAmountFromAi != null) aiPaidMarkerParts.push(`[AI_PAID_AMOUNT]=${paidAmountFromAi}`);
     if (paidFlagFromAi != null) aiPaidMarkerParts.push(`[AI_PAID_FLAG]=${paidFlagFromAi ? "true" : "false"}`);
-    const aiPaidMarkers = aiPaidMarkerParts.join("\n");
+    const aiPaidMarkers = appendExtractionOkMarker(
+      aiPaidMarkerParts.length > 0 ? aiPaidMarkerParts.join("\n") : null,
+    );
 
     const extractedCurrency =
       typeof extracted.currency === "string" && isValidInvoiceCurrency(String(extracted.currency))
@@ -648,12 +651,12 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
         "updatedAt"     = NOW()
       WHERE id = $7 AND "userId" = $10 AND ("deletedAt" IS NULL)`,
       [
-        extracted.fournisseur || null,
-        extracted.numeroFacture || null,
-        extracted.montantHT    || null,
-        extracted.tauxTVA      || null,
-        extracted.montantTVA   || null,
-        extracted.montantTTC   || null,
+        (extracted.fournisseur as string | null) || null,
+        (extracted.numeroFacture as string | null) || null,
+        (extracted.montantHT as number | null) ?? null,
+        (extracted.tauxTVA as number | null) ?? null,
+        (extracted.montantTVA as number | null) ?? null,
+        (extracted.montantTTC as number | null) ?? null,
         id,
         invoiceDateVal,
         aiPaidMarkers || null,

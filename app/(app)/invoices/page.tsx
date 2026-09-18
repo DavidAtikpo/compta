@@ -13,6 +13,10 @@ import {
   regionsMatch,
 } from "@/lib/country-regions";
 import { MAX_PDF_INVOICES } from "../../../lib/pdf-export";
+import {
+  appendExtractionOkMarker,
+  isInvoiceExtractionDone,
+} from "@/lib/invoice-extraction-marker";
 
 /** Réglages IMAP Gmail recommandés (identiques pour tous les comptes Gmail). */
 const IMAP_DEFAULT_HOST = "imap.gmail.com";
@@ -741,8 +745,9 @@ export default function InvoicesPage() {
     dateTo?: string,
     invoiceTypeFilter?: string,
     currencyFilter?: string,
+    options?: { silent?: boolean },
   ) => {
-    setLoadingList(true);
+    if (!options?.silent) setLoadingList(true);
     try {
       let url = "/api/invoices?limit=200";
       if (reg) url += `&region=${encodeURIComponent(reg)}`;
@@ -783,11 +788,11 @@ export default function InvoicesPage() {
     } catch (err) {
       console.error("Erreur chargement factures:", err);
     } finally {
-      setLoadingList(false);
+      if (!options?.silent) setLoadingList(false);
     }
   };
 
-  const reloadInvoices = () =>
+  const reloadInvoices = (options?: { silent?: boolean }) =>
     loadInvoices(
       filterRegion || undefined,
       filterStatus || undefined,
@@ -796,7 +801,44 @@ export default function InvoicesPage() {
       filterDateTo || undefined,
       filterInvoiceType || undefined,
       filterCurrency || undefined,
+      { silent: options?.silent ?? true },
     );
+
+  const patchInvoiceFromExtract = (id: string, data: Record<string, unknown>) => {
+    setInvoices((prev) =>
+      prev.map((inv) => {
+        if (inv.id !== id) return inv;
+        const next: Invoice = {
+          ...inv,
+          ocrText: appendExtractionOkMarker(inv.ocrText),
+        };
+        if (typeof data.fournisseur === "string" && data.fournisseur) {
+          next.fournisseur = data.fournisseur;
+        }
+        if (typeof data.numeroFacture === "string" && data.numeroFacture) {
+          next.numeroFacture = data.numeroFacture;
+        }
+        if (typeof data.montantHT === "number") next.montantHT = data.montantHT;
+        if (typeof data.montantTVA === "number") next.montantTVA = data.montantTVA;
+        if (typeof data.tauxTVA === "number") next.tauxTVA = data.tauxTVA;
+        if (typeof data.montantTTC === "number") {
+          next.montantTTC = data.montantTTC;
+          next.amount = data.montantTTC;
+        }
+        if (typeof data.currency === "string" && data.currency) {
+          next.currency = data.currency.toUpperCase();
+        }
+        if (typeof data.dateFacture === "string" && data.dateFacture) {
+          const d = new Date(data.dateFacture);
+          if (!Number.isNaN(d.getTime())) next.invoiceDate = d.toISOString();
+        }
+        if (typeof data.category === "string" && data.category) {
+          next.category = data.category;
+        }
+        return next;
+      }),
+    );
+  };
 
   const applyFilters = (
     overrides: Partial<{
@@ -1017,6 +1059,15 @@ export default function InvoicesPage() {
           const json = await res.json().catch(() => ({}));
           if (res.ok && json.success) {
             ok++;
+            if (json.data && typeof json.data === "object") {
+              patchInvoiceFromExtract(id, json.data as Record<string, unknown>);
+            } else {
+              setInvoices((prev) =>
+                prev.map((inv) =>
+                  inv.id === id ? { ...inv, ocrText: appendExtractionOkMarker(inv.ocrText) } : inv,
+                ),
+              );
+            }
             setExtractionItemStatus((prev) => ({ ...prev, [id]: "done" }));
           } else {
             fail++;
@@ -1028,7 +1079,6 @@ export default function InvoicesPage() {
         }
         setExtractingId(null);
       }
-      await reloadInvoices();
       if (ok > 0) {
         showSendSuccessToast(`Extraction terminée : ${ok}/${items.length} facture(s)`);
       }
@@ -1367,13 +1417,15 @@ export default function InvoicesPage() {
         const parts: string[] = [];
         const sym = currencySymbol(d.currency ?? null);
         if (d.fournisseur)   parts.push(d.fournisseur);
-        if (d.montantTTC)    parts.push(`TTC: ${Number(d.montantTTC).toFixed(2)} ${sym}`);
-        if (d.montantHT)     parts.push(`HT: ${Number(d.montantHT).toFixed(2)} ${sym}`);
+        if (typeof d.montantTTC === "number")
+          parts.push(`TTC: ${Number(d.montantTTC).toFixed(2)} ${sym}`);
+        if (typeof d.montantHT === "number")
+          parts.push(`HT: ${Number(d.montantHT).toFixed(2)} ${sym}`);
         if (d.numeroFacture) parts.push(`N°${d.numeroFacture}`);
         const msg = parts.length > 0 ? `✓ ${parts.join(" · ")}` : "✓ Extrait (aucune donnée trouvée)";
         const fullMsg = json.warning ? `${msg} — ${json.warning}` : msg;
         setExtractResults((prev) => ({ ...prev, [id]: { ok: true, msg: fullMsg } }));
-        await reloadInvoices();
+        patchInvoiceFromExtract(id, d as Record<string, unknown>);
       } else {
         setExtractResults((prev) => ({ ...prev, [id]: { ok: false, msg: `✗ ${json.error || `Erreur ${res.status}`}` } }));
       }
@@ -2193,8 +2245,7 @@ export default function InvoicesPage() {
     () =>
       invoices.filter((inv) => {
         if (!inv.fileUrl) return false;
-        const ttc = inv.montantTTC ?? inv.amount;
-        return ttc == null || ttc < 10;
+        return !isInvoiceExtractionDone(inv);
       }),
     [invoices],
   );
