@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { InvoicePhotoCropModal } from "@/components/InvoicePhotoCropModal";
@@ -102,6 +102,53 @@ function currencySymbol(code: string | null | undefined): string {
   return found?.symbol ?? "€";
 }
 
+function invoiceEffectiveDate(inv: Invoice): Date | null {
+  const raw = inv.invoiceDate ?? inv.createdAt;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function invoiceMonthKey(inv: Invoice): string {
+  const d = invoiceEffectiveDate(inv);
+  if (!d) return "0000-00";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatInvoiceMonthLabel(monthKey: string): string {
+  if (monthKey === "0000-00") return "Date inconnue";
+  const [y, m] = monthKey.split("-");
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  const label = d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function SelectManyCheckbox({
+  ids,
+  selectedIds,
+  onToggle,
+  ariaLabel,
+}: {
+  ids: string[];
+  selectedIds: string[];
+  onToggle: () => void;
+  ariaLabel: string;
+}) {
+  const allSelected = ids.length > 0 && ids.every((id) => selectedIds.includes(id));
+  const someSelected = ids.some((id) => selectedIds.includes(id));
+  return (
+    <input
+      type="checkbox"
+      checked={allSelected}
+      ref={(el) => {
+        if (el) el.indeterminate = someSelected && !allSelected;
+      }}
+      onChange={onToggle}
+      aria-label={ariaLabel}
+      className="h-3.5 w-3.5 rounded border-slate-300 text-slate-900"
+    />
+  );
+}
+
 const categoryOptions = [
   "Fournitures bureau",
   "Déplacement / Transport",
@@ -145,6 +192,9 @@ interface Invoice {
   currency: string | null;
   accountantReviewStatus?: string | null;
   accountantReviewNote?: string | null;
+  userConfirmedAt?: string | null;
+  accountantReceivedAt?: string | null;
+  accountantReceivedByEmail?: string | null;
   submittedByEmail?: string | null;
   submittedByName?: string | null;
 }
@@ -431,6 +481,15 @@ function isSharedToCabinet(inv: Invoice): boolean {
   return !!inv.shareToken;
 }
 
+function isUserConfirmed(inv: Invoice): boolean {
+  return !!inv.userConfirmedAt;
+}
+
+function isAwaitingUserConfirmation(inv: Invoice): boolean {
+  if (!inv.fileUrl || isSentToCabinet(inv)) return false;
+  return isInvoiceExtractionDone(inv) && !isUserConfirmed(inv);
+}
+
 function cabinetEmailKey(inv: Invoice): string {
   return (inv.accountant_email ?? "").trim().toLowerCase().split(",")[0]?.trim() ?? "";
 }
@@ -513,6 +572,9 @@ export default function InvoicesPage() {
   // Action states
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [extractionItemStatus, setExtractionItemStatus] = useState<Record<string, ExtractionItemStatus>>({});
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [confirmAllBusy, setConfirmAllBusy] = useState(false);
+  const [autoSendAfterConfirm, setAutoSendAfterConfirm] = useState(true);
   // Extraction facture : sans IA (OCR+règles) ou avec IA (vision)
   const [extractProvider, setExtractProvider] = useState<InvoiceExtractProvider>("rules");
   // IA: uniquement pour l'analyse / recherche
@@ -583,6 +645,15 @@ export default function InvoicesPage() {
   const cameraInputRef = useRef<HTMLInputElement>(null);
   /** Photo caméra en attente de recadrage (URL object + fichier source) */
   const [photoCrop, setPhotoCrop] = useState<{ src: string; file: File } | null>(null);
+
+  useEffect(() => {
+    const pref = window.localStorage.getItem("compta-auto-send-after-confirm");
+    if (pref === "0") setAutoSendAfterConfirm(false);
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("compta-auto-send-after-confirm", autoSendAfterConfirm ? "1" : "0");
+  }, [autoSendAfterConfirm]);
 
   useEffect(() => {
     const savedToken = window.localStorage.getItem("compta-token");
@@ -954,6 +1025,44 @@ export default function InvoicesPage() {
     }
     return list;
   }, [invoices, filterCabinetStatus, filterCabinetRecipient]);
+
+  const invoicesGroupedByMonth = useMemo(() => {
+    const byMonth = new Map<string, Invoice[]>();
+    for (const inv of displayedInvoices) {
+      const key = invoiceMonthKey(inv);
+      const list = byMonth.get(key) ?? [];
+      list.push(inv);
+      byMonth.set(key, list);
+    }
+    return [...byMonth.entries()]
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([monthKey, items]) => ({
+        monthKey,
+        label: formatInvoiceMonthLabel(monthKey),
+        items: [...items].sort((a, b) => {
+          const ta = invoiceEffectiveDate(a)?.getTime() ?? 0;
+          const tb = invoiceEffectiveDate(b)?.getTime() ?? 0;
+          if (tb !== ta) return tb - ta;
+          return String(b.numeroFacture ?? "").localeCompare(String(a.numeroFacture ?? ""), "fr");
+        }),
+      }));
+  }, [displayedInvoices]);
+
+  const invoiceTableColCount = showAddedByColumn ? 14 : 13;
+
+  const toggleSelectMany = (ids: string[]) => {
+    if (ids.length === 0) return;
+    setSelectedIds((prev) => {
+      const set = new Set(prev);
+      const allSelected = ids.every((id) => set.has(id));
+      if (allSelected) {
+        for (const id of ids) set.delete(id);
+      } else {
+        for (const id of ids) set.add(id);
+      }
+      return [...set];
+    });
+  };
 
   const cabinetStats = useMemo(() => {
     const kindList = invoices.filter((i) => (i.invoiceType ?? "achat") === invoiceKind);
@@ -1443,6 +1552,69 @@ export default function InvoicesPage() {
           return next;
         });
       }, 5000);
+    }
+  };
+
+  const applyConfirmedInvoices = (updated: Invoice[]) => {
+    if (!updated.length) return;
+    const byId = new Map(updated.map((inv) => [inv.id, inv]));
+    setInvoices((prev) => prev.map((inv) => byId.get(inv.id) ?? inv));
+    const links: Record<string, string> = {};
+    updated.forEach((inv) => {
+      if (inv.shareToken) {
+        links[inv.id] = `${window.location.origin}/share/${inv.shareToken}`;
+      }
+    });
+    if (Object.keys(links).length > 0) {
+      setShareLinks((prev) => ({ ...prev, ...links }));
+    }
+  };
+
+  const handleConfirmInvoices = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+    if (!t) return;
+
+    const single = ids.length === 1 ? ids[0]! : null;
+    if (single) setConfirmingId(single);
+    else setConfirmAllBusy(true);
+
+    try {
+      const res = await fetch("/api/invoices/confirm", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${t}`,
+        },
+        body: JSON.stringify({
+          ids,
+          autoSendToCabinet: autoSendAfterConfirm,
+          senderName: userEmail || "Utilisateur Compta IA",
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showSendSuccessToast(json.error || "Erreur lors de la confirmation.");
+        return;
+      }
+
+      if (Array.isArray(json.invoices)) {
+        applyConfirmedInvoices(json.invoices as Invoice[]);
+      }
+
+      const sentCount = Array.isArray(json.sendResults)
+        ? (json.sendResults as Array<{ ok: boolean }>).filter((r) => r.ok).length
+        : 0;
+      const msg =
+        autoSendAfterConfirm && sentCount > 0
+          ? `${json.confirmed} facture(s) confirmée(s) et transmise(s) au cabinet.`
+          : `${json.confirmed} facture(s) confirmée(s).`;
+      showSendSuccessToast(msg);
+    } catch {
+      showSendSuccessToast("Erreur réseau lors de la confirmation.");
+    } finally {
+      setConfirmingId(null);
+      setConfirmAllBusy(false);
     }
   };
 
@@ -2249,6 +2421,11 @@ export default function InvoicesPage() {
       }),
     [invoices],
   );
+
+  const pendingConfirmationInvoices = useMemo(
+    () => invoices.filter((inv) => isAwaitingUserConfirmation(inv)),
+    [invoices],
+  );
   const structuresForRegion = structures.filter((s) => s.region === region);
 
   return (
@@ -2378,6 +2555,35 @@ export default function InvoicesPage() {
               className="rounded bg-amber-900 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
             >
               Extraire tout
+            </button>
+          </div>
+        )}
+
+        {!extractionQueue && pendingConfirmationInvoices.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2.5">
+            <div className="min-w-0 space-y-1">
+              <p className="text-[11px] font-medium text-indigo-950">
+                {pendingConfirmationInvoices.length} facture(s) extraite(s) — vérifiez les montants puis confirmez
+              </p>
+              <label className="flex cursor-pointer items-center gap-2 text-[10px] text-indigo-900">
+                <input
+                  type="checkbox"
+                  checked={autoSendAfterConfirm}
+                  onChange={(e) => setAutoSendAfterConfirm(e.target.checked)}
+                  className="rounded border-indigo-300"
+                />
+                Envoyer automatiquement au cabinet après confirmation
+              </label>
+            </div>
+            <button
+              type="button"
+              disabled={confirmAllBusy || !!confirmingId}
+              onClick={() =>
+                void handleConfirmInvoices(pendingConfirmationInvoices.map((inv) => inv.id))
+              }
+              className="shrink-0 rounded bg-indigo-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-indigo-800 disabled:opacity-50"
+            >
+              {confirmAllBusy ? "Confirmation…" : "Confirmer tout"}
             </button>
           </div>
         )}
@@ -2833,7 +3039,29 @@ export default function InvoicesPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {displayedInvoices.map((inv) => {
+                    {invoicesGroupedByMonth.map(({ monthKey, label, items }) => {
+                      const monthIds = items.map((i) => i.id);
+                      return (
+                      <Fragment key={monthKey}>
+                        <tr className="border-y border-slate-800 bg-slate-700">
+                          <td className="w-7 px-0.5 py-2.5 text-center align-middle">
+                            <SelectManyCheckbox
+                              ids={monthIds}
+                              selectedIds={selectedIds}
+                              onToggle={() => toggleSelectMany(monthIds)}
+                              ariaLabel={`Sélectionner ${label}`}
+                            />
+                          </td>
+                          <td colSpan={invoiceTableColCount - 1} className="px-2 py-2.5">
+                            <div className="flex flex-wrap items-baseline justify-between gap-2">
+                              <span className="text-xs font-bold tracking-wide text-white">{label}</span>
+                              <span className="text-[10px] font-medium text-slate-300">
+                                {items.length} facture{items.length > 1 ? "s" : ""}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                        {items.map((inv) => {
                       const montantTTC = inv.montantTTC ?? inv.amount;
                       const montantHT  = inv.montantHT;
                       const invCurrency = inv.currency ?? "EUR";
@@ -3040,11 +3268,25 @@ export default function InvoicesPage() {
                               }`}>
                                 {inv.status === "sent" ? "Envoyé" : inv.status === "archived" ? "Archivé" : "En attente"}
                               </span>
+                              {isAwaitingUserConfirmation(inv) && (
+                                <span className="text-[9px] font-medium text-indigo-700">À confirmer</span>
+                              )}
+                              {isUserConfirmed(inv) && !isSentToCabinet(inv) && (
+                                <span className="text-[9px] font-medium text-indigo-600">Confirmée</span>
+                              )}
+                              {inv.accountantReceivedAt && (
+                                <span
+                                  className="text-[9px] font-medium text-sky-700"
+                                  title={inv.accountantReceivedByEmail ?? undefined}
+                                >
+                                  Reçue cabinet
+                                </span>
+                              )}
                               {inv.accountantReviewStatus === "validated" && (
-                                <span className="text-[9px] font-medium text-emerald-700" title={inv.accountantReviewNote ?? undefined}>✓ Cabinet</span>
+                                <span className="text-[9px] font-medium text-emerald-700" title={inv.accountantReviewNote ?? undefined}>✓ Validée</span>
                               )}
                               {inv.accountantReviewStatus === "rejected" && (
-                                <span className="text-[9px] font-medium text-rose-700" title={inv.accountantReviewNote ?? undefined}>✗ Cabinet</span>
+                                <span className="text-[9px] font-medium text-rose-700" title={inv.accountantReviewNote ?? undefined}>✗ Rejetée</span>
                               )}
                             </div>
                           </td>
@@ -3053,20 +3295,36 @@ export default function InvoicesPage() {
                               className="relative inline-flex max-w-full flex-col items-end gap-1"
                               data-invoice-action-menu={inv.id}
                             >
-                              <div className="flex items-center justify-end gap-0.5">
-                                <button
-                                  type="button"
-                                  disabled={extractingId === inv.id || !inv.fileUrl}
-                                  onClick={() => void handleExtract(inv.id)}
-                                  className="inline-flex shrink-0 items-center rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-1 text-[10px] font-semibold text-emerald-900 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                  title={
-                                    extractProvider === "rules"
-                                      ? "Extraire les données (OCR + règles)"
-                                      : "Extraire les données (IA vision)"
-                                  }
-                                >
-                                  {extractingId === inv.id ? "Extraction…" : "Extraction"}
-                                </button>
+                              <div className="flex flex-wrap items-center justify-end gap-0.5">
+                                {isAwaitingUserConfirmation(inv) ? (
+                                  <button
+                                    type="button"
+                                    disabled={confirmingId === inv.id || confirmAllBusy}
+                                    onClick={() => void handleConfirmInvoices([inv.id])}
+                                    className="inline-flex shrink-0 items-center rounded-md border border-indigo-200 bg-indigo-50 px-1.5 py-1 text-[10px] font-semibold text-indigo-900 shadow-sm transition hover:border-indigo-300 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                    title={
+                                      autoSendAfterConfirm
+                                        ? "Confirmer et envoyer au cabinet"
+                                        : "Confirmer l'extraction"
+                                    }
+                                  >
+                                    {confirmingId === inv.id ? "Confirmation…" : "Confirmer"}
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={extractingId === inv.id || !inv.fileUrl}
+                                    onClick={() => void handleExtract(inv.id)}
+                                    className="inline-flex shrink-0 items-center rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-1 text-[10px] font-semibold text-emerald-900 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                    title={
+                                      extractProvider === "rules"
+                                        ? "Extraire les données (OCR + règles)"
+                                        : "Extraire les données (IA vision)"
+                                    }
+                                  >
+                                    {extractingId === inv.id ? "Extraction…" : "Extraction"}
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   data-invoice-menu-button={inv.id}
@@ -3095,6 +3353,9 @@ export default function InvoicesPage() {
                             </div>
                           </td>
                         </tr>
+                      );
+                        })}
+                      </Fragment>
                       );
                     })}
                   </tbody>

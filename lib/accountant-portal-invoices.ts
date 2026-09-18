@@ -26,6 +26,9 @@ export type AccountantPortalInvoiceRow = {
   accountantReviewStatus: string | null;
   accountantReviewNote: string | null;
   accountantReviewedAt: string | null;
+  userConfirmedAt: string | null;
+  accountantReceivedAt: string | null;
+  accountantReceivedByEmail: string | null;
   clientEmail: string | null;
   clientName: string | null;
   cabinetLabel: string | null;
@@ -222,6 +225,9 @@ export async function listInvoicesForOwnerPortal(
       i."accountantReviewStatus",
       i."accountantReviewNote",
       i."accountantReviewedAt",
+      i."userConfirmedAt",
+      i."accountantReceivedAt",
+      i."accountantReceivedByEmail",
       u.email AS "clientEmail",
       u.name AS "clientName",
       a.label AS "cabinetLabel",
@@ -374,6 +380,9 @@ export async function listInvoicesForAccountant(
       i."accountantReviewStatus",
       i."accountantReviewNote",
       i."accountantReviewedAt",
+      i."userConfirmedAt",
+      i."accountantReceivedAt",
+      i."accountantReceivedByEmail",
       u.email AS "clientEmail",
       u.name AS "clientName",
       a.label AS "cabinetLabel",

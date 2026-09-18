@@ -1,4 +1,5 @@
 import { PDFDocument, PDFPage, StandardFonts, rgb, type PDFFont, type PDFImage } from "pdf-lib";
+import { invoiceCurrencySymbol, isValidInvoiceCurrency } from "@/lib/invoice-currency";
 
 export const PAGE_W = 595;
 export const PAGE_H = 842;
@@ -34,16 +35,47 @@ export type UserPdfBranding = {
   pdfHeaderLayout: string | null;
 };
 
+/** Helvetica WinAnsi : pas d’espace fine insécable (U+202F) ni de caractères hors Latin-1. */
+function pdfEncodeSafe(s: string): string {
+  return String(s ?? "")
+    .replace(/\u202f/g, " ")
+    .replace(/\u00a0/g, " ")
+    .replace(/\u2026/g, "...")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-");
+}
+
 function safePdfText(s: string, maxLen: number): string {
-  const t = String(s ?? "")
+  const t = pdfEncodeSafe(String(s ?? ""))
     .replace(/\r|\n|\t/g, " ")
     .trim();
-  return t.length > maxLen ? `${t.slice(0, maxLen - 1)}…` : t;
+  return t.length > maxLen ? `${t.slice(0, maxLen - 1)}...` : t;
+}
+
+function drawCenteredText(
+  page: PDFPage,
+  raw: string,
+  y: number,
+  font: PDFFont,
+  size: number,
+  color = rgb(0.1, 0.1, 0.1),
+): void {
+  const maxWidth = PAGE_W - 2 * MARGIN;
+  const text = fitTextToWidth(raw, font, size, maxWidth);
+  const textWidth = font.widthOfTextAtSize(text, size);
+  page.drawText(text, {
+    x: (PAGE_W - textWidth) / 2,
+    y,
+    size,
+    font,
+    color,
+  });
 }
 
 /** Tronque avec « … » seulement si le texte dépasse la largeur disponible (évite les … abusifs à N caractères fixes). */
 function fitTextToWidth(raw: string, font: PDFFont, size: number, maxWidthPt: number): string {
-  const t = String(raw ?? "")
+  const t = pdfEncodeSafe(String(raw ?? ""))
     .replace(/\r|\n|\t/g, " ")
     .trim();
   if (!t) return "—";
@@ -53,7 +85,7 @@ function fitTextToWidth(raw: string, font: PDFFont, size: number, maxWidthPt: nu
   } catch {
     return safePdfText(t, 200);
   }
-  const ell = "…";
+  const ell = "...";
   for (let n = t.length; n >= 1; n--) {
     const s = n === t.length ? t : `${t.slice(0, n - 1)}${ell}`;
     try {
@@ -496,11 +528,70 @@ async function measureAndPrepareHeaderFooter(
   };
 }
 
+export type PdfInvoiceExportMeta = {
+  /** Ex. « The Code » — affiché dans le titre principal. */
+  enterpriseName?: string | null;
+  /** Titre explicite ; sinon dérivé du type achat/vente + entreprise. */
+  title?: string | null;
+};
+
+function invoiceKindLabel(kind: "achat" | "vente"): string {
+  return kind === "vente" ? "Factures de vente" : "Factures d'achat";
+}
+
+function invoiceKindFromRow(inv: Record<string, unknown>): "achat" | "vente" {
+  return String(inv.invoiceType ?? "achat").toLowerCase() === "vente" ? "vente" : "achat";
+}
+
+function invoiceCurrencyCode(inv: Record<string, unknown>): string {
+  const c = String(inv.currency ?? "EUR").toUpperCase();
+  return isValidInvoiceCurrency(c) ? c : "EUR";
+}
+
+function formatPdfAmount(amount: number, currency: string | null | undefined): string {
+  const sym = invoiceCurrencySymbol(currency);
+  if (!Number.isFinite(amount)) return "-";
+  const negative = amount < 0;
+  const abs = Math.abs(amount);
+  const [intRaw, dec = "00"] = abs.toFixed(2).split(".");
+  const intWithSep = intRaw.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  const n = `${negative ? "-" : ""}${intWithSep},${dec}`;
+  return pdfEncodeSafe(`${n} ${sym}`);
+}
+
+/** Titre principal du PDF exporté. */
+export function resolvePdfExportTitle(
+  invoices: Record<string, unknown>[],
+  enterpriseName?: string | null,
+): string {
+  const kinds = new Set(invoices.map((i) => invoiceKindFromRow(i)));
+  const kindLabel =
+    kinds.size === 1
+      ? invoiceKindLabel([...kinds][0]!)
+      : "Factures";
+  const name = String(enterpriseName ?? "").trim();
+  return name ? `${kindLabel} — ${name}` : kindLabel;
+}
+
+function groupInvoicesByKindAndCurrency(invoices: Record<string, unknown>[]) {
+  const byKind = new Map<"achat" | "vente", Map<string, Record<string, unknown>[]>>();
+  for (const inv of invoices) {
+    const kind = invoiceKindFromRow(inv);
+    const currency = invoiceCurrencyCode(inv);
+    if (!byKind.has(kind)) byKind.set(kind, new Map());
+    const curMap = byKind.get(kind)!;
+    const list = curMap.get(currency) ?? [];
+    list.push(inv);
+    curMap.set(currency, list);
+  }
+  return byKind;
+}
+
 export async function pdfBufferFromInvoices(
   invoices: Record<string, unknown>[],
-  subtitleLines: string[],
   filenameBase: string,
   branding: UserPdfBranding,
+  meta: PdfInvoiceExportMeta = {},
 ): Promise<{ buffer: Buffer; filename: string }> {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -509,7 +600,6 @@ export async function pdfBufferFromInvoices(
   const { headerDrawH, footerReserved, drawPageHeader, drawFooterSecondPass } =
     await measureAndPrepareHeaderFooter(pdfDoc, branding, font, fontBold);
 
-  /** Espace sous l’en-tête personnalisé ; sans en-tête, marge supplémentaire sous le haut de page. */
   const startContentY = () =>
     PAGE_H - MARGIN_TOP - headerDrawH - (headerDrawH > 0 ? 10 : 18);
 
@@ -517,45 +607,24 @@ export async function pdfBufferFromInvoices(
   drawPageHeader(page);
   let y = startContentY();
 
-  const title = "Export factures (sélection)";
-  page.drawText(title, {
-    x: MARGIN,
-    y,
-    size: 14,
-    font: fontBold,
-    color: rgb(0.1, 0.1, 0.1),
-  });
-  y -= 22;
-
-  const sub = subtitleLines.filter(Boolean).join(" · ");
-  const subMaxW = PAGE_W - 2 * MARGIN - 4;
-  page.drawText(fitTextToWidth(sub, font, FONT_SIZE, subMaxW), {
-    x: MARGIN,
-    y,
-    size: FONT_SIZE,
-    font,
-    color: rgb(0.35, 0.35, 0.35),
-  });
-  y -= LINE_H * 2;
+  const title =
+    meta.title?.trim() ||
+    resolvePdfExportTitle(invoices, meta.enterpriseName);
+  drawCenteredText(page, title, y, fontBold, 14);
+  y -= 26;
 
   const col = { d: MARGIN, n: 86, f: 124, r: 228, c: 348, t: 468 };
   const colPad = 4;
   const colW = (left: number, right: number) => Math.max(16, right - left - colPad);
-  const headerY = y;
-  page.drawText("Date", { x: col.d, y: headerY, size: FONT_SIZE, font: fontBold });
-  page.drawText("N°", { x: col.n, y: headerY, size: FONT_SIZE, font: fontBold });
-  page.drawText("Fournisseur", { x: col.f, y: headerY, size: FONT_SIZE, font: fontBold });
-  page.drawText("Référence", { x: col.r, y: headerY, size: FONT_SIZE, font: fontBold });
-  page.drawText("Catégorie", { x: col.c, y: headerY, size: FONT_SIZE, font: fontBold });
-  page.drawText("TTC", { x: col.t, y: headerY, size: FONT_SIZE, font: fontBold });
-  y -= LINE_H * 1.5;
-  page.drawLine({
-    start: { x: MARGIN, y: y + 4 },
-    end: { x: PAGE_W - MARGIN, y: y + 4 },
-    thickness: 0.5,
-    color: rgb(0.75, 0.75, 0.75),
-  });
-  y -= LINE_H;
+
+  const wD = colW(col.d, col.n);
+  const wN = colW(col.n, col.f);
+  const wF = colW(col.f, col.r);
+  const wR = colW(col.r, col.c);
+  const wC = colW(col.c, col.t);
+  const wT = Math.max(28, PAGE_W - MARGIN - col.t - colPad);
+
+  let pendingTableHeader = false;
 
   const redrawTableHeader = (p: PDFPage, yy: number) => {
     let h = yy;
@@ -573,70 +642,108 @@ export async function pdfBufferFromInvoices(
       color: rgb(0.75, 0.75, 0.75),
     });
     h -= LINE_H;
+    pendingTableHeader = false;
     return h;
   };
 
-  const ensureSpace = () => {
-    if (y < MARGIN + footerReserved + 36) {
+  const ensureSpace = (minRows = 3) => {
+    if (y < MARGIN + footerReserved + LINE_H * minRows) {
       page = pdfDoc.addPage([PAGE_W, PAGE_H]);
       drawPageHeader(page);
       y = startContentY();
-      y = redrawTableHeader(page, y);
+      if (pendingTableHeader) {
+        y = redrawTableHeader(page, y);
+      }
     }
   };
 
-  let sumTtc = 0;
+  const drawSectionHeading = (text: string, size = 11) => {
+    ensureSpace(4);
+    y -= LINE_H * 0.5;
+    page.drawText(fitTextToWidth(text, fontBold, size, PAGE_W - 2 * MARGIN), {
+      x: MARGIN,
+      y,
+      size,
+      font: fontBold,
+      color: rgb(0.15, 0.15, 0.15),
+    });
+    y -= LINE_H * 1.4;
+  };
 
-  const wD = colW(col.d, col.n);
-  const wN = colW(col.n, col.f);
-  const wF = colW(col.f, col.r);
-  const wR = colW(col.r, col.c);
-  const wC = colW(col.c, col.t);
-  const wT = Math.max(28, PAGE_W - MARGIN - col.t - colPad);
+  const drawCurrencyTable = (currency: string, rows: Record<string, unknown>[]) => {
+    const sym = invoiceCurrencySymbol(currency);
+    drawSectionHeading(`Devise ${currency}${sym !== currency ? ` (${sym})` : ""}`);
 
-  for (const inv of invoices) {
-    ensureSpace();
-    const invoiceDate = (inv.invoiceDate ?? inv.createdAt) as string | Date | null;
-    const d = formatDisplayDate(invoiceDate);
-    const num = String(inv.numeroFacture ?? "—");
-    const four = String(inv.fournisseur ?? inv.originalName ?? "—");
-    const refName = String(inv.originalName ?? "—");
-    const refEmail = String(inv.accountant_email ?? "").trim();
-    const refRaw = refEmail ? `${refName} · ${refEmail}` : refName;
-    const cat = String(inv.category ?? "—");
-    const montantTTC = (inv.montantTTC ?? inv.amount ?? 0) as number;
-    const ttc =
-      typeof montantTTC === "number" && !Number.isNaN(montantTTC)
-        ? `${montantTTC.toFixed(2)} €`
-        : "—";
-    if (typeof montantTTC === "number" && !Number.isNaN(montantTTC)) {
-      sumTtc += montantTTC;
+    y = redrawTableHeader(page, y);
+    pendingTableHeader = true;
+
+    let sumTtc = 0;
+
+    for (const inv of rows) {
+      ensureSpace(2);
+      const invoiceDate = (inv.invoiceDate ?? inv.createdAt) as string | Date | null;
+      const d = formatDisplayDate(invoiceDate);
+      const num = String(inv.numeroFacture ?? "—");
+      const four = String(inv.fournisseur ?? inv.originalName ?? "—");
+      const refName = String(inv.originalName ?? "—");
+      const cat = String(inv.category ?? "—");
+      const montantTTC = (inv.montantTTC ?? inv.amount) as number | null;
+      const ttc =
+        typeof montantTTC === "number" && !Number.isNaN(montantTTC)
+          ? formatPdfAmount(montantTTC, currency)
+          : "—";
+      if (typeof montantTTC === "number" && !Number.isNaN(montantTTC)) {
+        sumTtc += montantTTC;
+      }
+
+      page.drawText(fitTextToWidth(d, font, FONT_SIZE, wD), { x: col.d, y, size: FONT_SIZE, font });
+      page.drawText(fitTextToWidth(num, font, FONT_SIZE, wN), { x: col.n, y, size: FONT_SIZE, font });
+      page.drawText(fitTextToWidth(four, font, FONT_SIZE, wF), { x: col.f, y, size: FONT_SIZE, font });
+      page.drawText(fitTextToWidth(refName, font, FONT_SIZE, wR), { x: col.r, y, size: FONT_SIZE, font });
+      page.drawText(fitTextToWidth(cat, font, FONT_SIZE, wC), { x: col.c, y, size: FONT_SIZE, font });
+      page.drawText(fitTextToWidth(ttc, font, FONT_SIZE, wT), { x: col.t, y, size: FONT_SIZE, font });
+      y -= LINE_H;
     }
 
-    page.drawText(fitTextToWidth(d, font, FONT_SIZE, wD), { x: col.d, y, size: FONT_SIZE, font });
-    page.drawText(fitTextToWidth(num, font, FONT_SIZE, wN), { x: col.n, y, size: FONT_SIZE, font });
-    page.drawText(fitTextToWidth(four, font, FONT_SIZE, wF), { x: col.f, y, size: FONT_SIZE, font });
-    page.drawText(fitTextToWidth(refRaw, font, FONT_SIZE, wR), { x: col.r, y, size: FONT_SIZE, font });
-    page.drawText(fitTextToWidth(cat, font, FONT_SIZE, wC), { x: col.c, y, size: FONT_SIZE, font });
-    page.drawText(fitTextToWidth(ttc, font, FONT_SIZE, wT), { x: col.t, y, size: FONT_SIZE, font });
+    ensureSpace(2);
+    y -= LINE_H * 0.5;
+    page.drawLine({
+      start: { x: MARGIN, y: y + 6 },
+      end: { x: PAGE_W - MARGIN, y: y + 6 },
+      thickness: 0.5,
+      color: rgb(0.75, 0.75, 0.75),
+    });
     y -= LINE_H;
-  }
+    const totalLabel = `Total TTC (${currency}) : ${formatPdfAmount(sumTtc, currency)}`;
+    page.drawText(fitTextToWidth(totalLabel, fontBold, FONT_SIZE, PAGE_W - MARGIN - col.t + col.d), {
+      x: col.d,
+      y,
+      size: FONT_SIZE,
+      font: fontBold,
+    });
+    y -= LINE_H * 2;
+    pendingTableHeader = false;
+  };
 
-  ensureSpace();
-  y -= LINE_H;
-  page.drawLine({
-    start: { x: MARGIN, y: y + 8 },
-    end: { x: PAGE_W - MARGIN, y: y + 8 },
-    thickness: 0.5,
-    color: rgb(0.75, 0.75, 0.75),
-  });
-  y -= LINE_H;
-  page.drawText(`Total TTC : ${sumTtc.toFixed(2)} €`, {
-    x: col.t - 20,
-    y,
-    size: FONT_SIZE,
-    font: fontBold,
-  });
+  const grouped = groupInvoicesByKindAndCurrency(invoices);
+  const kinds = [...grouped.keys()].sort((a, b) => a.localeCompare(b));
+  const multipleKinds = kinds.length > 1;
+
+  for (const kind of kinds) {
+    const curMap = grouped.get(kind)!;
+    const currencies = [...curMap.keys()].sort((a, b) => a.localeCompare(b));
+
+    if (multipleKinds) {
+      const sectionTitle = meta.enterpriseName?.trim()
+        ? `${invoiceKindLabel(kind)} — ${meta.enterpriseName.trim()}`
+        : invoiceKindLabel(kind);
+      drawSectionHeading(sectionTitle, 12);
+    }
+
+    for (const currency of currencies) {
+      drawCurrencyTable(currency, curMap.get(currency)!);
+    }
+  }
 
   const pages = pdfDoc.getPages();
   const total = pages.length;

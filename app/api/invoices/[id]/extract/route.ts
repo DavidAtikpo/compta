@@ -392,7 +392,7 @@ export async function POST(
         mimeType,
         id,
         workspaceOwnerId,
-        { forceServer: !isOcrTextQualityGood(ocrText) },
+        { forceServer: true },
       );
       if (isOcrTextQualityGood(serverOcr)) ocrText = serverOcr;
     }

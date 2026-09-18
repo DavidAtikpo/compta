@@ -4,6 +4,7 @@ import { pool } from "../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { isOcrTextQualityGood } from "@/lib/ocr-quality";
+import { ensureInvoiceWorkflowColumns } from "@/lib/invoice-workflow-schema";
 
 export async function GET(request: NextRequest) {
   const userId = getAuthenticatedUserId(request);
@@ -18,6 +19,7 @@ export async function GET(request: NextRequest) {
   const limit = parseInt(searchParams.get("limit") || "50", 10);
 
   try {
+    await ensureInvoiceWorkflowColumns();
     const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
       await resolveInvoiceWorkspace(userId);
 

@@ -157,6 +157,10 @@ model Invoice {
   accountantReviewStatus String?
   accountantReviewNote   String?
   accountantReviewedAt   DateTime?
+  userConfirmedAt           DateTime?
+  userConfirmedByUserId     String?
+  accountantReceivedAt      DateTime?
+  accountantReceivedByEmail String?
   deletedAt       DateTime?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
@@ -197,6 +201,21 @@ model SendHistory {
 
   @@index([userId])
   @@map("send_history")
+}
+
+/** Destinataires par facture (créée au runtime, ne pas supprimer en prod). */
+model InvoiceSendRecipient {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  invoiceId    String
+  userId       String
+  email        String   @db.VarChar(255)
+  accountantId String?
+  sentAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([invoiceId, email])
+  @@index([invoiceId], map: "invoice_send_recipients_invoice_idx")
+  @@index([userId], map: "invoice_send_recipients_user_idx")
+  @@map("invoice_send_recipients")
 }
 
 model AiUsageLog {

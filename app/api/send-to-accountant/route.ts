@@ -6,6 +6,7 @@ import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { accountantPortalLoginUrl, signAccountantPortalToken } from "@/lib/accountant-portal";
 import { persistInvoiceSendRecipients } from "@/lib/invoice-send-recipients";
 import { downloadInvoiceFileBuffer } from "@/lib/invoice-file-download";
+import { ensureInvoiceShareTokens } from "@/lib/ensure-invoice-share-token";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -192,6 +193,7 @@ export async function POST(request: Request) {
   let attachmentInvoiceIds: string[] = [];
 
   if (ids.length > 0) {
+    await ensureInvoiceShareTokens(ids, workspaceOwnerId);
     const fromDb = await loadAttachmentsFromInvoiceIds(
       ids,
       workspaceOwnerId,

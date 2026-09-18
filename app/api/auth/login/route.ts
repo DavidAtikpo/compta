@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { prisma } from "../../../../lib/prisma";
+import { isPrismaConnectionError, prisma, resetPrismaClient } from "../../../../lib/prisma";
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 
@@ -18,9 +18,34 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Email et mot de passe sont requis." }, { status: 400 });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { email },
-  });
+  let user;
+  try {
+    user = await prisma.user.findUnique({
+      where: { email },
+    });
+  } catch (error) {
+    if (isPrismaConnectionError(error)) {
+      resetPrismaClient();
+      try {
+        user = await prisma.user.findUnique({
+          where: { email },
+        });
+      } catch (retryError) {
+        if (isPrismaConnectionError(retryError)) {
+          return NextResponse.json(
+            {
+              error:
+                "Base de données indisponible (Neon en veille ou réseau). Réessayez dans quelques secondes.",
+            },
+            { status: 503 },
+          );
+        }
+        throw retryError;
+      }
+    } else {
+      throw error;
+    }
+  }
 
   if (!user) {
     return NextResponse.json({ error: "Email ou mot de passe invalide." }, { status: 401 });

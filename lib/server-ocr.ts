@@ -68,17 +68,29 @@ async function ocrWithTesseract(imageDataUrl: string): Promise<string | null> {
  * OCR on a base64 image data URL.
  * Tries Google Vision when OCR_API_KEY is set, otherwise (or on failure) uses Tesseract.js.
  */
+function pickBestOcrText(...candidates: (string | null | undefined)[]): string | null {
+  const valid = candidates
+    .map((t) => String(t || "").trim())
+    .filter((t) => t.length >= 10);
+  if (valid.length === 0) return null;
+  valid.sort((a, b) => b.length - a.length);
+  return valid[0] ?? null;
+}
+
 export async function ocrFromImageDataUrl(imageDataUrl: string): Promise<string | null> {
   if (!imageDataUrl?.startsWith("data:image/")) return null;
 
   const vision = await ocrWithGoogleVision(imageDataUrl);
-  if (vision) return vision;
+  const tess = await ocrWithTesseract(imageDataUrl);
+  const best = pickBestOcrText(vision, tess);
 
-  if (process.env.OCR_API_KEY?.trim()) {
+  if (best) return best;
+
+  if (process.env.OCR_API_KEY?.trim() && !vision) {
     console.log("Google Vision n'a pas renvoyé de texte — repli Tesseract.js");
-  } else {
+  } else if (!process.env.OCR_API_KEY?.trim()) {
     console.log("OCR_API_KEY absente — OCR via Tesseract.js (serveur)");
   }
 
-  return ocrWithTesseract(imageDataUrl);
+  return null;
 }

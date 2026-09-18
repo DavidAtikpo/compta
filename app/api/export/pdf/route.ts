@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { pool } from "../../../../lib/postgres";
 import { prisma } from "../../../../lib/prisma";
-import { MAX_PDF_INVOICES } from "../../../../lib/pdf-export";
+import { MAX_PDF_INVOICES, resolvePdfEnterpriseName } from "../../../../lib/pdf-export";
 import { getAuthenticatedUserId } from "../../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { pdfBufferFromInvoices } from "../../../../lib/pdf-invoice-export";
@@ -25,6 +25,7 @@ export async function POST(request: NextRequest) {
     const user = await prisma.user.findUnique({
       where: { id: workspaceOwnerId },
       select: {
+        name: true,
         pdfHeaderText: true,
         pdfFooterText: true,
         pdfHeaderImageUrl: true,
@@ -87,15 +88,10 @@ export async function POST(request: NextRequest) {
       .map((id) => rowById.get(id))
       .filter((row): row is Record<string, unknown> => row != null);
 
-    const skipped = cleanIds.length - invoices.length;
-    const subtitleLines: string[] = [
-      `${invoices.length} facture(s) dans le PDF`,
-      ...(skipped > 0 ? [`${skipped} id(s) ignoré(s) (inconnu ou brouillon)`] : []),
-    ];
+    const enterpriseName = await resolvePdfEnterpriseName(workspaceOwnerId);
 
     const { buffer, filename } = await pdfBufferFromInvoices(
       invoices,
-      subtitleLines,
       "factures_selection",
       {
         pdfHeaderText: user?.pdfHeaderText ?? null,
@@ -108,6 +104,7 @@ export async function POST(request: NextRequest) {
         pdfHeaderTableJson: user?.pdfHeaderTableJson ?? null,
         pdfHeaderLayout: user?.pdfHeaderLayout ?? null,
       },
+      { enterpriseName },
     );
 
     return new Response(new Uint8Array(buffer), {

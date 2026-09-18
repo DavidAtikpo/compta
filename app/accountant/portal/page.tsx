@@ -1,11 +1,12 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ACCOUNTANT_PORTAL_LS_TOKEN } from "@/lib/accountant-portal";
 import { regionDisplayLabel } from "@/lib/country-regions";
 import { formatInvoiceAmount, invoiceCurrencySymbol } from "@/lib/invoice-currency";
+import { MAX_PDF_INVOICES } from "@/lib/pdf-export";
 
 type PortalInvoice = {
   id: string;
@@ -27,6 +28,10 @@ type PortalInvoice = {
   accountantReviewStatus: string | null;
   accountantReviewNote: string | null;
   accountantReviewedAt: string | null;
+  userConfirmedAt: string | null;
+  accountantReceivedAt: string | null;
+  accountantReceivedByEmail: string | null;
+  fileUrl: string | null;
   clientEmail: string | null;
   clientName: string | null;
   cabinetLabel: string | null;
@@ -92,6 +97,48 @@ function invoiceTTC(inv: PortalInvoice): number | null {
 function formatDate(value: string | null): string {
   if (!value) return "—";
   return new Date(value).toLocaleDateString("fr-FR");
+}
+
+function invoiceEffectiveDate(inv: PortalInvoice): Date | null {
+  const raw = inv.invoiceDate ?? inv.createdAt;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function invoiceMonthKey(inv: PortalInvoice): string {
+  const d = invoiceEffectiveDate(inv);
+  if (!d) return "0000-00";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatInvoiceMonthLabel(monthKey: string): string {
+  if (monthKey === "0000-00") return "Date inconnue";
+  const [y, m] = monthKey.split("-");
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  const label = d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function groupInvoicesByMonth(invoices: PortalInvoice[]) {
+  const byMonth = new Map<string, PortalInvoice[]>();
+  for (const inv of invoices) {
+    const key = invoiceMonthKey(inv);
+    const list = byMonth.get(key) ?? [];
+    list.push(inv);
+    byMonth.set(key, list);
+  }
+  return [...byMonth.entries()]
+    .sort(([a], [b]) => b.localeCompare(a))
+    .map(([monthKey, items]) => ({
+      monthKey,
+      label: formatInvoiceMonthLabel(monthKey),
+      items: [...items].sort((a, b) => {
+        const ta = invoiceEffectiveDate(a)?.getTime() ?? 0;
+        const tb = invoiceEffectiveDate(b)?.getTime() ?? 0;
+        if (tb !== ta) return tb - ta;
+        return String(b.numeroFacture ?? "").localeCompare(String(a.numeroFacture ?? ""), "fr");
+      }),
+    }));
 }
 
 function exportCsv(invoices: PortalInvoice[]) {
@@ -161,7 +208,9 @@ function PortalContent() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busyId, setBusyId] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [detailInvoice, setDetailInvoice] = useState<PortalInvoice | null>(null);
+  const [previewInvoice, setPreviewInvoice] = useState<PortalInvoice | null>(null);
   const [noteModal, setNoteModal] = useState<
     { ids: string[]; action: ReviewAction } | null
   >(null);
@@ -374,6 +423,7 @@ function PortalContent() {
       pendingReview: allInvoices.filter((i) => !i.accountantReviewStatus).length,
       validated: allInvoices.filter((i) => i.accountantReviewStatus === "validated").length,
       rejected: allInvoices.filter((i) => i.accountantReviewStatus === "rejected").length,
+      received: allInvoices.filter((i) => i.accountantReceivedAt).length,
     }),
     [allInvoices],
   );
@@ -429,6 +479,20 @@ function PortalContent() {
     });
   };
 
+  const toggleSelectMany = (ids: string[]) => {
+    if (ids.length === 0) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allSelected = ids.every((id) => next.has(id));
+      if (allSelected) {
+        for (const id of ids) next.delete(id);
+      } else {
+        for (const id of ids) next.add(id);
+      }
+      return next;
+    });
+  };
+
   const toggleSelectAll = () => {
     if (selected.size === filteredInvoices.length) {
       setSelected(new Set());
@@ -436,6 +500,11 @@ function PortalContent() {
       setSelected(new Set(filteredInvoices.map((i) => i.id)));
     }
   };
+
+  const invoicesGroupedByMonth = useMemo(
+    () => groupInvoicesByMonth(filteredInvoices),
+    [filteredInvoices],
+  );
 
   const selectPendingVisible = () => {
     setSelected(new Set(filteredInvoices.filter((i) => !i.accountantReviewStatus).map((i) => i.id)));
@@ -491,6 +560,64 @@ function PortalContent() {
     }
   };
 
+  const exportSelectedPdf = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) {
+      setError("Sélectionnez au moins une facture à exporter en PDF.");
+      return;
+    }
+    if (ids.length > MAX_PDF_INVOICES) {
+      setError(
+        `Export PDF : maximum ${MAX_PDF_INVOICES} factures à la fois (${ids.length} sélectionnées).`,
+      );
+      return;
+    }
+    setExportingPdf(true);
+    setError("");
+    try {
+      const res = await fetch("/api/accountant-portal/invoices/export-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setError(typeof err.error === "string" ? err.error : "Export PDF impossible.");
+        return;
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get("Content-Disposition");
+      const m = cd?.match(/filename="([^"]+)"/);
+      const name = m?.[1] ?? `portail_comptable_${new Date().toISOString().slice(0, 10)}.pdf`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Erreur réseau lors de l'export PDF.");
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
+  const markReceived = async (inv: PortalInvoice) => {
+    setBusyId(inv.id);
+    try {
+      const res = await fetch(`/api/accountant-portal/invoices/${inv.id}/received`, {
+        method: "POST",
+        headers: authHeaders,
+      });
+      if (!res.ok) throw new Error();
+      await load();
+    } catch {
+      setError("Impossible de confirmer la réception.");
+    } finally {
+      setBusyId("");
+    }
+  };
+
   const clearFilters = () => {
     setSearch("");
     setFilterEnterprise("");
@@ -516,8 +643,8 @@ function PortalContent() {
   }
 
   return (
-    <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-slate-100">
-      <header className="shrink-0 border-b border-slate-700 bg-slate-900 text-white shadow-md">
+    <div className="flex h-dvh max-h-dvh flex-col overflow-hidden bg-slate-50 font-sans text-slate-800 antialiased">
+      <header className="shrink-0 border-b border-slate-800/80 bg-slate-900 text-white shadow-sm">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-widest text-slate-300">Compta IA</p>
@@ -602,6 +729,11 @@ function PortalContent() {
             onClick={() => setFilterReview(filterReview === "rejected" ? "" : "rejected")}
           />
         </div>
+        {counts.received > 0 && (
+          <p className="text-xs font-medium text-sky-800">
+            {counts.received} facture(s) — réception confirmée par le cabinet (visible côté entreprise)
+          </p>
+        )}
 
         <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
           <div className="flex flex-wrap items-end gap-2">
@@ -754,42 +886,54 @@ function PortalContent() {
           </div>
         )}
 
-        {selected.size > 0 && !isOwnerView && (
-          <div className="sticky top-0 z-30 flex flex-wrap items-center gap-2 rounded-xl border border-indigo-300 bg-white px-3 py-2.5 shadow-md">
-            <span className="text-sm font-semibold text-slate-900">{selected.size} sélectionnée(s)</span>
+        {selected.size > 0 && (
+          <div className="sticky top-0 z-30 flex flex-wrap items-center gap-2 rounded-xl border border-indigo-200 bg-white px-3 py-2.5 shadow-sm">
+            <span className="text-sm font-medium text-slate-900">{selected.size} sélectionnée(s)</span>
             <button
               type="button"
-              onClick={selectPendingVisible}
-              className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800"
+              disabled={exportingPdf}
+              onClick={() => void exportSelectedPdf()}
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
             >
-              Sélect. à traiter
+              {exportingPdf ? "Export PDF…" : "Export PDF"}
             </button>
-            <button
-              type="button"
-              disabled={bulkBusy || selectedPending.length === 0}
-              onClick={() => {
-                setNoteModal({ ids: selectedPending.map((i) => i.id), action: "validated" });
-                setReviewNote("");
-              }}
-              className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white disabled:opacity-40"
-            >
-              Valider ({selectedPending.length})
-            </button>
-            <button
-              type="button"
-              disabled={bulkBusy || selectedPending.length === 0}
-              onClick={() => {
-                setNoteModal({ ids: selectedPending.map((i) => i.id), action: "rejected" });
-                setReviewNote("");
-              }}
-              className="rounded bg-rose-600 px-2 py-1 text-xs font-semibold text-white disabled:opacity-40"
-            >
-              Rejeter ({selectedPending.length})
-            </button>
+            {!isOwnerView && (
+              <>
+                <button
+                  type="button"
+                  onClick={selectPendingVisible}
+                  className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Sélect. à traiter
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkBusy || selectedPending.length === 0}
+                  onClick={() => {
+                    setNoteModal({ ids: selectedPending.map((i) => i.id), action: "validated" });
+                    setReviewNote("");
+                  }}
+                  className="rounded-md bg-emerald-600 px-2.5 py-1 text-[11px] font-medium text-white disabled:opacity-40"
+                >
+                  Valider ({selectedPending.length})
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkBusy || selectedPending.length === 0}
+                  onClick={() => {
+                    setNoteModal({ ids: selectedPending.map((i) => i.id), action: "rejected" });
+                    setReviewNote("");
+                  }}
+                  className="rounded-md border border-rose-200 bg-white px-2.5 py-1 text-[11px] font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-40"
+                >
+                  Rejeter ({selectedPending.length})
+                </button>
+              </>
+            )}
             <button
               type="button"
               onClick={() => setSelected(new Set())}
-              className="ml-auto text-xs font-medium text-slate-700 underline"
+              className="ml-auto text-[11px] font-medium text-slate-500 underline hover:text-slate-800"
             >
               Tout désélectionner
             </button>
@@ -810,12 +954,15 @@ function PortalContent() {
                 busyId={busyId}
                 readOnly={isOwnerView}
                 onToggleSelect={toggleSelect}
+                onToggleSelectMany={toggleSelectMany}
                 onDetail={setDetailInvoice}
                 onReview={(id, action) => {
                   setNoteModal({ ids: [id], action });
                   setReviewNote("");
                 }}
                 onDownload={(inv) => void downloadFile(inv)}
+                onPreview={setPreviewInvoice}
+                onMarkReceived={(inv) => void markReceived(inv)}
               />
             ))}
           </div>
@@ -836,30 +983,31 @@ function PortalContent() {
                 selected={selected}
                 busyId={busyId}
                 onToggleSelect={toggleSelect}
+                onToggleSelectMany={toggleSelectMany}
                 onDetail={setDetailInvoice}
                 onReview={(id, action) => {
                   setNoteModal({ ids: [id], action });
                   setReviewNote("");
                 }}
                 onDownload={(inv) => void downloadFile(inv)}
+                onPreview={setPreviewInvoice}
+                onMarkReceived={(inv) => void markReceived(inv)}
               />
             ))}
           </div>
         ) : (
           <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
             <table className="w-full min-w-[980px] text-left">
-              <thead className="sticky top-0 z-20 border-b-2 border-slate-300 bg-slate-200 text-xs font-bold uppercase tracking-wide text-slate-900 shadow-sm">
+              <thead className="sticky top-0 z-20 border-b border-slate-200 bg-slate-100/95 text-[11px] font-medium uppercase tracking-wider text-slate-600 backdrop-blur-sm">
                 <tr>
-                  {!isOwnerView && (
-                    <th className="w-8 bg-slate-200 px-2 py-3">
-                      <input
-                        type="checkbox"
-                        checked={filteredInvoices.length > 0 && selected.size === filteredInvoices.length}
-                        onChange={toggleSelectAll}
-                        aria-label="Tout sélectionner"
-                      />
-                    </th>
-                  )}
+                  <th className="w-8 bg-slate-200 px-2 py-3">
+                    <SelectManyCheckbox
+                      ids={filteredInvoices.map((i) => i.id)}
+                      selected={selected}
+                      onToggle={() => toggleSelectAll()}
+                      ariaLabel="Tout sélectionner"
+                    />
+                  </th>
                   <th className="bg-slate-200 px-3 py-3">Entreprise</th>
                   <th className="bg-slate-200 px-3 py-3">Facture</th>
                   <th className="bg-slate-200 px-3 py-3">Type</th>
@@ -871,22 +1019,49 @@ function PortalContent() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
-                {filteredInvoices.map((inv) => (
-                  <InvoiceRow
-                    key={inv.id}
-                    inv={inv}
-                    readOnly={isOwnerView}
-                    selected={selected.has(inv.id)}
-                    busy={busyId === inv.id}
-                    onToggleSelect={() => toggleSelect(inv.id)}
-                    onDetail={() => setDetailInvoice(inv)}
-                    onReview={(action) => {
-                      setNoteModal({ ids: [inv.id], action });
-                      setReviewNote("");
-                    }}
-                    onDownload={() => void downloadFile(inv)}
-                  />
-                ))}
+                {invoicesGroupedByMonth.map(({ monthKey, label, items }) => {
+                  const monthIds = items.map((i) => i.id);
+                  return (
+                    <Fragment key={monthKey}>
+                      <tr className="border-y border-slate-800 bg-slate-700">
+                        <td className="px-2 py-2.5">
+                          <SelectManyCheckbox
+                            ids={monthIds}
+                            selected={selected}
+                            onToggle={() => toggleSelectMany(monthIds)}
+                            ariaLabel={`Sélectionner ${label}`}
+                          />
+                        </td>
+                        <td colSpan={8} className="px-3 py-2.5">
+                          <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <span className="text-sm font-bold text-white">{label}</span>
+                            <span className="text-xs font-medium text-slate-300">
+                              {items.length} facture{items.length > 1 ? "s" : ""}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                      {items.map((inv) => (
+                        <InvoiceRow
+                          key={inv.id}
+                          inv={inv}
+                          readOnly={isOwnerView}
+                          selected={selected.has(inv.id)}
+                          busy={busyId === inv.id}
+                          onToggleSelect={() => toggleSelect(inv.id)}
+                          onDetail={() => setDetailInvoice(inv)}
+                          onReview={(action) => {
+                            setNoteModal({ ids: [inv.id], action });
+                            setReviewNote("");
+                          }}
+                          onDownload={() => void downloadFile(inv)}
+                          onMarkReceived={() => void markReceived(inv)}
+                          onPreview={() => setPreviewInvoice(inv)}
+                        />
+                      ))}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -895,7 +1070,23 @@ function PortalContent() {
       </main>
 
       {detailInvoice && (
-        <DetailDrawer invoice={detailInvoice} onClose={() => setDetailInvoice(null)} authHeaders={authHeaders} />
+        <DetailDrawer
+          invoice={detailInvoice}
+          onClose={() => setDetailInvoice(null)}
+          authHeaders={authHeaders}
+          readOnly={isOwnerView}
+          onMarkReceived={() => void markReceived(detailInvoice)}
+          onPreview={() => setPreviewInvoice(detailInvoice)}
+          busy={busyId === detailInvoice.id}
+        />
+      )}
+
+      {previewInvoice && (
+        <InvoicePreviewModal
+          invoice={previewInvoice}
+          authHeaders={authHeaders}
+          onClose={() => setPreviewInvoice(null)}
+        />
       )}
 
       {noteModal && (
@@ -938,6 +1129,33 @@ function PortalContent() {
         </div>
       )}
     </div>
+  );
+}
+
+function SelectManyCheckbox({
+  ids,
+  selected,
+  onToggle,
+  ariaLabel,
+}: {
+  ids: string[];
+  selected: Set<string>;
+  onToggle: () => void;
+  ariaLabel: string;
+}) {
+  const allSelected = ids.length > 0 && ids.every((id) => selected.has(id));
+  const someSelected = ids.some((id) => selected.has(id));
+  return (
+    <input
+      type="checkbox"
+      checked={allSelected}
+      ref={(el) => {
+        if (el) el.indeterminate = someSelected && !allSelected;
+      }}
+      onChange={onToggle}
+      aria-label={ariaLabel}
+      className="rounded border-slate-300"
+    />
   );
 }
 
@@ -1006,20 +1224,29 @@ function StatCard({
 function CurrencyBadge({ code }: { code: string | null | undefined }) {
   const c = (code ?? "EUR").toUpperCase();
   const styles: Record<string, string> = {
-    EUR: "bg-blue-100 text-blue-950 ring-blue-300",
-    GBP: "bg-violet-100 text-violet-950 ring-violet-300",
-    USD: "bg-green-100 text-green-950 ring-green-300",
-    CNY: "bg-red-100 text-red-950 ring-red-300",
-    GHS: "bg-amber-100 text-amber-950 ring-amber-300",
-    XAF: "bg-orange-100 text-orange-950 ring-orange-300",
-    XOF: "bg-orange-100 text-orange-950 ring-orange-300",
+    EUR: "border-slate-200 bg-slate-50 text-slate-700",
+    GBP: "border-violet-200 bg-violet-50 text-violet-800",
+    USD: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    CNY: "border-rose-200 bg-rose-50 text-rose-800",
+    GHS: "border-amber-200 bg-amber-50 text-amber-800",
+    XAF: "border-orange-200 bg-orange-50 text-orange-800",
+    XOF: "border-orange-200 bg-orange-50 text-orange-800",
   };
-  const cls = styles[c] ?? "bg-slate-200 text-slate-950 ring-slate-400";
+  const cls = styles[c] ?? "border-slate-200 bg-slate-50 text-slate-700";
   return (
-    <span className={`inline-flex min-w-[3.25rem] justify-center rounded-md px-2.5 py-1 text-sm font-bold ring-1 ${cls}`}>
+    <span
+      className={`inline-flex min-w-[2.75rem] justify-center rounded-md border px-2 py-0.5 text-[11px] font-medium tracking-wide ${cls}`}
+    >
       {c}
     </span>
   );
+}
+
+function formatAmountFr(amount: number): string {
+  return amount.toLocaleString("fr-FR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 
 function AmountCell({
@@ -1032,38 +1259,49 @@ function AmountCell({
   emphasis?: boolean;
 }) {
   if (amount == null) {
-    return <span className="text-base font-medium text-slate-400">—</span>;
+    return <span className="text-sm tabular-nums text-slate-400">—</span>;
   }
   const symbol = invoiceCurrencySymbol(currency);
+  if (emphasis) {
+    return (
+      <div className="min-w-[5.5rem] text-right">
+        <p className="text-sm font-semibold tabular-nums tracking-tight text-slate-900">
+          {formatAmountFr(amount)}
+          <span className="ml-1 text-xs font-normal text-slate-500">{symbol}</span>
+        </p>
+      </div>
+    );
+  }
   return (
-    <div className={`text-right ${emphasis ? "rounded-lg bg-slate-900 px-2 py-1.5" : ""}`}>
-      <span
-        className={`block font-mono text-base font-bold tabular-nums tracking-tight ${
-          emphasis ? "text-white" : "text-slate-900"
-        }`}
-      >
-        {amount.toFixed(2)}
-      </span>
-      <span className={`block text-xs font-semibold ${emphasis ? "text-slate-300" : "text-slate-600"}`}>{symbol}</span>
-    </div>
+    <span className="text-sm tabular-nums text-slate-600">
+      {formatAmountFr(amount)} <span className="text-slate-400">{symbol}</span>
+    </span>
   );
 }
 
 function TypeBadge({ type }: { type: string | null }) {
   if (type === "vente") {
-    return <span className="rounded bg-blue-200 px-2 py-0.5 text-xs font-semibold text-blue-950">Vente</span>;
+    return (
+      <span className="rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-800">
+        Vente
+      </span>
+    );
   }
   if (type === "achat") {
-    return <span className="rounded bg-violet-200 px-2 py-0.5 text-xs font-semibold text-violet-950">Achat</span>;
+    return (
+      <span className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-800">
+        Achat
+      </span>
+    );
   }
-  return <span className="text-sm text-slate-500">—</span>;
+  return <span className="text-sm text-slate-400">—</span>;
 }
 
 function ReviewBadge({ status, note }: { status: string | null; note: string | null }) {
   if (status === "validated") {
     return (
       <span
-        className="rounded-full bg-emerald-200 px-2.5 py-0.5 text-xs font-semibold text-emerald-950"
+        className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-medium text-emerald-800"
         title={note ?? undefined}
       >
         Validée
@@ -1073,7 +1311,7 @@ function ReviewBadge({ status, note }: { status: string | null; note: string | n
   if (status === "rejected") {
     return (
       <span
-        className="rounded-full bg-rose-200 px-2.5 py-0.5 text-xs font-semibold text-rose-950"
+        className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[11px] font-medium text-rose-800"
         title={note ?? undefined}
       >
         Rejetée
@@ -1081,7 +1319,21 @@ function ReviewBadge({ status, note }: { status: string | null; note: string | n
     );
   }
   return (
-    <span className="rounded-full bg-amber-200 px-2.5 py-0.5 text-xs font-semibold text-amber-950">À traiter</span>
+    <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[11px] font-medium text-amber-800">
+      À traiter
+    </span>
+  );
+}
+
+function ReceivedBadge({ inv }: { inv: PortalInvoice }) {
+  if (!inv.accountantReceivedAt) return null;
+  return (
+    <span
+      className="inline-flex rounded-full border border-sky-200 bg-sky-50 px-2.5 py-0.5 text-[11px] font-medium text-sky-800"
+      title={inv.accountantReceivedByEmail ?? undefined}
+    >
+      Reçue
+    </span>
   );
 }
 
@@ -1091,6 +1343,8 @@ function InvoiceActions({
   onDetail,
   onReview,
   onDownload,
+  onPreview,
+  onMarkReceived,
   compact,
   readOnly = false,
 }: {
@@ -1099,35 +1353,48 @@ function InvoiceActions({
   onDetail: () => void;
   onReview: (action: ReviewAction) => void;
   onDownload: () => void;
+  onPreview: () => void;
+  onMarkReceived: () => void;
   compact?: boolean;
   readOnly?: boolean;
 }) {
   const review = inv.accountantReviewStatus;
+  const btn =
+    "rounded-md border px-2.5 py-1 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-40";
   return (
-    <div className={`flex justify-end gap-1 ${compact ? "flex-wrap" : ""}`}>
+    <div className={`flex justify-end gap-1.5 ${compact ? "flex-wrap" : ""}`}>
       <button
         type="button"
         onClick={onDetail}
-        className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100"
+        className={`${btn} border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50`}
       >
         Détail
       </button>
       <button
         type="button"
         disabled={busy}
+        onClick={onPreview}
+        className={`${btn} border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100`}
+      >
+        Voir
+      </button>
+      <button
+        type="button"
+        disabled={busy}
         onClick={onDownload}
-        className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:opacity-40"
+        className={`${btn} border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50`}
       >
         PDF
       </button>
-      {inv.shareToken && (
-        <Link
-          href={`/share/${inv.shareToken}`}
-          target="_blank"
-          className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-100"
+      {!readOnly && !inv.accountantReceivedAt && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onMarkReceived}
+          className={`${btn} border-sky-300 bg-sky-600 text-white hover:bg-sky-700`}
         >
-          Voir
-        </Link>
+          Réception
+        </button>
       )}
       {!readOnly && (
         <>
@@ -1135,7 +1402,7 @@ function InvoiceActions({
             type="button"
             disabled={busy || review === "validated"}
             onClick={() => onReview("validated")}
-            className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white disabled:opacity-40"
+            className={`${btn} border-emerald-300 bg-emerald-600 text-white hover:bg-emerald-700`}
           >
             Valider
           </button>
@@ -1143,7 +1410,7 @@ function InvoiceActions({
             type="button"
             disabled={busy || review === "rejected"}
             onClick={() => onReview("rejected")}
-            className="rounded bg-rose-600 px-2 py-1 text-xs font-semibold text-white disabled:opacity-40"
+            className={`${btn} border-rose-300 bg-white text-rose-700 hover:bg-rose-50`}
           >
             Rejeter
           </button>
@@ -1161,6 +1428,8 @@ function InvoiceRow({
   onDetail,
   onReview,
   onDownload,
+  onPreview,
+  onMarkReceived,
   readOnly = false,
 }: {
   inv: PortalInvoice;
@@ -1170,26 +1439,32 @@ function InvoiceRow({
   onDetail: () => void;
   onReview: (action: ReviewAction) => void;
   onDownload: () => void;
+  onPreview: () => void;
+  onMarkReceived: () => void;
   readOnly?: boolean;
 }) {
   const ttc = invoiceTTC(inv);
   return (
     <tr className="hover:bg-slate-50">
-      {!readOnly && (
-        <td className="px-2 py-2">
-          <input type="checkbox" checked={selected} onChange={onToggleSelect} aria-label="Sélectionner" />
-        </td>
-      )}
-      <td className="px-3 py-2">
-        <p className="font-semibold text-slate-900">{enterpriseLabel(inv)}</p>
-        {inv.enterpriseSiret && <p className="text-xs text-slate-600">SIRET {inv.enterpriseSiret}</p>}
-        <p className="text-xs text-slate-600">{clientLabel(inv)}</p>
-        <p className="text-xs text-slate-500">{regionDisplayLabel(inv.region)}</p>
+      <td className="px-2 py-2">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggleSelect}
+          aria-label="Sélectionner"
+          className="rounded border-slate-300"
+        />
       </td>
-      <td className="px-3 py-2">
-        <button type="button" onClick={onDetail} className="text-left hover:underline">
-          <p className="font-medium text-slate-800">{inv.fournisseur || inv.originalName}</p>
-          <p className="text-xs text-slate-600">
+      <td className="px-3 py-2.5">
+        <p className="text-sm font-medium text-slate-900">{enterpriseLabel(inv)}</p>
+        {inv.enterpriseSiret && <p className="text-xs text-slate-500">SIRET {inv.enterpriseSiret}</p>}
+        <p className="text-xs text-slate-500">{clientLabel(inv)}</p>
+        <p className="text-xs text-slate-400">{regionDisplayLabel(inv.region)}</p>
+      </td>
+      <td className="px-3 py-2.5">
+        <button type="button" onClick={onDetail} className="text-left hover:text-indigo-700">
+          <p className="text-sm font-medium text-slate-900">{inv.fournisseur || inv.originalName}</p>
+          <p className="mt-0.5 text-xs text-slate-500">
             {inv.numeroFacture || "—"} · {formatDate(inv.invoiceDate ?? inv.createdAt)}
           </p>
         </button>
@@ -1207,10 +1482,22 @@ function InvoiceRow({
         <AmountCell amount={ttc} currency={inv.currency} emphasis />
       </td>
       <td className="px-3 py-2">
-        <ReviewBadge status={inv.accountantReviewStatus} note={inv.accountantReviewNote} />
+        <div className="flex flex-col gap-1">
+          <ReviewBadge status={inv.accountantReviewStatus} note={inv.accountantReviewNote} />
+          <ReceivedBadge inv={inv} />
+        </div>
       </td>
       <td className="px-3 py-2">
-        <InvoiceActions inv={inv} busy={busy} readOnly={readOnly} onDetail={onDetail} onReview={onReview} onDownload={onDownload} />
+        <InvoiceActions
+          inv={inv}
+          busy={busy}
+          readOnly={readOnly}
+          onDetail={onDetail}
+          onReview={onReview}
+          onDownload={onDownload}
+          onPreview={onPreview}
+          onMarkReceived={onMarkReceived}
+        />
       </td>
     </tr>
   );
@@ -1222,18 +1509,24 @@ function CabinetGroup({
   busyId,
   readOnly,
   onToggleSelect,
+  onToggleSelectMany,
   onDetail,
   onReview,
   onDownload,
+  onPreview,
+  onMarkReceived,
 }: {
   group: { email: string; label: string; region: string; invoices: PortalInvoice[] };
   selected: Set<string>;
   busyId: string;
   readOnly?: boolean;
   onToggleSelect: (id: string) => void;
+  onToggleSelectMany: (ids: string[]) => void;
   onDetail: (inv: PortalInvoice) => void;
   onReview: (id: string, action: ReviewAction) => void;
   onDownload: (inv: PortalInvoice) => void;
+  onPreview: (inv: PortalInvoice) => void;
+  onMarkReceived: (inv: PortalInvoice) => void;
 }) {
   const [open, setOpen] = useState(true);
   const pending = group.invoices.filter((i) => !i.accountantReviewStatus).length;
@@ -1246,6 +1539,8 @@ function CabinetGroup({
     }
     return byCur;
   }, [group.invoices]);
+
+  const invoicesByMonth = useMemo(() => groupInvoicesByMonth(group.invoices), [group.invoices]);
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -1264,13 +1559,13 @@ function CabinetGroup({
         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
           <span>{group.invoices.length} facture(s)</span>
           {pending > 0 && (
-            <span className="rounded-full bg-amber-200 px-2 py-0.5 text-xs font-semibold text-amber-950">
-              {pending} en attente de revue cabinet
+            <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+              {pending} en attente de revue
             </span>
           )}
           {Object.entries(totals).map(([code, sum]) => (
-            <span key={code} className="font-mono text-slate-700">
-              {sum.toFixed(2)} {invoiceCurrencySymbol(code)}
+            <span key={code} className="tabular-nums text-xs font-medium text-slate-600">
+              {formatAmountFr(sum)} {invoiceCurrencySymbol(code)}
             </span>
           ))}
           <span className="text-slate-400">{open ? "▾" : "▸"}</span>
@@ -1281,40 +1576,70 @@ function CabinetGroup({
           {group.invoices.length === 0 ? (
             <p className="px-4 py-3 text-xs text-slate-500">Aucune facture transmise à ce cabinet.</p>
           ) : (
-            group.invoices.map((inv) => (
-            <div key={inv.id} className="flex flex-wrap items-center gap-2 px-4 py-2.5 hover:bg-slate-50/80">
-              {!readOnly && (
-                <input
-                  type="checkbox"
-                  checked={selected.has(inv.id)}
-                  onChange={() => onToggleSelect(inv.id)}
-                  aria-label="Sélectionner"
-                />
-              )}
-              <div className="min-w-[140px] flex-1">
-                <p className="text-xs font-medium text-slate-800">{inv.fournisseur || inv.originalName}</p>
-                <p className="text-xs text-slate-600">
-                  {inv.numeroFacture || "—"} · {formatDate(inv.invoiceDate)} · {formatDate(inv.sentAt)}
-                </p>
-                {readOnly && inv.enterpriseName && (
-                  <p className="text-[10px] text-slate-500">{enterpriseLabel(inv)}</p>
-                )}
-              </div>
-              <TypeBadge type={inv.invoiceType} />
-              <CurrencyBadge code={inv.currency} />
-              <AmountCell amount={invoiceTTC(inv)} currency={inv.currency} emphasis />
-              <ReviewBadge status={inv.accountantReviewStatus} note={inv.accountantReviewNote} />
-              <InvoiceActions
-                inv={inv}
-                busy={busyId === inv.id}
-                readOnly={readOnly}
-                compact
-                onDetail={() => onDetail(inv)}
-                onReview={(action) => onReview(inv.id, action)}
-                onDownload={() => onDownload(inv)}
-              />
-            </div>
-            ))
+            invoicesByMonth.map(({ monthKey, label, items }) => {
+              const monthIds = items.map((i) => i.id);
+              return (
+                <div key={monthKey}>
+                  <div className="flex items-center gap-2 border-y border-slate-800 bg-slate-700 px-4 py-2.5">
+                    <SelectManyCheckbox
+                      ids={monthIds}
+                      selected={selected}
+                      onToggle={() => onToggleSelectMany(monthIds)}
+                      ariaLabel={`Sélectionner ${label}`}
+                    />
+                    <span className="text-sm font-bold text-white">{label}</span>
+                    <span className="ml-auto text-xs font-medium text-slate-300">
+                      {items.length} facture{items.length > 1 ? "s" : ""}
+                    </span>
+                  </div>
+                  {items.map((inv) => (
+                    <div
+                      key={inv.id}
+                      className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 hover:bg-slate-50/90 sm:flex-nowrap"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected.has(inv.id)}
+                        onChange={() => onToggleSelect(inv.id)}
+                        aria-label="Sélectionner"
+                        className="shrink-0 rounded border-slate-300"
+                      />
+                      <div className="min-w-0 flex-1 basis-48">
+                        <p className="truncate text-sm font-medium text-slate-900">
+                          {inv.fournisseur || inv.originalName}
+                        </p>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          {inv.numeroFacture || "—"} · {formatDate(inv.invoiceDate)} · {formatDate(inv.sentAt)}
+                        </p>
+                        {readOnly && inv.enterpriseName && (
+                          <p className="mt-0.5 truncate text-xs text-slate-400">{enterpriseLabel(inv)}</p>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <TypeBadge type={inv.invoiceType} />
+                        <CurrencyBadge code={inv.currency} />
+                      </div>
+                      <AmountCell amount={invoiceTTC(inv)} currency={inv.currency} emphasis />
+                      <div className="flex shrink-0 flex-wrap items-center gap-1">
+                        <ReviewBadge status={inv.accountantReviewStatus} note={inv.accountantReviewNote} />
+                        <ReceivedBadge inv={inv} />
+                      </div>
+                      <InvoiceActions
+                        inv={inv}
+                        busy={busyId === inv.id}
+                        readOnly={readOnly}
+                        compact
+                        onDetail={() => onDetail(inv)}
+                        onReview={(action) => onReview(inv.id, action)}
+                        onDownload={() => onDownload(inv)}
+                        onPreview={() => onPreview(inv)}
+                        onMarkReceived={() => onMarkReceived(inv)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              );
+            })
           )}
         </div>
       )}
@@ -1327,17 +1652,23 @@ function EnterpriseGroup({
   selected,
   busyId,
   onToggleSelect,
+  onToggleSelectMany,
   onDetail,
   onReview,
   onDownload,
+  onPreview,
+  onMarkReceived,
 }: {
   group: { label: string; siret: string | null; contact: string | null; invoices: PortalInvoice[] };
   selected: Set<string>;
   busyId: string;
   onToggleSelect: (id: string) => void;
+  onToggleSelectMany: (ids: string[]) => void;
   onDetail: (inv: PortalInvoice) => void;
   onReview: (id: string, action: ReviewAction) => void;
   onDownload: (inv: PortalInvoice) => void;
+  onPreview: (inv: PortalInvoice) => void;
+  onMarkReceived: (inv: PortalInvoice) => void;
 }) {
   const [open, setOpen] = useState(true);
   const pending = group.invoices.filter((i) => !i.accountantReviewStatus).length;
@@ -1350,6 +1681,8 @@ function EnterpriseGroup({
     }
     return byCur;
   }, [group.invoices]);
+
+  const invoicesByMonth = useMemo(() => groupInvoicesByMonth(group.invoices), [group.invoices]);
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -1366,13 +1699,13 @@ function EnterpriseGroup({
         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
           <span>{group.invoices.length} facture(s)</span>
           {pending > 0 && (
-            <span className="rounded-full bg-amber-200 px-2 py-0.5 text-xs font-semibold text-amber-950">
+            <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">
               {pending} à traiter
             </span>
           )}
           {Object.entries(totals).map(([code, sum]) => (
-            <span key={code} className="font-mono text-slate-700">
-              {sum.toFixed(2)} {invoiceCurrencySymbol(code)}
+            <span key={code} className="tabular-nums text-xs font-medium text-slate-600">
+              {formatAmountFr(sum)} {invoiceCurrencySymbol(code)}
             </span>
           ))}
           <span className="text-slate-400">{open ? "▾" : "▸"}</span>
@@ -1380,36 +1713,139 @@ function EnterpriseGroup({
       </button>
       {open && (
         <div className="divide-y divide-slate-100 border-t border-slate-100">
-          {group.invoices.map((inv) => (
-            <div key={inv.id} className="flex flex-wrap items-center gap-2 px-4 py-2.5 hover:bg-slate-50/80">
-              <input
-                type="checkbox"
-                checked={selected.has(inv.id)}
-                onChange={() => onToggleSelect(inv.id)}
-                aria-label="Sélectionner"
-              />
-              <div className="min-w-[140px] flex-1">
-                <p className="text-xs font-medium text-slate-800">{inv.fournisseur || inv.originalName}</p>
-                <p className="text-xs text-slate-600">
-                  {inv.numeroFacture || "—"} · {regionDisplayLabel(inv.region)} · {formatDate(inv.invoiceDate)}
-                </p>
+          {invoicesByMonth.map(({ monthKey, label, items }) => {
+            const monthIds = items.map((i) => i.id);
+            return (
+              <div key={monthKey}>
+                <div className="flex items-center gap-2 border-y border-slate-800 bg-slate-700 px-4 py-2.5">
+                  <SelectManyCheckbox
+                    ids={monthIds}
+                    selected={selected}
+                    onToggle={() => onToggleSelectMany(monthIds)}
+                    ariaLabel={`Sélectionner ${label}`}
+                  />
+                  <span className="text-sm font-bold text-white">{label}</span>
+                  <span className="ml-auto text-xs font-medium text-slate-300">
+                    {items.length} facture{items.length > 1 ? "s" : ""}
+                  </span>
+                </div>
+                {items.map((inv) => (
+                  <div
+                    key={inv.id}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 hover:bg-slate-50/90 sm:flex-nowrap"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(inv.id)}
+                      onChange={() => onToggleSelect(inv.id)}
+                      aria-label="Sélectionner"
+                      className="shrink-0 rounded border-slate-300"
+                    />
+                    <div className="min-w-0 flex-1 basis-48">
+                      <p className="truncate text-sm font-medium text-slate-900">
+                        {inv.fournisseur || inv.originalName}
+                      </p>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {inv.numeroFacture || "—"} · {regionDisplayLabel(inv.region)} · {formatDate(inv.invoiceDate)}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <TypeBadge type={inv.invoiceType} />
+                      <CurrencyBadge code={inv.currency} />
+                    </div>
+                    <AmountCell amount={invoiceTTC(inv)} currency={inv.currency} emphasis />
+                    <div className="flex shrink-0 flex-wrap items-center gap-1">
+                      <ReviewBadge status={inv.accountantReviewStatus} note={inv.accountantReviewNote} />
+                      <ReceivedBadge inv={inv} />
+                    </div>
+                    <InvoiceActions
+                      inv={inv}
+                      busy={busyId === inv.id}
+                      compact
+                      onDetail={() => onDetail(inv)}
+                      onReview={(action) => onReview(inv.id, action)}
+                      onDownload={() => onDownload(inv)}
+                      onPreview={() => onPreview(inv)}
+                      onMarkReceived={() => onMarkReceived(inv)}
+                    />
+                  </div>
+                ))}
               </div>
-              <TypeBadge type={inv.invoiceType} />
-              <CurrencyBadge code={inv.currency} />
-              <AmountCell amount={invoiceTTC(inv)} currency={inv.currency} emphasis />
-              <ReviewBadge status={inv.accountantReviewStatus} note={inv.accountantReviewNote} />
-              <InvoiceActions
-                inv={inv}
-                busy={busyId === inv.id}
-                compact
-                onDetail={() => onDetail(inv)}
-                onReview={(action) => onReview(inv.id, action)}
-                onDownload={() => onDownload(inv)}
-              />
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
+    </div>
+  );
+}
+
+function isPdfName(name: string): boolean {
+  return /\.pdf(\?|#|$)/i.test(name.toLowerCase()) || name.toLowerCase().endsWith(".pdf");
+}
+
+function InvoicePreviewModal({
+  invoice,
+  authHeaders,
+  onClose,
+}: {
+  invoice: PortalInvoice;
+  authHeaders: Record<string, string>;
+  onClose: () => void;
+}) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [isPdf, setIsPdf] = useState(false);
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    (async () => {
+      try {
+        const res = await fetch(`/api/accountant-portal/invoices/${invoice.id}/file`, {
+          headers: authHeaders,
+        });
+        if (!res.ok) throw new Error();
+        const blob = await res.blob();
+        objectUrl = URL.createObjectURL(blob);
+        setPreviewUrl(objectUrl);
+        setIsPdf(
+          blob.type.includes("pdf") || isPdfName(invoice.originalName || ""),
+        );
+      } catch {
+        setPreviewUrl(null);
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [invoice.id, invoice.originalName, authHeaders]);
+
+  return (
+    <div className="fixed inset-0 z-[70] flex flex-col bg-slate-900/85">
+      <div className="flex shrink-0 items-center justify-between border-b border-slate-700 bg-slate-900 px-4 py-2 text-white">
+        <p className="truncate text-sm font-medium">
+          {invoice.fournisseur || invoice.originalName}
+        </p>
+        <button type="button" onClick={onClose} className="rounded px-2 py-1 text-xs hover:bg-slate-800">
+          Fermer
+        </button>
+      </div>
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-100 p-3">
+        {loading ? (
+          <p className="text-sm text-slate-500">Chargement…</p>
+        ) : !previewUrl ? (
+          <p className="text-sm text-rose-600">Impossible d&apos;afficher la facture.</p>
+        ) : isPdf ? (
+          <iframe src={previewUrl} title="Aperçu facture" className="h-full w-full max-w-4xl rounded bg-white" />
+        ) : (
+          <img
+            src={previewUrl}
+            alt={invoice.originalName}
+            className="max-h-full max-w-full object-contain"
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -1418,10 +1854,18 @@ function DetailDrawer({
   invoice,
   onClose,
   authHeaders,
+  readOnly = false,
+  onMarkReceived,
+  onPreview,
+  busy = false,
 }: {
   invoice: PortalInvoice;
   onClose: () => void;
   authHeaders: Record<string, string>;
+  readOnly?: boolean;
+  onMarkReceived: () => void;
+  onPreview: () => void;
+  busy?: boolean;
 }) {
   const ttc = invoiceTTC(invoice);
 
@@ -1476,11 +1920,14 @@ function DetailDrawer({
             <Field label="HT" value={invoice.montantHT != null ? formatInvoiceAmount(invoice.montantHT, invoice.currency) : null} />
             <Field label="TTC" value={ttc != null ? formatInvoiceAmount(ttc, invoice.currency) : null} />
             <Field label="Transmise" value={formatDate(invoice.sentAt)} />
+            <Field label="Confirmée entreprise" value={formatDate(invoice.userConfirmedAt)} />
+            <Field label="Reçue cabinet" value={formatDate(invoice.accountantReceivedAt)} />
           </section>
           <section>
             <p className="text-xs font-semibold uppercase text-slate-600">Revue cabinet</p>
-            <div className="mt-1">
+            <div className="mt-1 flex flex-wrap gap-2">
               <ReviewBadge status={invoice.accountantReviewStatus} note={invoice.accountantReviewNote} />
+              <ReceivedBadge inv={invoice} />
             </div>
             {invoice.accountantReviewNote && (
               <p className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700">{invoice.accountantReviewNote}</p>
@@ -1490,24 +1937,37 @@ function DetailDrawer({
                 Revue le {formatDate(invoice.accountantReviewedAt)}
               </p>
             )}
+            {invoice.accountantReceivedByEmail && (
+              <p className="mt-1 text-xs text-slate-500">
+                Réception confirmée par {invoice.accountantReceivedByEmail}
+              </p>
+            )}
           </section>
         </div>
-        <div className="flex gap-2 border-t border-slate-100 p-4">
+        <div className="flex flex-wrap gap-2 border-t border-slate-100 p-4">
+          <button
+            type="button"
+            onClick={onPreview}
+            className="flex-1 rounded-lg border border-indigo-200 bg-indigo-50 py-2 text-xs font-semibold text-indigo-900"
+          >
+            Voir la facture
+          </button>
           <button
             type="button"
             onClick={() => void download()}
             className="flex-1 rounded-lg bg-slate-900 py-2 text-xs font-semibold text-white"
           >
-            Télécharger le fichier
+            Télécharger
           </button>
-          {invoice.shareToken && (
-            <Link
-              href={`/share/${invoice.shareToken}`}
-              target="_blank"
-              className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700"
+          {!readOnly && !invoice.accountantReceivedAt && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onMarkReceived}
+              className="w-full rounded-lg bg-sky-600 py-2 text-xs font-semibold text-white disabled:opacity-50"
             >
-              Ouvrir
-            </Link>
+              Confirmer réception
+            </button>
           )}
         </div>
       </aside>
