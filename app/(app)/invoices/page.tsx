@@ -380,6 +380,8 @@ type CabinetModalState =
   | { kind: "bulk"; byRegion: Record<string, Invoice[]> };
 
 const CABINET_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** Nombre max de pièces jointes par email (évite timeout SMTP / taille message). */
+const CABINET_SEND_BATCH_SIZE = 10;
 
 function mergeCabinetRecipients(selected: string[], extra: string): string[] {
   const out: string[] = [];
@@ -562,6 +564,11 @@ export default function InvoicesPage() {
   const [cabinetAccountantsList, setCabinetAccountantsList] = useState<AccountantRow[]>([]);
   /** Envoi au cabinet en cours (modale ouverte jusqu’à la fin de la requête). */
   const [cabinetSendPending, setCabinetSendPending] = useState(false);
+  const [cabinetSendProgress, setCabinetSendProgress] = useState<{
+    sent: number;
+    total: number;
+    detail: string;
+  } | null>(null);
   const [sendSuccessToast, setSendSuccessToast] = useState<string | null>(null);
   const sendSuccessToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectAllHeaderRef = useRef<HTMLInputElement>(null);
@@ -1646,6 +1653,17 @@ export default function InvoicesPage() {
     }
   };
 
+  const postCabinetSend = async (formData: FormData, authToken: string) => {
+    const sendRes = await fetch("/api/send-to-accountant", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${authToken}` },
+      body: formData,
+      signal: AbortSignal.timeout(130_000),
+    });
+    const sendJson = await sendRes.json().catch(() => ({}));
+    return { ok: sendRes.ok, json: sendJson as { error?: string; message?: string } };
+  };
+
   const handleBulkSendWithEmails = async (
     emailsByRegion: Record<string, string[]>,
     extraByRegion: Record<string, string>,
@@ -1656,66 +1674,83 @@ export default function InvoicesPage() {
 
     setBulkSending(true);
     setMessage("");
+    const allToSend = Object.values(byRegionRecord).flat();
+    setCabinetSendProgress({ sent: 0, total: allToSend.length, detail: "Préparation…" });
+
     try {
       const parts: string[] = [];
       let anyFail = false;
+      let sentSoFar = 0;
       const byRegion = new Map(Object.entries(byRegionRecord));
+
       for (const [reg, list] of byRegion) {
         const recipientEmails = mergeCabinetRecipients(emailsByRegion[reg] ?? [], extraByRegion[reg] ?? "");
-        const formData = new FormData();
-        formData.append("region", reg);
-        formData.append("senderName", userEmail || "Utilisateur Compta IA");
-        appendRecipientEmails(formData, recipientEmails);
-        formData.append(
-          "message",
-          `Transmission groupée de ${list.length} facture(s).\nRégion : ${reg}`
-        );
-        let attached = 0;
-        for (const inv of list) {
-          const blob = await fetchInvoiceFileBlob(inv);
-          if (!blob || blob.size === 0) continue;
-          formData.append("invoiceIds", inv.id);
+
+        for (let i = 0; i < list.length; i += CABINET_SEND_BATCH_SIZE) {
+          const chunk = list.slice(i, i + CABINET_SEND_BATCH_SIZE);
+          const batchNum = Math.floor(i / CABINET_SEND_BATCH_SIZE) + 1;
+          const batchTotal = Math.ceil(list.length / CABINET_SEND_BATCH_SIZE);
+
+          setCabinetSendProgress({
+            sent: sentSoFar,
+            total: allToSend.length,
+            detail: `${regionDisplayLabel(reg)} — lot ${batchNum}/${batchTotal} (${chunk.length} facture(s))`,
+          });
+
+          const formData = new FormData();
+          formData.append("region", reg);
+          formData.append("senderName", userEmail || "Utilisateur Compta IA");
+          appendRecipientEmails(formData, recipientEmails);
           formData.append(
-            "files",
-            new File([blob], inv.originalName || "facture.pdf", {
-              type: blob.type || "application/pdf",
-            })
+            "message",
+            `Transmission groupée de ${chunk.length} facture(s) (${sentSoFar + 1}–${sentSoFar + chunk.length} sur ${list.length}).\nRégion : ${reg}`,
           );
-          attached++;
+          for (const inv of chunk) {
+            formData.append("invoiceIds", inv.id);
+          }
+
+          const { ok, json } = await postCabinetSend(formData, t);
+          sentSoFar += chunk.length;
+          setCabinetSendProgress({
+            sent: sentSoFar,
+            total: allToSend.length,
+            detail: ok ? `${sentSoFar}/${allToSend.length} facture(s) transmise(s)` : "Erreur sur le lot en cours…",
+          });
+
+          if (!ok) {
+            parts.push(`${reg} (lot ${batchNum}): ${json.error || "erreur"}`);
+            anyFail = true;
+          } else if (batchTotal === 1) {
+            parts.push(`${reg}: ${json.message || "OK"}`);
+          }
         }
-        if (attached === 0) {
-          parts.push(`${reg}: aucun fichier récupéré`);
-          anyFail = true;
-          continue;
-        }
-        const sendRes = await fetch("/api/send-to-accountant", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${t}` },
-          body: formData,
-        });
-        const sendJson = await sendRes.json().catch(() => ({}));
-        if (!sendRes.ok) {
-          parts.push(`${reg}: ${sendJson.error || "erreur"}`);
-          anyFail = true;
-        } else {
-          parts.push(`${reg}: ${sendJson.message || "OK"}`);
+
+        if (list.length > CABINET_SEND_BATCH_SIZE && !anyFail) {
+          parts.push(`${reg}: ${list.length} facture(s) envoyées en ${Math.ceil(list.length / CABINET_SEND_BATCH_SIZE)} lot(s)`);
         }
       }
+
       setSelectedIds([]);
       await reloadInvoices();
       if (!anyFail) {
         showSendSuccessToast(
           parts.length <= 1
             ? (parts[0]?.replace(/^[^:]+:\s*/, "").trim() || "Documents envoyés au cabinet avec succès.")
-            : "Tous les envois au cabinet ont été effectués avec succès."
+            : `Transmission terminée — ${sentSoFar} facture(s) envoyée(s) au cabinet.`,
         );
       } else {
         setMessage(parts.join(" · "));
       }
-    } catch {
-      setMessage("Erreur réseau lors de l'envoi groupé.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      setMessage(
+        msg.includes("timeout") || msg.includes("aborted")
+          ? "Délai d'envoi dépassé. Réessayez avec moins de factures ou vérifiez la connexion."
+          : "Erreur réseau lors de l'envoi groupé.",
+      );
     } finally {
       setBulkSending(false);
+      setCabinetSendProgress(null);
     }
   };
 
@@ -1764,31 +1799,17 @@ export default function InvoicesPage() {
       return;
     }
     setSendingInvoiceId(inv.id);
+    setCabinetSendProgress({ sent: 0, total: 1, detail: "Envoi de la facture…" });
     setMessage("");
     try {
-      const fileBlob = await fetchInvoiceFileBlob(inv);
-      if (!fileBlob) {
-        setMessage("Impossible de récupérer le fichier.");
-        return;
-      }
-      if (fileBlob.size === 0) {
-        setMessage("Fichier vide ou inaccessible.");
-        return;
-      }
       const formData = new FormData();
       formData.append("region", inv.region);
       formData.append("senderName", userEmail || "Utilisateur Compta IA");
       formData.append("message", `Transmission facture ${inv.numeroFacture ?? inv.originalName}.\nRégion : ${inv.region}`);
       appendRecipientEmails(formData, recipientEmails);
       formData.append("invoiceIds", inv.id);
-      formData.append("files", new File([fileBlob], inv.originalName || "facture.pdf", { type: fileBlob.type || "application/pdf" }));
-      const sendRes = await fetch("/api/send-to-accountant", {
-        method: "POST",
-        headers: t ? { Authorization: `Bearer ${t}` } : {},
-        body: formData,
-      });
-      const sendJson = await sendRes.json().catch(() => ({}));
-      if (!sendRes.ok) {
+      const { ok, json: sendJson } = await postCabinetSend(formData, t);
+      if (!ok) {
         setMessage(sendJson.error || "Erreur lors de l'envoi au cabinet.");
         return;
       }
@@ -1803,6 +1824,7 @@ export default function InvoicesPage() {
       setMessage("Erreur réseau lors de l'envoi.");
     } finally {
       setSendingInvoiceId(null);
+      setCabinetSendProgress(null);
     }
   };
 
@@ -1857,6 +1879,7 @@ export default function InvoicesPage() {
       }
     } finally {
       setCabinetSendPending(false);
+      setCabinetSendProgress(null);
       setCabinetModal(null);
     }
   };
@@ -3921,9 +3944,28 @@ export default function InvoicesPage() {
               >
                 <UploadRingSpinner className="h-12 w-12" aria-label="Envoi en cours" />
                 <p className="text-sm font-semibold text-slate-900">Envoi en cours…</p>
-                <p className="max-w-[260px] text-center text-[11px] leading-snug text-slate-500">
-                  Transmission du message et des pièces jointes vers le cabinet.
-                </p>
+                {cabinetSendProgress ? (
+                  <>
+                    <p className="text-xs font-medium text-slate-800">
+                      {cabinetSendProgress.sent}/{cabinetSendProgress.total} facture(s)
+                    </p>
+                    <p className="max-w-[280px] text-center text-[11px] leading-snug text-slate-500">
+                      {cabinetSendProgress.detail}
+                    </p>
+                    <div className="mt-1 h-1.5 w-48 overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className="h-full bg-slate-800 transition-all duration-300"
+                        style={{
+                          width: `${cabinetSendProgress.total > 0 ? Math.round((cabinetSendProgress.sent / cabinetSendProgress.total) * 100) : 0}%`,
+                        }}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <p className="max-w-[260px] text-center text-[11px] leading-snug text-slate-500">
+                    Transmission du message et des pièces jointes vers le cabinet.
+                  </p>
+                )}
               </div>
             )}
             <div className="border-b border-slate-100 px-4 py-3">

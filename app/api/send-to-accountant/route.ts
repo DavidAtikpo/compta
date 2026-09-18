@@ -5,8 +5,10 @@ import { getAuthenticatedUserId } from "../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { accountantPortalLoginUrl, signAccountantPortalToken } from "@/lib/accountant-portal";
 import { persistInvoiceSendRecipients } from "@/lib/invoice-send-recipients";
+import { downloadInvoiceFileBuffer } from "@/lib/invoice-file-download";
 
 export const runtime = "nodejs";
+export const maxDuration = 120;
 
 async function resolveRecipientEmails(region: string, userId: string): Promise<string[]> {
   const regionKey = String(region || "").trim().toLowerCase();
@@ -40,6 +42,63 @@ function dedupeEmails(emails: string[]): string[] {
     out.push(e);
   }
   return out;
+}
+
+async function loadAttachmentsFromInvoiceIds(
+  ids: string[],
+  workspaceOwnerId: string,
+  actorUserId: string,
+  restrictAgentToOwnSubmissions: boolean,
+): Promise<
+  Array<{ filename: string; content: Buffer; contentType: string; invoiceId: string }>
+> {
+  if (ids.length === 0) return [];
+
+  const agentClause = restrictAgentToOwnSubmissions
+    ? ` AND "submittedByUserId" = $3`
+    : "";
+  const params = restrictAgentToOwnSubmissions
+    ? [ids, workspaceOwnerId, actorUserId]
+    : [ids, workspaceOwnerId];
+
+  const result = await pool.query(
+    `SELECT id, "fileUrl", "originalName", "mimeType"
+     FROM invoices
+     WHERE id = ANY($1::text[]) AND "userId" = $2 AND ("deletedAt" IS NULL) AND "fileUrl" IS NOT NULL${agentClause}`,
+    params,
+  );
+
+  const attachments: Array<{
+    filename: string;
+    content: Buffer;
+    contentType: string;
+    invoiceId: string;
+  }> = [];
+
+  for (const row of result.rows as Array<{
+    id: string;
+    fileUrl: string;
+    originalName: string;
+    mimeType: string | null;
+  }>) {
+    const downloaded = await downloadInvoiceFileBuffer({
+      fileUrl: row.fileUrl,
+      originalName: row.originalName,
+      mimeType: row.mimeType,
+    });
+    if (!downloaded) {
+      console.warn("Pièce jointe inaccessible:", row.id, row.originalName);
+      continue;
+    }
+    attachments.push({
+      filename: downloaded.filename,
+      content: downloaded.buffer,
+      contentType: downloaded.contentType,
+      invoiceId: row.id,
+    });
+  }
+
+  return attachments;
 }
 
 function parseRecipientEmailsFromForm(formData: FormData): string[] {
@@ -83,7 +142,7 @@ export async function POST(request: Request) {
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = Number(process.env.SMTP_PORT ?? 587);
   const smtpUser = process.env.SMTP_USER;
-  const smtpPass = process.env.SMTP_PASS;
+  const smtpPass = process.env.SMTP_PASS?.replace(/\s+/g, "");
   const fromEmail =
     process.env.FROM_EMAIL || process.env.SMTP_FROM_EMAIL || process.env.SMTP_FROM || smtpUser;
 
@@ -118,27 +177,64 @@ export async function POST(request: Request) {
     port: smtpPort,
     secure: smtpPort === 465,
     auth: { user: smtpUser, pass: smtpPass },
+    connectionTimeout: 20_000,
+    greetingTimeout: 20_000,
+    socketTimeout: 90_000,
   });
 
-  const attachments = await Promise.all(
-    files.map(async (file) => {
-      if (file instanceof File) {
-        const buffer = Buffer.from(await file.arrayBuffer());
-        return {
-          filename: file.name,
-          content: buffer,
-          contentType: file.type || "application/octet-stream",
-        };
-      }
-      return null;
-    })
-  );
+  const ids = invoiceIds.map((id) => id.toString()).filter(Boolean);
 
-  const filteredAttachments = attachments.filter(Boolean) as Array<{
+  let filteredAttachments: Array<{
     filename: string;
     content: Buffer;
     contentType: string;
-  }>;
+  }> = [];
+  let attachmentInvoiceIds: string[] = [];
+
+  if (ids.length > 0) {
+    const fromDb = await loadAttachmentsFromInvoiceIds(
+      ids,
+      workspaceOwnerId,
+      actorUserId,
+      restrictAgentToOwnSubmissions,
+    );
+    filteredAttachments = fromDb.map(({ invoiceId: _id, ...rest }) => rest);
+    attachmentInvoiceIds = fromDb.map((a) => a.invoiceId);
+  }
+
+  if (filteredAttachments.length === 0 && files.length > 0) {
+    const attachments = await Promise.all(
+      files.map(async (file) => {
+        if (file instanceof File) {
+          const buffer = Buffer.from(await file.arrayBuffer());
+          return {
+            filename: file.name,
+            content: buffer,
+            contentType: file.type || "application/octet-stream",
+          };
+        }
+        return null;
+      }),
+    );
+    filteredAttachments = attachments.filter(Boolean) as Array<{
+      filename: string;
+      content: Buffer;
+      contentType: string;
+    }>;
+    attachmentInvoiceIds = ids;
+  }
+
+  if (filteredAttachments.length === 0) {
+    return NextResponse.json(
+      {
+        error:
+          ids.length > 0
+            ? "Aucune pièce jointe n'a pu être récupérée depuis Cloudinary. Vérifiez les fichiers des factures."
+            : "Aucun fichier à envoyer.",
+      },
+      { status: 400 },
+    );
+  }
 
   const regionLabel =
     region.charAt(0).toUpperCase() + region.slice(1);
@@ -230,10 +326,10 @@ export async function POST(request: Request) {
   }
 
   // Mark invoices as sent
-  if (sendSuccess && invoiceIds.length > 0) {
+  const idsToMark = attachmentInvoiceIds.length > 0 ? attachmentInvoiceIds : ids;
+  if (sendSuccess && idsToMark.length > 0) {
     try {
-      const ids = invoiceIds.map((id) => id.toString()).filter(Boolean);
-      if (ids.length > 0) {
+      if (idsToMark.length > 0) {
         let accountantId: string | null = null;
         if (primaryRecipient) {
           const accRes = await pool.query(
@@ -248,7 +344,7 @@ export async function POST(request: Request) {
         }
 
         const sets = [`status = 'sent'`, `"sentAt" = NOW()`, `"updatedAt" = NOW()`];
-        const params: unknown[] = [ids, workspaceOwnerId];
+        const params: unknown[] = [idsToMark, workspaceOwnerId];
         let idx = 3;
 
         if (accountantId) {
@@ -264,7 +360,7 @@ export async function POST(request: Request) {
 
         await pool.query(`UPDATE invoices SET ${sets.join(", ")} WHERE ${where}`, params);
 
-        await persistInvoiceSendRecipients(workspaceOwnerId, ids, recipientEmails, new Date());
+        await persistInvoiceSendRecipients(workspaceOwnerId, idsToMark, recipientEmails, new Date());
       }
     } catch (dbError) {
       console.error("Erreur mise à jour statut factures:", dbError);
