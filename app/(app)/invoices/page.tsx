@@ -1908,7 +1908,15 @@ export default function InvoicesPage() {
       const byRegion = new Map(Object.entries(byRegionRecord));
 
       for (const [reg, list] of byRegion) {
-        const recipientEmails = mergeCabinetRecipients(emailsByRegion[reg] ?? [], extraByRegion[reg] ?? "");
+        const recipientEmails = mergeCabinetRecipients(
+          emailsByRegion[reg] ?? [],
+          extraByRegion[normalizeRegionKey(reg)] ?? extraByRegion[reg] ?? "",
+        );
+        if (recipientEmails.length === 0) {
+          parts.push(`${reg}: aucun cabinet sélectionné pour ${regionDisplayLabel(reg)}`);
+          anyFail = true;
+          continue;
+        }
 
         for (let i = 0; i < list.length; i += CABINET_SEND_BATCH_SIZE) {
           const chunk = list.slice(i, i + CABINET_SEND_BATCH_SIZE);

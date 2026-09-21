@@ -1,4 +1,5 @@
 import { signCloudinaryUrlIfApplicable } from "@/lib/cloudinary-delivery";
+import { fetchCloudinaryInvoiceBuffer } from "@/lib/cloudinary-invoice-asset";
 
 function guessContentType(originalName: string): string {
   const lower = originalName.toLowerCase();
@@ -17,6 +18,17 @@ export async function downloadInvoiceFileBuffer(params: {
 }): Promise<{ buffer: Buffer; filename: string; contentType: string } | null> {
   const { fileUrl, originalName, mimeType } = params;
   if (!fileUrl?.trim()) return null;
+
+  if (fileUrl.includes("res.cloudinary.com")) {
+    const fromCloudinary = await fetchCloudinaryInvoiceBuffer(fileUrl, originalName, mimeType);
+    if (fromCloudinary) {
+      return {
+        buffer: fromCloudinary.buffer,
+        filename: originalName?.trim() || "facture.pdf",
+        contentType: fromCloudinary.contentType,
+      };
+    }
+  }
 
   const candidates = [signCloudinaryUrlIfApplicable(fileUrl), fileUrl].filter(
     (u, i, arr) => u && arr.indexOf(u) === i,

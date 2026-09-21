@@ -7,20 +7,22 @@ import { accountantPortalLoginUrl, signAccountantPortalToken } from "@/lib/accou
 import { persistInvoiceSendRecipients } from "@/lib/invoice-send-recipients";
 import { downloadInvoiceFileBuffer } from "@/lib/invoice-file-download";
 import { ensureInvoiceShareTokens } from "@/lib/ensure-invoice-share-token";
+import { normalizeRegionKey, regionsMatch } from "@/lib/country-regions";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
 async function resolveRecipientEmails(region: string, userId: string): Promise<string[]> {
-  const regionKey = String(region || "").trim().toLowerCase();
+  const regionKey = normalizeRegionKey(region);
   try {
     const result = await pool.query(
-      `SELECT email FROM accountants
-       WHERE LOWER(TRIM(region)) = $1 AND "userId" = $2 AND ("deletedAt" IS NULL)
+      `SELECT email, region FROM accountants
+       WHERE "userId" = $1 AND ("deletedAt" IS NULL)
        ORDER BY "createdAt" ASC`,
-      [regionKey, userId],
+      [userId],
     );
     return result.rows
+      .filter((r: { region: string }) => regionsMatch(r.region, regionKey))
       .map((r: { email: string }) => String(r.email || "").trim())
       .filter(Boolean);
   } catch (err) {
@@ -75,6 +77,7 @@ async function loadAttachmentsFromInvoiceIds(
     contentType: string;
     invoiceId: string;
   }> = [];
+  const failedIds: string[] = [];
 
   for (const row of result.rows as Array<{
     id: string;
@@ -88,6 +91,7 @@ async function loadAttachmentsFromInvoiceIds(
       mimeType: row.mimeType,
     });
     if (!downloaded) {
+      failedIds.push(row.id);
       console.warn("Pièce jointe inaccessible:", row.id, row.originalName);
       continue;
     }
@@ -97,6 +101,10 @@ async function loadAttachmentsFromInvoiceIds(
       contentType: downloaded.contentType,
       invoiceId: row.id,
     });
+  }
+
+  if (failedIds.length > 0) {
+    console.warn("Échec téléchargement pièces jointes:", failedIds.join(", "));
   }
 
   return attachments;
@@ -227,12 +235,21 @@ export async function POST(request: Request) {
   }
 
   if (filteredAttachments.length === 0) {
+    const cloudinaryOk = Boolean(
+      process.env.CLOUDINARY_CLOUD_NAME &&
+        process.env.CLOUDINARY_API_KEY &&
+        process.env.CLOUDINARY_API_SECRET,
+    );
     return NextResponse.json(
       {
         error:
           ids.length > 0
-            ? "Aucune pièce jointe n'a pu être récupérée depuis Cloudinary. Vérifiez les fichiers des factures."
-            : "Aucun fichier à envoyer.",
+            ? cloudinaryOk
+              ? `Aucune pièce jointe n'a pu être récupérée (${ids.length} facture(s)). Vérifiez que les fichiers existent encore sur Cloudinary.`
+              : `Aucune pièce jointe récupérée : variables CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY et CLOUDINARY_API_SECRET manquantes sur le serveur.`
+            : recipientEmailsOverride.length === 0
+              ? `Aucun cabinet configuré pour la région « ${region} ». Ajoutez un cabinet dans Paramètres ou sélectionnez un destinataire.`
+              : "Aucun fichier à envoyer.",
       },
       { status: 400 },
     );
