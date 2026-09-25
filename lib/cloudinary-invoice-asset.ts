@@ -1,9 +1,9 @@
 import { v2 as cloudinary } from "cloudinary";
 import { signCloudinaryUrlIfApplicable } from "@/lib/cloudinary-delivery";
 
-type DeliveryType = "upload" | "authenticated" | "private";
+export type CloudinaryDeliveryType = "upload" | "authenticated" | "private";
 
-function setupCloudinary(): boolean {
+export function setupCloudinaryFromEnv(): boolean {
   const name = process.env.CLOUDINARY_CLOUD_NAME?.toLowerCase().trim();
   const key = process.env.CLOUDINARY_API_KEY?.trim();
   const sec = process.env.CLOUDINARY_API_SECRET?.trim();
@@ -12,7 +12,7 @@ function setupCloudinary(): boolean {
   return true;
 }
 
-function buildPublicIdCandidates(publicId: string): string[] {
+export function buildPublicIdCandidates(publicId: string): string[] {
   const trimmed = publicId.trim();
   if (!trimmed) return [];
   const set = new Set<string>([trimmed]);
@@ -24,21 +24,55 @@ function buildPublicIdCandidates(publicId: string): string[] {
   return Array.from(set);
 }
 
+/** Parse une URL Cloudinary stockée en base (upload / authenticated / private). */
+export function parseCloudinaryStoredUrl(fileUrl: string): {
+  resourceType: "image" | "raw";
+  publicId: string;
+  deliveryType: CloudinaryDeliveryType;
+} | null {
+  const withType = fileUrl.match(
+    /^https:\/\/res\.cloudinary\.com\/[^/]+\/(image|raw)\/(upload|authenticated|private)\/(?:v\d+\/)?(.+)$/i,
+  );
+  if (withType) {
+    return {
+      resourceType: withType[1]!.toLowerCase() as "image" | "raw",
+      deliveryType: withType[2]!.toLowerCase() as CloudinaryDeliveryType,
+      publicId: withType[3]!,
+    };
+  }
+
+  const legacy = fileUrl.match(
+    /^https:\/\/res\.cloudinary\.com\/[^/]+\/(image|raw)\/upload\/(?:v\d+\/)?(.+)$/i,
+  );
+  if (legacy) {
+    return {
+      resourceType: legacy[1]!.toLowerCase() as "image" | "raw",
+      deliveryType: "upload",
+      publicId: legacy[2]!,
+    };
+  }
+
+  return null;
+}
+
 function makePrivateDownloadUrls(
   publicId: string,
   resourceType: "image" | "raw",
-  deliveryType: DeliveryType = "upload",
+  deliveryType: CloudinaryDeliveryType = "upload",
+  asAttachment = true,
 ): string[] {
-  if (!setupCloudinary()) return [];
+  if (!setupCloudinaryFromEnv()) return [];
   try {
     const formatMatch = publicId.match(/\.([a-z0-9]+)$/i);
-    const format = formatMatch ? formatMatch[1].toLowerCase() : undefined;
-    const basePublicId = formatMatch ? publicId.slice(0, -(format.length + 1)) : publicId;
+    const formatExt = formatMatch?.[1]?.toLowerCase();
+    const basePublicId = formatExt
+      ? publicId.slice(0, -(formatExt.length + 1))
+      : publicId;
     const expiry = Math.floor(Date.now() / 1000) + 600;
 
     const candidates: Array<{ pid: string; fmt: string | null }> = [
-      { pid: basePublicId, fmt: format ?? "pdf" },
-      { pid: publicId, fmt: format ?? "pdf" },
+      { pid: basePublicId, fmt: formatExt ?? "pdf" },
+      { pid: publicId, fmt: formatExt ?? "pdf" },
       { pid: basePublicId, fmt: null },
       { pid: publicId, fmt: null },
     ];
@@ -52,7 +86,7 @@ function makePrivateDownloadUrls(
           {
             resource_type: resourceType,
             type: deliveryType,
-            attachment: true,
+            attachment: asAttachment,
             expires_at: expiry,
           },
         );
@@ -68,14 +102,18 @@ function makePrivateDownloadUrls(
   }
 }
 
-async function resolveAssetFromAdminApi(
+export async function resolveAssetFromAdminApi(
   publicId: string,
   hintType: "image" | "raw",
-): Promise<{ publicId: string; resourceType: "image" | "raw"; deliveryType: DeliveryType } | null> {
-  if (!setupCloudinary()) return null;
+): Promise<{
+  publicId: string;
+  resourceType: "image" | "raw";
+  deliveryType: CloudinaryDeliveryType;
+} | null> {
+  if (!setupCloudinaryFromEnv()) return null;
   const types: ("image" | "raw")[] = hintType === "image" ? ["image", "raw"] : ["raw", "image"];
   const ids = buildPublicIdCandidates(publicId);
-  const deliveryTypes: DeliveryType[] = ["upload", "authenticated", "private"];
+  const deliveryTypes: CloudinaryDeliveryType[] = ["upload", "authenticated", "private"];
 
   for (const rt of types) {
     for (const dt of deliveryTypes) {
@@ -93,7 +131,7 @@ async function resolveAssetFromAdminApi(
             return {
               publicId: res.public_id,
               resourceType: (res.resource_type as "image" | "raw") ?? rt,
-              deliveryType: (res.type as DeliveryType) || dt,
+              deliveryType: (res.type as CloudinaryDeliveryType) || dt,
             };
           }
         } catch {
@@ -105,19 +143,76 @@ async function resolveAssetFromAdminApi(
   return null;
 }
 
-async function fetchBufferFromUrl(url: string): Promise<Buffer | null> {
+async function fetchBufferFromUrl(url: string): Promise<{ buffer: Buffer; contentType: string | null } | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(45000) });
     if (!res.ok) return null;
     const buffer = Buffer.from(await res.arrayBuffer());
-    return buffer.length >= 64 ? buffer : null;
+    if (buffer.length < 64) return null;
+    const contentType = res.headers.get("content-type")?.split(";")[0]?.trim() || null;
+    return { buffer, contentType };
   } catch {
     return null;
   }
 }
 
+/** Même logique que « Voir document » : URL privée Cloudinary validée. */
+export async function resolveWorkingCloudinaryDownloadUrl(
+  fileUrl: string,
+  asAttachment = true,
+): Promise<string | null> {
+  const parsed = parseCloudinaryStoredUrl(fileUrl);
+  if (!parsed) return null;
+
+  const asset = await resolveAssetFromAdminApi(parsed.publicId, parsed.resourceType);
+  const publicId = asset?.publicId ?? parsed.publicId;
+  const resourceType = asset?.resourceType ?? parsed.resourceType;
+  const deliveryType = asset?.deliveryType ?? parsed.deliveryType;
+
+  const types: ("image" | "raw")[] = resourceType === "image" ? ["image", "raw"] : ["raw", "image"];
+  const deliveryTypes: CloudinaryDeliveryType[] =
+    deliveryType === "upload"
+      ? ["upload", "authenticated", "private"]
+      : [deliveryType, "upload", "authenticated", "private"];
+
+  for (const rt of types) {
+    for (const dt of deliveryTypes) {
+      for (const pid of buildPublicIdCandidates(publicId)) {
+        for (const url of makePrivateDownloadUrls(pid, rt, dt, asAttachment)) {
+          try {
+            const check = await fetch(url, { signal: AbortSignal.timeout(15000) });
+            if (check.ok) return url;
+          } catch {
+            // try next
+          }
+        }
+      }
+    }
+  }
+
+  if (!setupCloudinaryFromEnv()) return null;
+  for (const rt of types) {
+    for (const pid of buildPublicIdCandidates(publicId)) {
+      const signedUrl = cloudinary.url(pid, {
+        resource_type: rt,
+        type: deliveryType,
+        sign_url: true,
+        secure: true,
+      });
+      try {
+        const check = await fetch(signedUrl, { signal: AbortSignal.timeout(15000) });
+        if (check.ok) return signedUrl;
+      } catch {
+        // try next
+      }
+    }
+  }
+
+  return null;
+}
+
 function guessContentType(originalName: string, header?: string | null, mimeType?: string | null): string {
-  if (header?.trim()) return header.split(";")[0]!.trim();
+  if (header?.trim()) return header;
   if (mimeType?.trim()) return mimeType.trim();
   const lower = originalName.toLowerCase();
   if (lower.endsWith(".pdf")) return "application/pdf";
@@ -127,73 +222,29 @@ function guessContentType(originalName: string, header?: string | null, mimeType
   return "application/octet-stream";
 }
 
-/** Télécharge un fichier Cloudinary (API privée + signatures) pour pièces jointes email. */
+/** Télécharge le buffer — même chemin que l’aperçu document, pour pièces jointes email. */
 export async function fetchCloudinaryInvoiceBuffer(
   fileUrl: string,
   originalName: string,
   mimeType?: string | null,
 ): Promise<{ buffer: Buffer; contentType: string } | null> {
-  const m = fileUrl.match(
-    /^https:\/\/res\.cloudinary\.com\/[^/]+\/(image|raw)\/upload\/(?:v\d+\/)?(.+)$/i,
-  );
-  if (!m) return null;
-
-  const hintType = m[1]!.toLowerCase() as "image" | "raw";
-  const publicId = m[2]!;
-
-  const asset = await resolveAssetFromAdminApi(publicId, hintType);
-  const resolvedPublicId = asset?.publicId ?? publicId;
-  const resourceType = asset?.resourceType ?? hintType;
-  const deliveryType = asset?.deliveryType ?? "upload";
-
-  const types: ("image" | "raw")[] = resourceType === "image" ? ["image", "raw"] : ["raw", "image"];
-  const deliveryTypes: DeliveryType[] =
-    deliveryType === "upload"
-      ? ["upload", "authenticated", "private"]
-      : [deliveryType, "upload", "authenticated", "private"];
-
-  for (const rt of types) {
-    for (const dt of deliveryTypes) {
-      for (const pid of buildPublicIdCandidates(resolvedPublicId)) {
-        for (const url of makePrivateDownloadUrls(pid, rt, dt)) {
-          const buffer = await fetchBufferFromUrl(url);
-          if (buffer) {
-            return {
-              buffer,
-              contentType: guessContentType(originalName, null, mimeType),
-            };
-          }
-        }
-      }
-    }
-  }
-
-  if (setupCloudinary()) {
-    for (const rt of types) {
-      for (const pid of buildPublicIdCandidates(resolvedPublicId)) {
-        const signedUrl = cloudinary.url(pid, {
-          resource_type: rt,
-          type: deliveryType,
-          sign_url: true,
-          secure: true,
-        });
-        const buffer = await fetchBufferFromUrl(signedUrl);
-        if (buffer) {
-          return {
-            buffer,
-            contentType: guessContentType(originalName, null, mimeType),
-          };
-        }
-      }
+  const workingUrl = await resolveWorkingCloudinaryDownloadUrl(fileUrl, true);
+  if (workingUrl) {
+    const fetched = await fetchBufferFromUrl(workingUrl);
+    if (fetched) {
+      return {
+        buffer: fetched.buffer,
+        contentType: guessContentType(originalName, fetched.contentType, mimeType),
+      };
     }
   }
 
   for (const url of [signCloudinaryUrlIfApplicable(fileUrl), fileUrl]) {
-    const buffer = await fetchBufferFromUrl(url);
-    if (buffer) {
+    const fetched = await fetchBufferFromUrl(url);
+    if (fetched) {
       return {
-        buffer,
-        contentType: guessContentType(originalName, null, mimeType),
+        buffer: fetched.buffer,
+        contentType: guessContentType(originalName, fetched.contentType, mimeType),
       };
     }
   }
