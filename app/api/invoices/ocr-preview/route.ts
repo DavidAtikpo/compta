@@ -16,7 +16,13 @@ export const maxDuration = 120;
 export async function GET(request: Request) {
   const userId = getAuthenticatedUserId(request);
   if (!userId) {
-    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+    return NextResponse.json(
+      {
+        error: "Connexion requise.",
+        hint: "Ouvrez le site connecté puis GET /api/invoices/ocr-preview (cookie de session) ou fetch avec Bearer token.",
+      },
+      { status: 401 },
+    );
   }
   const result = await probeVisionOcrApi();
   return NextResponse.json({ ...result, endpoint: "/api/invoices/ocr-preview" });

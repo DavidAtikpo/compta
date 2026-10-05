@@ -8,7 +8,14 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   const userId = getAuthenticatedUserId(request);
   if (!userId) {
-    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+    return NextResponse.json(
+      {
+        error: "Connexion requise.",
+        hint:
+          "Connectez-vous sur le site (même domaine), ouvrez une page Factures pour synchroniser la session, puis rechargez cette URL. Sinon : fetch avec Authorization Bearer + localStorage compta-token.",
+      },
+      { status: 401 },
+    );
   }
 
   const result = await probeVisionOcrApi();

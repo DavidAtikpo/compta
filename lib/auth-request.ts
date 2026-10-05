@@ -16,6 +16,30 @@ export function getBearerToken(request: Request): string | null {
   return auth?.startsWith("Bearer ") ? auth.slice(7) : null;
 }
 
+function getComptaTokenFromCookie(request: Request): string | null {
+  const raw = request.headers.get("cookie");
+  if (!raw) return null;
+  for (const part of raw.split(";")) {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) continue;
+    const name = trimmed.slice(0, eq);
+    if (name !== "compta-token") continue;
+    const value = trimmed.slice(eq + 1);
+    if (!value) return null;
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }
+  return null;
+}
+
+export function getAuthTokenFromRequest(request: Request): string | null {
+  return getBearerToken(request) || getComptaTokenFromCookie(request);
+}
+
 export function getUserIdFromJwt(token: string): string | null {
   if (!JWT_SECRET) return null;
   try {
@@ -32,7 +56,7 @@ export function getAccountantEmailFromRequest(request: Request): string | null {
 }
 
 export function getAuthenticatedUserId(request: Request): string | null {
-  const token = getBearerToken(request);
+  const token = getAuthTokenFromRequest(request);
   if (!token) return null;
   return getUserIdFromJwt(token);
 }

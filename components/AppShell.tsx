@@ -7,6 +7,7 @@ import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { SessionExpiredRedirect } from "@/components/SessionExpiredRedirect";
 import { Sidebar } from "@/components/Sidebar";
 import { isEntreprisePlan } from "@/lib/plans";
+import { syncComptaTokenCookie } from "@/lib/auth-session-cookie";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -20,6 +21,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const load = () => {
       const token = window.localStorage.getItem("compta-token");
+      syncComptaTokenCookie(token);
       if (!token) {
         setShowEnterpriseNav(false);
         setShowAdminNav(false);
@@ -63,6 +65,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const handleLogout = () => {
     window.localStorage.removeItem("compta-token");
+    syncComptaTokenCookie(null);
     router.replace("/login");
   };
 

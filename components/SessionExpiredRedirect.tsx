@@ -43,6 +43,9 @@ export function SessionExpiredRedirect() {
       if (auth?.startsWith("Bearer ")) {
         try {
           globalThis.localStorage?.removeItem("compta-token");
+          void import("@/lib/auth-session-cookie").then(({ syncComptaTokenCookie }) =>
+            syncComptaTokenCookie(null),
+          );
         } catch {
           /* ignore */
         }

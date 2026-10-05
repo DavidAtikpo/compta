@@ -83,6 +83,8 @@ function LoginPageContent() {
         setError(data.error || "Erreur d'authentification.");
       } else {
         window.localStorage.setItem("compta-token", data.token);
+        const { syncComptaTokenCookie } = await import("@/lib/auth-session-cookie");
+        syncComptaTokenCookie(data.token);
         try {
           const meRes = await fetch("/api/auth/me", { headers: { Authorization: `Bearer ${data.token}` } });
           const me = await meRes.json().catch(() => ({}));
