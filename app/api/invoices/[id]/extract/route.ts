@@ -8,8 +8,12 @@ import {
   isValidInvoiceCurrency,
 } from "@/lib/invoice-currency";
 import { resolveClassificationFromExtract } from "@/lib/classification";
-import { ocrFromImageDataUrl } from "@/lib/server-ocr";
-import { isOcrTextQualityGood, isOcrTextUsable } from "@/lib/ocr-quality";
+import { ocrFromImageDataUrl, visionOcrHintForUser } from "@/lib/server-ocr";
+import {
+  isOcrTextLooselyUsable,
+  isOcrTextQualityGood,
+  isOcrTextUsable,
+} from "@/lib/ocr-quality";
 import { resolveDocumentImageDataUrl } from "@/lib/invoice-document-vision";
 import {
   parseFournisseurFromOcr,
@@ -59,7 +63,10 @@ async function resolveOcrTextForRules(
   options?: { forceServer?: boolean },
 ): Promise<string | null> {
   const forceServer = options?.forceServer === true;
-  const clientText = isOcrTextQualityGood(ocrText) ? String(ocrText).trim() : null;
+  const clientText =
+    isOcrTextQualityGood(ocrText) || isOcrTextLooselyUsable(ocrText)
+      ? String(ocrText).trim()
+      : null;
   const hasVisionKey = Boolean(process.env.OCR_API_KEY?.trim());
   const needServer = forceServer || hasVisionKey || !clientText;
 
@@ -68,7 +75,15 @@ async function resolveOcrTextForRules(
 
   const visionDataUrl = await resolveDocumentImageDataUrl(fileUrl, originalName, mimeType);
 
-  if (!visionDataUrl?.startsWith("data:image/")) return null;
+  if (!visionDataUrl?.startsWith("data:image/")) {
+    console.warn("resolveOcrTextForRules: pas d’image OCR", {
+      invoiceId,
+      originalName,
+      mimeType,
+      hasFileUrl: Boolean(fileUrl),
+    });
+    return clientText;
+  }
 
   const ocr = await ocrFromImageDataUrl(visionDataUrl);
   if (!ocr) return clientText;
@@ -83,7 +98,10 @@ async function resolveOcrTextForRules(
           : clientText;
   try {
     const replaceOcr =
-      forceServer || !isOcrTextQualityGood(clientText) || isOcrTextQualityGood(ocrTextToUse);
+      forceServer ||
+      !isOcrTextQualityGood(clientText) ||
+      isOcrTextQualityGood(ocrTextToUse) ||
+      isOcrTextLooselyUsable(ocrTextToUse);
     await pool.query(
       replaceOcr
         ? `UPDATE invoices SET "ocrText" = $1, "updatedAt" = NOW()
@@ -176,7 +194,7 @@ async function tryRulesFallbackResponse(
     invoiceId,
     workspaceOwnerId,
   );
-  if (!isOcrTextUsable(ocrTextToUse)) return null;
+  if (!isOcrTextLooselyUsable(ocrTextToUse) && !isOcrTextUsable(ocrTextToUse)) return null;
   const extracted = extractStructuredFromOcr(ocrTextToUse!, originalName);
   if (!rulesExtractHasData(extracted)) return null;
   const data = await persistRulesExtract(extracted, ocrTextToUse!, invoiceId, workspaceOwnerId);
@@ -394,12 +412,16 @@ export async function POST(
         workspaceOwnerId,
         { forceServer: true },
       );
-      if (isOcrTextQualityGood(serverOcr)) ocrText = serverOcr;
+      if (isOcrTextQualityGood(serverOcr) || isOcrTextLooselyUsable(serverOcr)) {
+        ocrText = serverOcr;
+      }
     }
 
     // Extraction facture : « rules » = OCR + règles (sans LLM) ; autres = vision + LLM
     if (provider === "rules") {
-      const ocrTextToUse = isOcrTextUsable(ocrText) ? String(ocrText).trim() : null;
+      const trimmedOcr = String(ocrText || "").trim();
+      const ocrTextToUse =
+        isOcrTextUsable(trimmedOcr) || isOcrTextLooselyUsable(trimmedOcr) ? trimmedOcr : null;
 
       if (!ocrTextToUse) {
         console.warn("Extraction 422: provider=rules mais aucun ocrText", {
@@ -409,10 +431,12 @@ export async function POST(
           originalName,
           hasFileUrl: Boolean(fileUrl),
         });
+        const visionHint = visionOcrHintForUser();
         return NextResponse.json(
           {
-            error:
-              "Extraction (OCR) indisponible : impossible de lire le texte du document. Ré-uploadez une image plus nette ou un PDF lisible.",
+            error: visionHint
+              ? `Extraction (OCR) indisponible. ${visionHint}`
+              : "Extraction (OCR) indisponible : impossible de lire le texte du document. Ré-uploadez une image plus nette ou un PDF lisible.",
             ...(process.env.NODE_ENV !== "production"
               ? {
                   details: {
@@ -421,6 +445,7 @@ export async function POST(
                     hasFileUrl: Boolean(fileUrl),
                     mimeType: mimeType || null,
                     originalName,
+                    visionHint,
                   },
                 }
               : {}),

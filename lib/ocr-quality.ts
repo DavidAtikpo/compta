@@ -34,3 +34,21 @@ export function isOcrTextQualityGood(text: string | null | undefined): boolean {
 export function isOcrTextUsable(text: string | null | undefined): text is string {
   return isOcrTextQualityGood(text);
 }
+
+/** Texte suffisant pour tenter l’extraction par règles (moins strict que isOcrTextQualityGood). */
+export function isOcrTextLooselyUsable(text: string | null | undefined): text is string {
+  const t = stripOcrMarkers(String(text || "")).trim();
+  if (!t || t.length < 12) return false;
+  if (/^erreur\s+ocr\b/i.test(t)) return false;
+  if (/aucun\s+texte\s+d[ée]tect[ée]\b/i.test(t)) return false;
+
+  const letters = (t.match(/[a-zA-ZÀ-ÿ]/g) || []).length;
+  const digits = (t.match(/\d/g) || []).length;
+  if (digits >= 4 && letters >= 2) return true;
+  if (isOcrTextQualityGood(t)) return true;
+
+  const alnum = letters + digits;
+  if (alnum / t.length < 0.22) return false;
+  const words = t.match(/[a-zA-ZÀ-ÿ]{2,}/g) || [];
+  return words.length >= 2 && t.length >= 18;
+}

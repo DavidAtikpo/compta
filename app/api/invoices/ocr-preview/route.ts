@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/auth-request";
 import { resolveDocumentImageDataUrl } from "@/lib/invoice-document-vision";
-import { ocrFromImageDataUrl } from "@/lib/server-ocr";
-import { isOcrTextQualityGood } from "@/lib/ocr-quality";
+import { ocrFromImageDataUrl, probeVisionOcrApi } from "@/lib/server-ocr";
+import { isOcrTextLooselyUsable, isOcrTextQualityGood } from "@/lib/ocr-quality";
 import {
   parseFournisseurFromOcr,
   parseMontantTTCStringFromOcr,
@@ -11,6 +11,16 @@ import { detectCurrencyFromOcrText } from "@/lib/invoice-currency";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
+
+/** Diagnostic OCR_API_KEY + Google Vision (connecté, token Bearer). */
+export async function GET(request: Request) {
+  const userId = getAuthenticatedUserId(request);
+  if (!userId) {
+    return NextResponse.json({ error: "Connexion requise." }, { status: 401 });
+  }
+  const result = await probeVisionOcrApi();
+  return NextResponse.json({ ...result, endpoint: "/api/invoices/ocr-preview" });
+}
 
 export async function POST(request: Request) {
   const userId = getAuthenticatedUserId(request);
@@ -37,7 +47,7 @@ export async function POST(request: Request) {
     }
 
     const ocrRaw = await ocrFromImageDataUrl(visionDataUrl);
-    if (!isOcrTextQualityGood(ocrRaw)) {
+    if (!isOcrTextQualityGood(ocrRaw) && !isOcrTextLooselyUsable(ocrRaw)) {
       return NextResponse.json(
         { error: "Texte illisible — reprenez la photo à plat, bien éclairée." },
         { status: 422 },

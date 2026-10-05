@@ -11,35 +11,76 @@ function extractPublicId(url: string): { publicId: string; resourceType: "image"
   return { publicId: m[2], resourceType: m[1].toLowerCase() as "image" | "raw" };
 }
 
+function cloudinaryFetchCandidates(storedUrl: string): string[] {
+  const out: string[] = [];
+  const add = (u: string) => {
+    if (u && !out.includes(u)) out.push(u);
+  };
+
+  if (!storedUrl.includes("res.cloudinary.com")) {
+    add(storedUrl);
+    return out;
+  }
+
+  if (configureCloudinaryFromEnv()) {
+    const parsed = extractPublicId(storedUrl);
+    if (parsed) {
+      const rt = parsed.resourceType === "raw" ? "image" : parsed.resourceType;
+      add(
+        cloudinary.url(parsed.publicId, {
+          resource_type: rt,
+          sign_url: true,
+          secure: true,
+          type: "upload",
+          transformation: [
+            { width: 2400, crop: "limit", fetch_format: "jpg", quality: "auto:good" },
+          ],
+        }),
+      );
+      add(
+        cloudinary.url(parsed.publicId, {
+          resource_type: rt,
+          sign_url: true,
+          secure: true,
+          type: "upload",
+        }),
+      );
+    }
+  }
+
+  add(storedUrl);
+  return out;
+}
+
 /** For regular image URLs: fetch and return as base64 data URL (public or signed Cloudinary). */
 async function imageUrlToDataUrl(url: string): Promise<string | null> {
   const tryFetch = async (fetchUrl: string): Promise<string | null> => {
     try {
-      const res = await fetch(fetchUrl, { signal: AbortSignal.timeout(30000) });
-      if (!res.ok) return null;
+      const res = await fetch(fetchUrl, { signal: AbortSignal.timeout(45000) });
+      if (!res.ok) {
+        console.warn("imageUrlToDataUrl HTTP", res.status, fetchUrl.slice(0, 120));
+        return null;
+      }
       const buf = Buffer.from(await res.arrayBuffer());
       if (buf.length < 64) return null;
-      const ct = res.headers.get("content-type")?.split(";")[0]?.trim() || "image/jpeg";
-      if (!ct.startsWith("image/")) return null;
+      let ct = res.headers.get("content-type")?.split(";")[0]?.trim() || "image/jpeg";
+      if (!ct.startsWith("image/")) {
+        if (/f_jpg|format_jpg|\.jpe?g/i.test(fetchUrl)) ct = "image/jpeg";
+        else if (/\.png/i.test(fetchUrl)) ct = "image/png";
+        else return null;
+      }
       return `data:${ct};base64,${buf.toString("base64")}`;
-    } catch {
+    } catch (e) {
+      console.warn("imageUrlToDataUrl fetch failed:", (e as Error).message);
       return null;
     }
   };
 
-  const direct = await tryFetch(url);
-  if (direct) return direct;
-
-  if (!configureCloudinaryFromEnv()) return null;
-  const parsed = extractPublicId(url);
-  if (!parsed) return null;
-  const signedUrl = cloudinary.url(parsed.publicId, {
-    resource_type: parsed.resourceType,
-    sign_url: true,
-    secure: true,
-    type: "upload",
-  });
-  return tryFetch(signedUrl);
+  for (const candidate of cloudinaryFetchCandidates(url)) {
+    const data = await tryFetch(candidate);
+    if (data) return data;
+  }
+  return null;
 }
 
 async function pdfCloudinaryToJpegDataUrl(fileUrl: string): Promise<string | null> {
@@ -141,6 +182,8 @@ export async function resolveDocumentImageDataUrl(
   const isImage =
     !isPdf &&
     (lowerMime.startsWith("image/") ||
+      lowerMime === "" ||
+      /\.(jpg|jpeg|png|webp|gif|heic|heif)(\?|$)/i.test(lowerName) ||
       /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(fileUrl) ||
       isCloudinaryDelivery);
 

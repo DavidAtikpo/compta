@@ -24,6 +24,8 @@ import {
   isUserConfirmed,
   matchesInvoiceWorkflowFilter,
 } from "@/lib/invoice-workflow-ui";
+import { ocrImageFileInBrowser } from "@/lib/client-ocr";
+import { isOcrTextLooselyUsable, isOcrTextQualityGood } from "@/lib/ocr-quality";
 
 /** Réglages IMAP Gmail recommandés (identiques pour tous les comptes Gmail). */
 const IMAP_DEFAULT_HOST = "imap.gmail.com";
@@ -417,6 +419,15 @@ function findUploadedUrl(file: File, urls: UploadedDraftUrl[]): string | null {
   return urls.find((u) => u.key === fileKey(file))?.url ?? null;
 }
 
+function isDraftImageFile(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  return /\.(jpe?g|png|webp|gif|heic|heif)$/i.test(file.name);
+}
+
+function isDraftSupportedFile(file: File): boolean {
+  return file.type === "application/pdf" || isDraftImageFile(file);
+}
+
 export default function InvoicesPage() {
   const router = useRouter();
   const pathname = usePathname();
@@ -441,6 +452,7 @@ export default function InvoicesPage() {
   const [message, setMessage] = useState("");
   const [ocrStatus, setOcrStatus] = useState("");
   const [uploadedUrls, setUploadedUrls] = useState<UploadedDraftUrl[]>([]);
+  const [clientOcrByFileKey, setClientOcrByFileKey] = useState<Record<string, string>>({});
   const [fileProgress, setFileProgress] = useState<Record<string, { phase: DraftFilePhase; error?: string }>>({});
   const [uploading, setUploading] = useState(false);
   const [extractionQueue, setExtractionQueue] = useState<{
@@ -1049,6 +1061,13 @@ export default function InvoicesPage() {
         setOcrStatus(`Enregistrement ${i + 1}/${entries.length} : ${file.name}`);
         setFileProgress((prev) => ({ ...prev, [key]: { phase: "registering" } }));
 
+        const clientOcr = clientOcrByFileKey[key];
+        const ocrTextForSave =
+          clientOcr &&
+          (isOcrTextQualityGood(clientOcr) || isOcrTextLooselyUsable(clientOcr))
+            ? clientOcr
+            : null;
+
         const res = await fetch("/api/invoices", {
           method: "POST",
           headers: {
@@ -1059,8 +1078,8 @@ export default function InvoicesPage() {
             filename: file.name,
             originalName: file.name,
             size: file.size,
-            mimeType: file.type,
-            ocrText: null,
+            mimeType: file.type || (isDraftImageFile(file) ? "image/jpeg" : file.type),
+            ocrText: ocrTextForSave,
             region,
             amount: null,
             category: category || null,
@@ -1128,8 +1147,8 @@ export default function InvoicesPage() {
 
   const handleFiles = async (newFiles: File[]) => {
     if (newFiles.length === 0) return;
-    const validFiles = newFiles.filter((f) => f.type.startsWith("image/") || f.type === "application/pdf");
-    const rejected = newFiles.filter((f) => !f.type.startsWith("image/") && f.type !== "application/pdf");
+    const validFiles = newFiles.filter(isDraftSupportedFile);
+    const rejected = newFiles.filter((f) => !isDraftSupportedFile(f));
     if (validFiles.length === 0) {
       setUploadResult(`Fichiers non supportés : ${rejected.map((f) => f.name).join(", ")}. Acceptés : images et PDF.`);
       return;
@@ -1159,6 +1178,20 @@ export default function InvoicesPage() {
         if ("url" in result) {
           urls.push({ key, name: file.name, url: result.url });
           setFileProgress((prev) => ({ ...prev, [key]: { phase: "uploaded" } }));
+          if (isDraftImageFile(file)) {
+            setOcrStatus(`Lecture du texte sur l’appareil (${ui + 1}/${validFiles.length})…`);
+            try {
+              const text = await ocrImageFileInBrowser(file);
+              if (
+                text &&
+                (isOcrTextQualityGood(text) || isOcrTextLooselyUsable(text))
+              ) {
+                setClientOcrByFileKey((prev) => ({ ...prev, [key]: text }));
+              }
+            } catch {
+              /* secours optionnel */
+            }
+          }
         } else {
           uploadErrors.push(`${file.name} : ${result.error}`);
           setFileProgress((prev) => ({
@@ -1694,6 +1727,11 @@ export default function InvoicesPage() {
       delete next[key];
       return next;
     });
+    setClientOcrByFileKey((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
   };
 
   const handleClearAll = () => {
@@ -1701,7 +1739,7 @@ export default function InvoicesPage() {
       if (pc?.src) URL.revokeObjectURL(pc.src);
       return null;
     });
-    setFiles([]); setUploadedUrls([]); setFileProgress({});
+    setFiles([]); setUploadedUrls([]); setFileProgress({}); setClientOcrByFileKey({});
     setOcrStatus(""); setUploadResult("");
     setAmount(""); setCategory(""); setCurrency("EUR"); setMessage("");
     setInvoiceType("achat");

@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { pool } from "../../../lib/postgres";
 import { getAuthenticatedUserId } from "../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
-import { isOcrTextQualityGood } from "@/lib/ocr-quality";
+import { isOcrTextLooselyUsable, isOcrTextQualityGood } from "@/lib/ocr-quality";
 import { ensureInvoiceWorkflowColumns } from "@/lib/invoice-workflow-schema";
 
 export async function GET(request: NextRequest) {
@@ -173,7 +173,10 @@ export async function POST(request: NextRequest) {
         originalName,
         size || 0,
         mimeType || "application/octet-stream",
-        typeof ocrText === "string" && isOcrTextQualityGood(ocrText) ? ocrText : null,
+        typeof ocrText === "string" &&
+        (isOcrTextQualityGood(ocrText) || isOcrTextLooselyUsable(ocrText))
+          ? String(ocrText).trim()
+          : null,
         normalizedRegion,
         accountantId,
         amount || null,

@@ -48,8 +48,20 @@ export async function POST(request: Request) {
     }
 
     // Check file type
-    const allowedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "application/pdf"];
-    if (!allowedTypes.includes(file.type) && !file.name.match(/\.(jpg|jpeg|png|webp|gif|pdf)$/i)) {
+    const allowedTypes = [
+      "image/jpeg",
+      "image/jpg",
+      "image/png",
+      "image/webp",
+      "image/gif",
+      "image/heic",
+      "image/heif",
+      "application/pdf",
+    ];
+    if (
+      !allowedTypes.includes(file.type) &&
+      !file.name.match(/\.(jpg|jpeg|png|webp|gif|heic|heif|pdf)$/i)
+    ) {
       return NextResponse.json(
         { error: `Type de fichier non supporté : ${file.type || "inconnu"}. Acceptés : images et PDF.` },
         { status: 400 }
