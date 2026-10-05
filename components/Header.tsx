@@ -1,8 +1,6 @@
 "use client";
 
-import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
-import { enterAccountantPortalFromUser } from "@/lib/accountant-portal-client";
+import { usePathname } from "next/navigation";
 import { TEAM_MODE_UI } from "@/lib/plans";
 
 const titles: Record<string, string> = {
@@ -25,7 +23,6 @@ const titles: Record<string, string> = {
   "/admin": "Administration",
   "/admin/users": "Utilisateurs",
   "/admin/invoices": "Factures (admin)",
-  "/admin/accountants": "Comptables",
   "/admin/structures": "Structures",
   "/admin/audit": "Audit",
 };
@@ -57,24 +54,11 @@ export function Header({
   teamWorkspaceActive = false,
   organizationName = null,
 }: HeaderProps) {
-  const router = useRouter();
   const pathname = usePathname();
-  const [portalBusy, setPortalBusy] = useState(false);
   const title = resolveTitle(pathname);
   const isOptimize = pathname === "/optimize";
   const display = userName || userEmail || "…";
   const initial = (userName || userEmail || "?").slice(0, 1).toUpperCase();
-  const isLoggedIn = !!userEmail;
-
-  const openAccountantPortal = async () => {
-    setPortalBusy(true);
-    const result = await enterAccountantPortalFromUser();
-    if (!result.ok) {
-      setPortalBusy(false);
-      router.push("/accountant/login");
-    }
-  };
-
   return (
     <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white/95 px-3 backdrop-blur-sm lg:h-12 lg:px-5">
       <div className="flex min-w-0 items-center gap-2">
@@ -98,17 +82,6 @@ export function Header({
             title="Alertes loi"
           >
             Alertes loi
-          </button>
-        )}
-        {isLoggedIn && (
-          <button
-            type="button"
-            onClick={() => void openAccountantPortal()}
-            disabled={portalBusy}
-            className="inline-flex rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-[11px] font-semibold text-indigo-900 shadow-sm transition hover:bg-indigo-100 disabled:opacity-60 sm:px-2.5 sm:text-xs"
-            title="Accéder au portail comptable avec votre compte Neurix"
-          >
-            {portalBusy ? "Ouverture…" : "Portail comptable"}
           </button>
         )}
         {teamWorkspaceActive && (

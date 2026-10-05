@@ -6,7 +6,6 @@ import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { ensureInvoiceWorkflowColumns } from "@/lib/invoice-workflow-schema";
 import { isInvoiceExtractionDone } from "@/lib/invoice-extraction-marker";
 import { ensureInvoiceShareTokens } from "@/lib/ensure-invoice-share-token";
-import { sendInvoicesToCabinet } from "@/lib/cabinet-send";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -46,12 +45,6 @@ export async function POST(request: NextRequest) {
     if (ids.length === 0) {
       return NextResponse.json({ error: "id ou ids requis." }, { status: 400 });
     }
-
-    const autoSendToCabinet = body.autoSendToCabinet !== false;
-    const senderName =
-      typeof body.senderName === "string" && body.senderName.trim()
-        ? body.senderName.trim()
-        : "Utilisateur Compta IA";
 
     const agentClause = restrictAgentToOwnSubmissions
       ? ` AND "submittedByUserId" = $3`
@@ -114,37 +107,6 @@ export async function POST(request: NextRequest) {
       workspaceOwnerId,
     );
 
-    const sendResults: Array<{ region: string; ok: boolean; message?: string; error?: string }> =
-      [];
-
-    if (autoSendToCabinet) {
-      const byRegion = new Map<string, string[]>();
-      for (const row of rows) {
-        if (row.sentAt) continue;
-        const list = byRegion.get(row.region) ?? [];
-        list.push(row.id);
-        byRegion.set(row.region, list);
-      }
-
-      for (const [region, regionIds] of byRegion) {
-        const result = await sendInvoicesToCabinet({
-          workspaceOwnerId,
-          actorUserId,
-          restrictAgentToOwnSubmissions,
-          region,
-          invoiceIds: regionIds,
-          senderName,
-          message: `Transmission de ${regionIds.length} facture(s) confirmée(s) par l'entreprise.\nRégion : ${region}`,
-        });
-        sendResults.push({
-          region,
-          ok: result.success,
-          message: result.message,
-          error: result.error,
-        });
-      }
-    }
-
     const refreshed = await pool.query(
       `SELECT * FROM invoices WHERE id = ANY($1::text[]) AND "userId" = $2`,
       [ids, workspaceOwnerId],
@@ -153,8 +115,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       confirmed: confirmed.rows.length,
-      autoSendToCabinet,
-      sendResults,
       invoices: refreshed.rows,
     });
   } catch (error) {

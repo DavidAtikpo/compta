@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { IMAP_REGION_OPTIONS_SORTED } from "@/lib/country-regions";
-import { enterAccountantPortalFromUser } from "@/lib/accountant-portal-client";
 import { PdfHeaderPreview } from "@/components/PdfHeaderPreview";
 import {
   normalizePdfHeaderLayout,
@@ -38,13 +37,6 @@ const businessTypes = [
   "Salarié / Particulier",
 ];
 
-interface AccountantRow {
-  id: string;
-  region: string;
-  email: string;
-  label: string | null;
-}
-
 interface Structure {
   id: string;
   name: string;
@@ -55,13 +47,12 @@ interface Structure {
 
 const LS_DEFAULT_REGION = "compta-default-invoice-region";
 
-type TabId = "overview" | "profile" | "pdf" | "cabinets" | "preferences" | "structures";
+type TabId = "overview" | "profile" | "pdf" | "preferences" | "structures";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "overview", label: "Vue d’ensemble" },
   { id: "profile", label: "Profil" },
   { id: "pdf", label: "PDF & en-têtes" },
-  { id: "cabinets", label: "Cabinets" },
   { id: "preferences", label: "Préférences" },
   { id: "structures", label: "Structures" },
 ];
@@ -78,15 +69,6 @@ function notifyProfileChanged() {
 export default function SettingsPage() {
   const [tab, setTab] = useState<TabId>("overview");
 
-  const [accountants, setAccountants] = useState<AccountantRow[]>([]);
-  const [newCabinetRegion, setNewCabinetRegion] = useState("france");
-  const [newCabinetEmail, setNewCabinetEmail] = useState("");
-  const [newCabinetLabel, setNewCabinetLabel] = useState("");
-  const [cabinetMsg, setCabinetMsg] = useState("");
-  const [cabinetSaving, setCabinetSaving] = useState(false);
-  const [portalBusy, setPortalBusy] = useState(false);
-  const [enterpriseName, setEnterpriseName] = useState<string | null>(null);
-  const [enterpriseSiret, setEnterpriseSiret] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [structures, setStructures] = useState<Structure[]>([]);
@@ -163,11 +145,12 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    loadAccountants();
-    loadStructures();
+    void (async () => {
+      await loadStructures();
+      setLoading(false);
+    })();
     void loadMe();
     void loadCredits();
-    void loadEnterprise();
     if (typeof window !== "undefined") {
       const r = window.localStorage.getItem(LS_DEFAULT_REGION);
       if (r?.trim()) setDefaultInvoiceRegion(r.trim().toLowerCase());
@@ -254,58 +237,12 @@ export default function SettingsPage() {
     () =>
       Array.from(
         new Set([
-          ...accountants.map((a) => a.region),
           ...structures.map((s) => s.region).filter(Boolean),
           ...regionOptions.map((r) => r.value),
         ]),
       ).sort((a, b) => a.localeCompare(b, "fr")),
-    [accountants, structures],
+    [structures],
   );
-
-  const accountantsByRegion = useMemo(() => {
-    const m = new Map<string, AccountantRow[]>();
-    for (const a of accountants) {
-      const list = m.get(a.region) ?? [];
-      list.push(a);
-      m.set(a.region, list);
-    }
-    return m;
-  }, [accountants]);
-
-  const loadAccountants = async () => {
-    const t = getToken();
-    if (!t) return;
-    try {
-      const res = await fetch("/api/accountants", {
-        headers: { Authorization: `Bearer ${t}` },
-      });
-      if (res.ok) {
-        setAccountants(await res.json());
-      }
-    } catch (err) {
-      console.error("Erreur chargement comptables:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadEnterprise = async () => {
-    const t = getToken();
-    if (!t) return;
-    try {
-      const res = await fetch("/api/enterprise", { headers: { Authorization: `Bearer ${t}` } });
-      const d = await res.json().catch(() => ({}));
-      if (res.ok && d.enterprise?.name) {
-        setEnterpriseName(String(d.enterprise.name));
-        setEnterpriseSiret(d.enterprise.siret ? String(d.enterprise.siret) : null);
-      } else {
-        setEnterpriseName(null);
-        setEnterpriseSiret(null);
-      }
-    } catch {
-      /* silent */
-    }
-  };
 
   const loadStructures = async () => {
     const t = getToken();
@@ -556,62 +493,6 @@ export default function SettingsPage() {
     }
   };
 
-  const handleAddCabinet = async () => {
-    const region = newCabinetRegion.trim().toLowerCase();
-    const email = newCabinetEmail.trim();
-    if (!region || !email) {
-      setCabinetMsg("Indiquez un pays et un email.");
-      return;
-    }
-    setCabinetSaving(true);
-    setCabinetMsg("");
-    try {
-      const t = getToken();
-      if (!t) {
-        setCabinetMsg("Session expirée. Reconnectez-vous.");
-        return;
-      }
-      const res = await fetch("/api/accountants", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
-        body: JSON.stringify({
-          region,
-          email,
-          label: newCabinetLabel.trim() || null,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setCabinetMsg(data.error ?? "Erreur d’enregistrement.");
-        return;
-      }
-      setNewCabinetEmail("");
-      setNewCabinetLabel("");
-      await loadAccountants();
-      setCabinetMsg("Cabinet ajouté.");
-    } catch {
-      setCabinetMsg("Erreur réseau.");
-    } finally {
-      setCabinetSaving(false);
-      setTimeout(() => setCabinetMsg(""), 4000);
-    }
-  };
-
-  const handleDeleteCabinet = async (id: string) => {
-    if (!window.confirm("Retirer ce cabinet de la liste ?")) return;
-    try {
-      const t = getToken();
-      if (!t) return;
-      const res = await fetch(`/api/accountants/${id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${t}` },
-      });
-      if (res.ok) await loadAccountants();
-    } catch {
-      /* silent */
-    }
-  };
-
   const handleSaveDefaultRegion = () => {
     const v = defaultInvoiceRegion.trim().toLowerCase();
     if (typeof window === "undefined") return;
@@ -671,20 +552,9 @@ export default function SettingsPage() {
     pdfLogoUrl.trim().length > 0 ||
     pdfHeaderTitle.trim().length > 0 ||
     pdfHeaderAddress.trim().length > 0;
-  const hasCabinet = accountants.length > 0;
   const hasStructure = structures.length > 0;
-  const setupDoneCount = [hasProfile, hasPdfConfig, hasCabinet, hasStructure].filter(Boolean).length;
-  const setupPercent = Math.round((setupDoneCount / 4) * 100);
-
-  const openAccountantPortal = async () => {
-    setPortalBusy(true);
-    const result = await enterAccountantPortalFromUser();
-    if (!result.ok) {
-      setPortalBusy(false);
-      setCabinetMsg(result.error || "Impossible d’ouvrir le portail.");
-      setTimeout(() => setCabinetMsg(""), 4000);
-    }
-  };
+  const setupDoneCount = [hasProfile, hasPdfConfig, hasStructure].filter(Boolean).length;
+  const setupPercent = Math.round((setupDoneCount / 3) * 100);
 
   if (loading) {
     return (
@@ -709,7 +579,7 @@ export default function SettingsPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Paramètres</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Gérez votre profil, l’apparence des PDF, les cabinets comptables et vos préférences.
+            Gérez votre profil, l’apparence des PDF et vos préférences.
           </p>
         </div>
 
@@ -741,24 +611,8 @@ export default function SettingsPage() {
                 <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${setupPercent}%` }} />
               </div>
               <p className="mt-1 text-xs text-blue-800">
-                {setupDoneCount}/4 sections configurées ({setupPercent}%)
+                {setupDoneCount}/3 sections configurées ({setupPercent}%)
               </p>
-            </div>
-
-            <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-5">
-              <h2 className="font-semibold text-indigo-950">Portail comptable</h2>
-              <p className="mt-1 text-sm text-indigo-900">
-                Vous êtes cabinet et avez déjà un compte Neurix ? Ouvrez le portail directement avec votre session
-                actuelle — sans attendre l’envoi d’un lien par email.
-              </p>
-              <button
-                type="button"
-                onClick={() => void openAccountantPortal()}
-                disabled={portalBusy}
-                className="mt-3 rounded-xl bg-indigo-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-800 disabled:opacity-60"
-              >
-                {portalBusy ? "Ouverture…" : "Ouvrir le portail comptable"}
-              </button>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
@@ -786,18 +640,6 @@ export default function SettingsPage() {
                 <p className="mt-1 text-xs text-slate-500">
                   {hasPdfConfig ? "En-tete/pied ou logo disponibles" : "Aucune personnalisation enregistree"}
                 </p>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setTab("cabinets")}
-                className="rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-slate-300 hover:bg-slate-50"
-              >
-                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Cabinets</p>
-                <p className={`mt-1 text-sm font-semibold ${hasCabinet ? "text-emerald-700" : "text-amber-700"}`}>
-                  {hasCabinet ? "Configure" : "A completer"}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">{accountants.length} cabinet(s) enregistre(s)</p>
               </button>
 
               <button
@@ -1392,145 +1234,6 @@ export default function SettingsPage() {
                     }`}
                   >
                     {pdfMsg}
-                  </p>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {tab === "cabinets" && (
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-100 px-6 py-4">
-              <h2 className="font-semibold text-slate-900">Cabinets comptables</h2>
-              {enterpriseName ? (
-                <p className="mt-1 text-sm font-medium text-slate-800">
-                  Entreprise : <strong>{enterpriseName}</strong>
-                  {enterpriseSiret && <span className="ml-2 text-slate-600">· SIRET {enterpriseSiret}</span>}
-                </p>
-              ) : (
-                <p className="mt-1 text-sm text-slate-600">
-                  Compte individuel — vos cabinets sont associés à votre espace utilisateur.
-                </p>
-              )}
-              <p className="mt-2 text-sm text-slate-600">
-                Vous pouvez configurer <strong>plusieurs cabinets</strong> (par pays). À l&apos;envoi, cochez
-                un ou plusieurs destinataires — chaque cabinet reçoit la facture par email et la voit dans son portail.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void openAccountantPortal()}
-                  disabled={portalBusy}
-                  className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-                >
-                  {portalBusy ? "Ouverture…" : "Accéder au portail comptable"}
-                </button>
-                <a
-                  href="/accountant/login"
-                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 hover:bg-slate-50"
-                >
-                  Connexion par lien email
-                </a>
-              </div>
-            </div>
-            <div className="space-y-5 p-6">
-              {accountants.length === 0 ? (
-                <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  Aucun cabinet enregistré — ajoutez au moins une adresse par pays utilisé.
-                </p>
-              ) : (
-                <div className="space-y-6">
-                  {Array.from(accountantsByRegion.entries()).map(([region, rows]) => (
-                    <div key={region}>
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        {regionOptions.find((r) => r.value === region)?.flag} {region}
-                      </p>
-                      <ul className="space-y-2">
-                        {rows.map((a) => (
-                          <li
-                            key={a.id}
-                            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"
-                          >
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-slate-900">
-                                {a.label || a.email}
-                              </p>
-                              {a.label && <p className="truncate text-xs text-slate-600">{a.email}</p>}
-                              {!a.label && a.email && (
-                                <p className="text-[10px] text-slate-500">Cabinet comptable</p>
-                              )}
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteCabinet(a.id)}
-                              className="shrink-0 text-xs font-medium text-rose-600 hover:text-rose-800"
-                            >
-                              Retirer
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-4 space-y-3">
-                <p className="text-sm font-medium text-slate-800">Ajouter un cabinet</p>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-600">Pays ou zone</label>
-                  <input
-                    type="text"
-                    list="settings-cabinet-regions"
-                    value={newCabinetRegion}
-                    onChange={(e) => setNewCabinetRegion(e.target.value.trim().toLowerCase())}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
-                    placeholder="france, togo, senegal…"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <datalist id="settings-cabinet-regions">
-                    {IMAP_REGION_OPTIONS_SORTED.map((o) => (
-                      <option key={o.value} value={o.value} label={o.label} />
-                    ))}
-                  </datalist>
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-600">Libellé (optionnel)</label>
-                  <input
-                    type="text"
-                    value={newCabinetLabel}
-                    onChange={(e) => setNewCabinetLabel(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-slate-500 focus:outline-none"
-                    placeholder="Ex. Cabinet Dupont, Filiale Lyon…"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-600">Email du cabinet</label>
-                  <input
-                    type="email"
-                    value={newCabinetEmail}
-                    onChange={(e) => setNewCabinetEmail(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-slate-500 focus:outline-none"
-                    placeholder="contact@cabinet.fr"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void handleAddCabinet()}
-                  disabled={cabinetSaving || !newCabinetEmail.trim()}
-                  className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {cabinetSaving ? "Enregistrement…" : "Ajouter ce cabinet"}
-                </button>
-                {cabinetMsg && (
-                  <p
-                    className={`text-center text-sm ${
-                      cabinetMsg.includes("Erreur") ? "text-rose-600" : "text-emerald-700"
-                    }`}
-                  >
-                    {cabinetMsg}
                   </p>
                 )}
               </div>

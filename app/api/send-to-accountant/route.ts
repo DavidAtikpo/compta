@@ -8,6 +8,7 @@ import { persistInvoiceSendRecipients } from "@/lib/invoice-send-recipients";
 import { downloadInvoiceFileBuffer } from "@/lib/invoice-file-download";
 import { ensureInvoiceShareTokens } from "@/lib/ensure-invoice-share-token";
 import { normalizeRegionKey, regionsMatch } from "@/lib/country-regions";
+import { CABINET_FEATURE_DISABLED_MESSAGE, isCabinetFeatureEnabled } from "@/lib/cabinet-feature";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -128,6 +129,10 @@ function parseRecipientEmailsFromForm(formData: FormData): string[] {
 }
 
 export async function POST(request: Request) {
+  if (!isCabinetFeatureEnabled()) {
+    return NextResponse.json({ error: CABINET_FEATURE_DISABLED_MESSAGE }, { status: 410 });
+  }
+
   const userId = getAuthenticatedUserId(request);
   if (!userId) {
     return NextResponse.json({ error: "Connexion requise." }, { status: 401 });

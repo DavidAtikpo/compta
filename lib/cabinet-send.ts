@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { CABINET_FEATURE_DISABLED_MESSAGE, isCabinetFeatureEnabled } from "./cabinet-feature";
 import { pool } from "./postgres";
 import { accountantPortalLoginUrl, signAccountantPortalToken } from "./accountant-portal";
 import { persistInvoiceSendRecipients } from "./invoice-send-recipients";
@@ -108,6 +109,10 @@ export async function sendInvoicesToCabinet(options: {
   senderName?: string;
   message?: string;
 }): Promise<CabinetSendResult> {
+  if (!isCabinetFeatureEnabled()) {
+    return { success: false, error: CABINET_FEATURE_DISABLED_MESSAGE, message: "" };
+  }
+
   const {
     workspaceOwnerId,
     actorUserId,

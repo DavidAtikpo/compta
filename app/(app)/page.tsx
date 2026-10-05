@@ -3,12 +3,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import {
+  invoiceWorkflowBadge,
+  invoiceWorkflowBadgeClass,
+  isAwaitingUserConfirmation,
+  isUserConfirmed,
+} from "@/lib/invoice-workflow-ui";
+import { isInvoiceExtractionDone } from "@/lib/invoice-extraction-marker";
 
 interface Stats {
   invoices: number;
-  sent: number;
-  pending: number;
-  successRate: number;
+  toConfirm: number;
+  confirmed: number;
+  toExtract: number;
 }
 
 interface RecentInvoice {
@@ -19,15 +26,10 @@ interface RecentInvoice {
   amount: number | null;
   category: string | null;
   createdAt: string;
-}
-
-interface RecentSend {
-  id: string;
-  region: string;
-  recipientEmail: string;
-  filesCount: number;
-  sentAt: string;
-  success: boolean;
+  userConfirmedAt?: string | null;
+  fileUrl?: string | null;
+  ocrText?: string | null;
+  montantTTC?: number | null;
 }
 
 const regionLabel: Record<string, string> = {
@@ -50,9 +52,8 @@ export default function DashboardPage() {
   const [userName, setUserName] = useState("");
   const [ready, setReady] = useState(false);
 
-  const [stats, setStats] = useState<Stats>({ invoices: 0, sent: 0, pending: 0, successRate: 0 });
+  const [stats, setStats] = useState<Stats>({ invoices: 0, toConfirm: 0, confirmed: 0, toExtract: 0 });
   const [recentInvoices, setRecentInvoices] = useState<RecentInvoice[]>([]);
-  const [recentSends, setRecentSends] = useState<RecentSend[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
   const [analyticsSeries, setAnalyticsSeries] = useState<{ date: string; achat: number; vente: number }[]>([]);
   const [byCategory, setByCategory] = useState<{ category: string; count: number }[]>([]);
@@ -88,28 +89,22 @@ export default function DashboardPage() {
       const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
       const headers: Record<string, string> = {};
       if (t) headers.Authorization = `Bearer ${t}`;
-      const [invoicesRes, historyRes, allInvoicesRes, allHistoryRes, analyticsRes] = await Promise.all([
+      const [invoicesRes, allInvoicesRes, analyticsRes] = await Promise.all([
         fetch("/api/invoices?limit=5", { headers }),
-        fetch("/api/history?limit=5", { headers }),
         fetch("/api/invoices?limit=1000", { headers }),
-        fetch("/api/history?limit=1000", { headers }),
         fetch("/api/analytics", { headers }),
       ]);
 
       const invoices: RecentInvoice[] = invoicesRes.ok ? await invoicesRes.json() : [];
-      const history: RecentSend[] = historyRes.ok ? await historyRes.json() : [];
       const allInvoices: RecentInvoice[] = allInvoicesRes.ok ? await allInvoicesRes.json() : [];
-      const allHistory: RecentSend[] = allHistoryRes.ok ? await allHistoryRes.json() : [];
 
-      const successCount = allHistory.filter((h) => h.success).length;
       setStats({
         invoices: allInvoices.length,
-        sent: allInvoices.filter((i) => i.status === "sent").length,
-        pending: allInvoices.filter((i) => i.status === "pending").length,
-        successRate: allHistory.length > 0 ? Math.round((successCount / allHistory.length) * 100) : 0,
+        toConfirm: allInvoices.filter((i) => isAwaitingUserConfirmation(i)).length,
+        confirmed: allInvoices.filter((i) => isUserConfirmed(i) && i.status !== "archived").length,
+        toExtract: allInvoices.filter((i) => i.fileUrl && !isInvoiceExtractionDone(i)).length,
       });
       setRecentInvoices(invoices.slice(0, 5));
-      setRecentSends(history.slice(0, 5));
 
       if (analyticsRes.ok) {
         const analytics = await analyticsRes.json();
@@ -205,19 +200,19 @@ export default function DashboardPage() {
               <p className="mt-0.5 text-[10px] text-slate-400">Documents enregistrés</p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">En attente</p>
-              <p className="mt-1.5 text-2xl font-bold text-amber-600">{stats.pending}</p>
-              <p className="mt-0.5 text-[10px] text-slate-400">À transmettre</p>
+              <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">À confirmer</p>
+              <p className="mt-1.5 text-2xl font-bold text-indigo-600">{stats.toConfirm}</p>
+              <p className="mt-0.5 text-[10px] text-slate-400">Extraction validée</p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Transmis</p>
-              <p className="mt-1.5 text-2xl font-bold text-emerald-600">{stats.sent}</p>
-              <p className="mt-0.5 text-[10px] text-slate-400">Envoyés au cabinet</p>
+              <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Confirmées</p>
+              <p className="mt-1.5 text-2xl font-bold text-emerald-600">{stats.confirmed}</p>
+              <p className="mt-0.5 text-[10px] text-slate-400">Montants validés</p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Taux de succès</p>
-              <p className="mt-1.5 text-2xl font-bold text-blue-600">{stats.successRate}%</p>
-              <p className="mt-0.5 text-[10px] text-slate-400">Envois réussis</p>
+              <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">À extraire</p>
+              <p className="mt-1.5 text-2xl font-bold text-amber-600">{stats.toExtract}</p>
+              <p className="mt-0.5 text-[10px] text-slate-400">OCR / IA en attente</p>
             </div>
           </div>
         )}
@@ -284,13 +279,16 @@ export default function DashboardPage() {
                       {inv.amount != null && (
                         <span className="text-xs font-medium text-slate-700">{inv.amount.toFixed(2)} €</span>
                       )}
-                      <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-                        inv.status === "sent" ? "bg-emerald-100 text-emerald-700"
-                        : inv.status === "archived" ? "bg-slate-100 text-slate-600"
-                        : "bg-amber-100 text-amber-700"
-                      }`}>
-                        {inv.status === "sent" ? "Envoyé" : inv.status === "archived" ? "Archivé" : "En attente"}
-                      </span>
+                      {(() => {
+                        const wf = invoiceWorkflowBadge(inv);
+                        return (
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${invoiceWorkflowBadgeClass(wf.tone)}`}
+                          >
+                            {wf.label}
+                          </span>
+                        );
+                      })()}
                     </div>
                   </li>
                 ))}
@@ -300,36 +298,18 @@ export default function DashboardPage() {
 
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
             <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
-              <h2 className="text-sm font-semibold text-slate-900">Envois récents</h2>
-              <Link href="/history" className="text-xs text-blue-600 hover:text-blue-700">Voir tout</Link>
+              <h2 className="text-sm font-semibold text-slate-900">Conseiller fiscal IA</h2>
+              <Link href="/history" className="text-xs text-blue-600 hover:text-blue-700">Historique IA</Link>
             </div>
-            {recentSends.length === 0 ? (
-              <div className="px-4 py-6 text-center text-slate-400">
-                <p className="text-xs">Aucun envoi enregistré.</p>
-              </div>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {recentSends.map((send) => (
-                  <li key={send.id} className="flex items-center justify-between px-4 py-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="text-base">{regionFlag[send.region] || "🌍"}</span>
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-medium text-slate-900">{send.recipientEmail}</p>
-                        <p className="text-[10px] text-slate-400">
-                          {regionLabel[send.region] || send.region} • {send.filesCount} fichier(s) •{" "}
-                          {new Date(send.sentAt).toLocaleDateString("fr-FR")}
-                        </p>
-                      </div>
-                    </div>
-                    <span className={`ml-2 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-                      send.success ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
-                    }`}>
-                      {send.success ? "Succès" : "Échec"}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <div className="px-4 py-6 text-center text-slate-500">
+              <p className="text-xs leading-relaxed">
+                Posez vos questions sur la page{" "}
+                <Link href="/optimize" className="font-medium text-blue-600 hover:text-blue-700">
+                  Optimisation IA
+                </Link>
+                . Les échanges sont enregistrés dans l&apos;historique.
+              </p>
+            </div>
           </div>
         </div>
 

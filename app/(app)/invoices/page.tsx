@@ -17,6 +17,13 @@ import {
   appendExtractionOkMarker,
   isInvoiceExtractionDone,
 } from "@/lib/invoice-extraction-marker";
+import {
+  invoiceWorkflowBadge,
+  invoiceWorkflowBadgeClass,
+  isAwaitingUserConfirmation,
+  isUserConfirmed,
+  matchesInvoiceWorkflowFilter,
+} from "@/lib/invoice-workflow-ui";
 
 /** Réglages IMAP Gmail recommandés (identiques pour tous les comptes Gmail). */
 const IMAP_DEFAULT_HOST = "imap.gmail.com";
@@ -393,69 +400,6 @@ function computeActionMenuPlacement(
   return { top, left };
 }
 
-type AccountantRow = {
-  id: string;
-  region: string;
-  email: string;
-  label: string | null;
-  createdAt?: string;
-};
-
-function accountantsForRegion(rows: AccountantRow[], region: string): AccountantRow[] {
-  return rows
-    .filter((a) => regionsMatch(a.region, region))
-    .sort((a, b) => {
-      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return tb - ta;
-    });
-}
-
-function defaultCabinetEmailsForRegion(rows: AccountantRow[], region: string): string[] {
-  const first = accountantsForRegion(rows, region)[0]?.email;
-  return first ? [first] : [];
-}
-
-function initCabinetEmailsByRegion(
-  rows: AccountantRow[],
-  regions: string[],
-): Record<string, string[]> {
-  const init: Record<string, string[]> = {};
-  for (const r of regions) {
-    init[r] = defaultCabinetEmailsForRegion(rows, r);
-  }
-  return init;
-}
-
-type CabinetModalState =
-  | null
-  | { kind: "single"; invoice: Invoice }
-  | { kind: "draft" }
-  | { kind: "bulk"; byRegion: Record<string, Invoice[]> };
-
-const CABINET_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-/** Nombre max de pièces jointes par email (évite timeout SMTP / taille message). */
-const CABINET_SEND_BATCH_SIZE = 10;
-
-function mergeCabinetRecipients(selected: string[], extra: string): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of [...selected, ...extra.split(/[,;]+/)]) {
-    const e = raw.trim();
-    if (!e || !CABINET_EMAIL_RE.test(e)) continue;
-    const key = e.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(e);
-  }
-  return out;
-}
-
-function appendRecipientEmails(formData: FormData, emails: string[]) {
-  for (const email of emails) {
-    formData.append("recipientEmails", email);
-  }
-}
 type StructureRow = { id: string; name: string; region: string; type: string; siret: string | null };
 
 type InvoiceExtractProvider = "rules" | "claude" | "openai";
@@ -471,36 +415,6 @@ function fileKey(file: File): string {
 
 function findUploadedUrl(file: File, urls: UploadedDraftUrl[]): string | null {
   return urls.find((u) => u.key === fileKey(file))?.url ?? null;
-}
-
-function isSentToCabinet(inv: Invoice): boolean {
-  return inv.status === "sent" || !!inv.sentAt;
-}
-
-function isSharedToCabinet(inv: Invoice): boolean {
-  return !!inv.shareToken;
-}
-
-function isUserConfirmed(inv: Invoice): boolean {
-  return !!inv.userConfirmedAt;
-}
-
-function isAwaitingUserConfirmation(inv: Invoice): boolean {
-  if (!inv.fileUrl || isSentToCabinet(inv)) return false;
-  return isInvoiceExtractionDone(inv) && !isUserConfirmed(inv);
-}
-
-function cabinetEmailKey(inv: Invoice): string {
-  return (inv.accountant_email ?? "").trim().toLowerCase().split(",")[0]?.trim() ?? "";
-}
-
-function cabinetDisplayName(inv: Invoice, accountants: AccountantRow[]): string {
-  const label = inv.accountant_label?.trim();
-  if (label) return label;
-  const email = cabinetEmailKey(inv);
-  if (!email) return "";
-  const configured = accountants.find((a) => a.email.trim().toLowerCase() === email);
-  return configured?.label?.trim() || email;
 }
 
 export default function InvoicesPage() {
@@ -537,8 +451,6 @@ export default function InvoicesPage() {
     fail: number;
   } | null>(null);
   const [uploadResult, setUploadResult] = useState("");
-  const [sending, setSending] = useState(false);
-  const [sendResult, setSendResult] = useState("");
 
   // Invoice list states
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -557,9 +469,6 @@ export default function InvoicesPage() {
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterCurrency, setFilterCurrency] = useState("");
-  const [filterCabinetStatus, setFilterCabinetStatus] = useState("");
-  const [filterCabinetRecipient, setFilterCabinetRecipient] = useState("");
-  const [configuredAccountants, setConfiguredAccountants] = useState<AccountantRow[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -574,7 +483,6 @@ export default function InvoicesPage() {
   const [extractionItemStatus, setExtractionItemStatus] = useState<Record<string, ExtractionItemStatus>>({});
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [confirmAllBusy, setConfirmAllBusy] = useState(false);
-  const [autoSendAfterConfirm, setAutoSendAfterConfirm] = useState(true);
   // Extraction facture : sans IA (OCR+règles) ou avec IA (vision)
   const [extractProvider, setExtractProvider] = useState<InvoiceExtractProvider>("rules");
   // IA: uniquement pour l'analyse / recherche
@@ -584,7 +492,6 @@ export default function InvoicesPage() {
   const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
   const [fiscalAiAnalyzingId, setFiscalAiAnalyzingId] = useState<string | null>(null);
   const [fiscalAiModal, setFiscalAiModal] = useState<{ title: string; body: string } | null>(null);
-  const [sendingInvoiceId, setSendingInvoiceId] = useState<string | null>(null);
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [shareLinks, setShareLinks] = useState<Record<string, string>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -621,20 +528,7 @@ export default function InvoicesPage() {
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
-  const [bulkSending, setBulkSending] = useState(false);
-  const [syncCabinetPending, setSyncCabinetPending] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
-  const [cabinetModal, setCabinetModal] = useState<CabinetModalState>(null);
-  const [cabinetEmailsByRegion, setCabinetEmailsByRegion] = useState<Record<string, string[]>>({});
-  const [cabinetExtraEmailByRegion, setCabinetExtraEmailByRegion] = useState<Record<string, string>>({});
-  const [cabinetAccountantsList, setCabinetAccountantsList] = useState<AccountantRow[]>([]);
-  /** Envoi au cabinet en cours (modale ouverte jusqu’à la fin de la requête). */
-  const [cabinetSendPending, setCabinetSendPending] = useState(false);
-  const [cabinetSendProgress, setCabinetSendProgress] = useState<{
-    sent: number;
-    total: number;
-    detail: string;
-  } | null>(null);
   const [sendSuccessToast, setSendSuccessToast] = useState<string | null>(null);
   const sendSuccessToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectAllHeaderRef = useRef<HTMLInputElement>(null);
@@ -647,22 +541,12 @@ export default function InvoicesPage() {
   const [photoCrop, setPhotoCrop] = useState<{ src: string; file: File } | null>(null);
 
   useEffect(() => {
-    const pref = window.localStorage.getItem("compta-auto-send-after-confirm");
-    if (pref === "0") setAutoSendAfterConfirm(false);
-  }, []);
-
-  useEffect(() => {
-    window.localStorage.setItem("compta-auto-send-after-confirm", autoSendAfterConfirm ? "1" : "0");
-  }, [autoSendAfterConfirm]);
-
-  useEffect(() => {
     const savedToken = window.localStorage.getItem("compta-token");
     if (savedToken) {
       setToken(savedToken);
       fetchMe(savedToken);
     }
     loadInvoices();
-    void loadAccountants().then(setConfiguredAccountants);
     // Pre-fill IMAP from env/settings if available
     const savedImapUser = window.localStorage.getItem("imap-user");
     if (savedImapUser) setImapUser(savedImapUser);
@@ -703,15 +587,6 @@ export default function InvoicesPage() {
     const existsInRegion = structures.some((s) => s.id === selectedStructureId && s.region === region);
     if (!existsInRegion) setSelectedStructureId("");
   }, [region, structures, selectedStructureId]);
-
-  useEffect(() => {
-    if (!cabinetModal) return;
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape" && !cabinetSendPending) setCabinetModal(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [cabinetModal, cabinetSendPending]);
 
   const showSendSuccessToast = (text: string) => {
     if (sendSuccessToastTimerRef.current) {
@@ -822,7 +697,7 @@ export default function InvoicesPage() {
     try {
       let url = "/api/invoices?limit=200";
       if (reg) url += `&region=${encodeURIComponent(reg)}`;
-      if (status) url += `&status=${encodeURIComponent(status)}`;
+      if (status === "archived") url += `&status=archived`;
       if (currencyFilter) url += `&currency=${encodeURIComponent(currencyFilter)}`;
       const t = typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null;
       const res = await fetch(url, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
@@ -848,6 +723,9 @@ export default function InvoicesPage() {
             const d = inv.invoiceDate ? new Date(inv.invoiceDate) : new Date(inv.createdAt);
             return d <= to;
           });
+        }
+        if (status && status !== "archived") {
+          data = data.filter((inv) => matchesInvoiceWorkflowFilter(inv, status));
         }
         setInvoices(data);
         const links: Record<string, string> = {};
@@ -974,57 +852,10 @@ export default function InvoicesPage() {
     setFilterDateFrom("");
     setFilterDateTo("");
     setFilterCurrency("");
-    setFilterCabinetStatus("");
-    setFilterCabinetRecipient("");
     loadInvoices();
   };
 
-  const cabinetFilterOptions = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const a of configuredAccountants) {
-      const email = a.email.trim().toLowerCase();
-      if (email) map.set(email, a.label?.trim() || a.email);
-    }
-    for (const inv of invoices) {
-      const email = cabinetEmailKey(inv);
-      if (email && !map.has(email)) {
-        map.set(email, cabinetDisplayName(inv, configuredAccountants) || email);
-      }
-    }
-    return Array.from(map.entries())
-      .map(([email, label]) => ({ email, label }))
-      .sort((a, b) => a.label.localeCompare(b.label, "fr"));
-  }, [configuredAccountants, invoices]);
-
-  const cabinetBreakdown = useMemo(() => {
-    const kindList = invoices.filter((i) => (i.invoiceType ?? "achat") === invoiceKind);
-    const counts = new Map<string, { label: string; sent: number }>();
-    for (const inv of kindList) {
-      if (!isSentToCabinet(inv)) continue;
-      const email = cabinetEmailKey(inv);
-      if (!email) continue;
-      const label = cabinetDisplayName(inv, configuredAccountants) || email;
-      const prev = counts.get(email) ?? { label, sent: 0 };
-      prev.sent += 1;
-      counts.set(email, prev);
-    }
-    return Array.from(counts.entries()).map(([email, v]) => ({ email, ...v }));
-  }, [invoices, invoiceKind, configuredAccountants]);
-
-  const displayedInvoices = useMemo(() => {
-    let list = invoices;
-    if (filterCabinetStatus === "sent") {
-      list = list.filter((i) => isSentToCabinet(i));
-    } else if (filterCabinetStatus === "not_sent") {
-      list = list.filter((i) => !isSentToCabinet(i));
-    } else if (filterCabinetStatus === "shared") {
-      list = list.filter((i) => isSharedToCabinet(i));
-    }
-    if (filterCabinetRecipient) {
-      list = list.filter((i) => cabinetEmailKey(i) === filterCabinetRecipient);
-    }
-    return list;
-  }, [invoices, filterCabinetStatus, filterCabinetRecipient]);
+  const displayedInvoices = invoices;
 
   const invoicesGroupedByMonth = useMemo(() => {
     const byMonth = new Map<string, Invoice[]>();
@@ -1048,7 +879,7 @@ export default function InvoicesPage() {
       }));
   }, [displayedInvoices]);
 
-  const invoiceTableColCount = showAddedByColumn ? 14 : 13;
+  const invoiceTableColCount = showAddedByColumn ? 13 : 12;
 
   const toggleSelectMany = (ids: string[]) => {
     if (ids.length === 0) return;
@@ -1063,20 +894,6 @@ export default function InvoicesPage() {
       return [...set];
     });
   };
-
-  const cabinetStats = useMemo(() => {
-    const kindList = invoices.filter((i) => (i.invoiceType ?? "achat") === invoiceKind);
-    const sent = kindList.filter((i) => isSentToCabinet(i));
-    const pending = kindList.filter((i) => i.fileUrl && !isSentToCabinet(i));
-    const shared = kindList.filter((i) => isSharedToCabinet(i));
-    return {
-      total: kindList.length,
-      sent: sent.length,
-      pending: pending.length,
-      shared: shared.length,
-      pendingWithFile: pending.length,
-    };
-  }, [invoices, invoiceKind]);
 
   useEffect(() => {
     const el = selectAllHeaderRef.current;
@@ -1323,7 +1140,6 @@ export default function InvoicesPage() {
     try {
       setFiles((prev) => [...prev, ...validFiles]);
       setUploadResult("");
-      setSendResult("");
       setOcrStatus("Traitement en cours…");
       setFileProgress((prev) => {
         const next = { ...prev };
@@ -1411,70 +1227,6 @@ export default function InvoicesPage() {
       fileUrl: findUploadedUrl(file, uploadedUrls),
     }));
     await saveDraftInvoices(entries, { closeOnSuccess: true });
-  };
-
-  const loadAccountants = async (): Promise<AccountantRow[]> => {
-    try {
-      const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
-      const res = await fetch("/api/accountants", {
-        headers: t ? { Authorization: `Bearer ${t}` } : {},
-      });
-      if (!res.ok) return [];
-      return (await res.json()) as AccountantRow[];
-    } catch {
-      return [];
-    }
-  };
-
-  const openDraftCabinetModal = async () => {
-    if (files.length === 0) {
-      setSendResult("Aucun fichier à envoyer.");
-      return;
-    }
-    const missing = files.filter((f) => !uploadedUrls.some((u) => u.key === fileKey(f)));
-    if (missing.length > 0) {
-      setSendResult("Toutes les pièces doivent être uploadées sur Cloudinary avant l’envoi au cabinet.");
-      return;
-    }
-    const rows = await loadAccountants();
-    setCabinetAccountantsList(rows);
-    setConfiguredAccountants(rows);
-    setCabinetExtraEmailByRegion({});
-    setCabinetEmailsByRegion(initCabinetEmailsByRegion(rows, [region]));
-    setCabinetModal({ kind: "draft" });
-  };
-
-  const handleSendToAccountantWithEmail = async (recipientEmails: string[]) => {
-    setSending(true);
-    setSendResult("");
-    const formData = new FormData();
-    formData.append("region", region);
-    formData.append("message", message || `Transmission de ${files.length} pièce(s).\nRégion : ${region}`);
-    formData.append("senderName", userEmail || "Utilisateur Compta IA");
-    appendRecipientEmails(formData, recipientEmails);
-    files.forEach((file) => formData.append("files", file));
-    try {
-      const res = await fetch("/api/send-to-accountant", {
-        method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: formData,
-      });
-      const data = await res.json();
-      if (!res.ok) setSendResult(data.error || "Erreur lors de l'envoi.");
-      else {
-        setSendResult("");
-        showSendSuccessToast(
-          typeof data.message === "string" && data.message.trim()
-            ? data.message
-            : "Document envoyé au cabinet avec succès."
-        );
-        await handleSaveInvoices();
-      }
-    } catch {
-      setSendResult("Impossible de joindre le service d'envoi.");
-    } finally {
-      setSending(false);
-    }
   };
 
   const handleJournalFromInvoice = async (id: string) => {
@@ -1586,11 +1338,7 @@ export default function InvoicesPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${t}`,
         },
-        body: JSON.stringify({
-          ids,
-          autoSendToCabinet: autoSendAfterConfirm,
-          senderName: userEmail || "Utilisateur Compta IA",
-        }),
+        body: JSON.stringify({ ids }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -1602,14 +1350,7 @@ export default function InvoicesPage() {
         applyConfirmedInvoices(json.invoices as Invoice[]);
       }
 
-      const sentCount = Array.isArray(json.sendResults)
-        ? (json.sendResults as Array<{ ok: boolean }>).filter((r) => r.ok).length
-        : 0;
-      const msg =
-        autoSendAfterConfirm && sentCount > 0
-          ? `${json.confirmed} facture(s) confirmée(s) et transmise(s) au cabinet.`
-          : `${json.confirmed} facture(s) confirmée(s).`;
-      showSendSuccessToast(msg);
+      showSendSuccessToast(`${json.confirmed} facture(s) confirmée(s).`);
     } catch {
       showSendSuccessToast("Erreur réseau lors de la confirmation.");
     } finally {
@@ -1799,193 +1540,6 @@ export default function InvoicesPage() {
     }
   };
 
-  const openBulkCabinetModal = async (invoiceList?: Invoice[]) => {
-    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
-    if (!t) {
-      setMessage("Connectez-vous pour envoyer au cabinet.");
-      return;
-    }
-    const selected = invoiceList ?? invoices.filter((i) => selectedIds.includes(i.id));
-    const withFiles = selected.filter((i) => i.fileUrl);
-    if (withFiles.length === 0) {
-      setMessage(
-        invoiceList
-          ? "Aucune facture avec fichier à synchroniser."
-          : "Aucun fichier pour les factures sélectionnées.",
-      );
-      return;
-    }
-
-    const alreadySent = withFiles.filter((i) => isSentToCabinet(i));
-    const toSend = withFiles.filter((i) => !isSentToCabinet(i));
-    if (toSend.length === 0 && alreadySent.length > 0) {
-      setMessage("Les factures sélectionnées sont déjà transmises au cabinet.");
-      return;
-    }
-    const target = toSend.length > 0 ? toSend : withFiles;
-
-    const byRegion = new Map<string, Invoice[]>();
-    for (const inv of target) {
-      const list = byRegion.get(inv.region) ?? [];
-      list.push(inv);
-      byRegion.set(inv.region, list);
-    }
-
-    const rows = await loadAccountants();
-    setCabinetAccountantsList(rows);
-    setConfiguredAccountants(rows);
-    setCabinetExtraEmailByRegion({});
-    setCabinetEmailsByRegion(initCabinetEmailsByRegion(rows, [...byRegion.keys()]));
-    setCabinetModal({ kind: "bulk", byRegion: Object.fromEntries(byRegion) });
-  };
-
-  const openSyncAllCabinetModal = async () => {
-    setSyncCabinetPending(true);
-    try {
-      const pending = invoices.filter(
-        (i) =>
-          (i.invoiceType ?? "achat") === invoiceKind &&
-          i.fileUrl &&
-          !isSentToCabinet(i),
-      );
-      if (pending.length === 0) {
-        setMessage(
-          `Toutes les factures ${invoiceKind === "vente" ? "de vente" : "d'achat"} sont déjà transmises au cabinet (ou sans fichier joint).`,
-        );
-        return;
-      }
-      const label = invoiceKind === "vente" ? "de vente" : "d'achat";
-      if (
-        !window.confirm(
-          `Synchroniser ${pending.length} facture(s) ${label} non transmise(s) avec le cabinet ?\n\nUn email sera envoyé par région.`,
-        )
-      ) {
-        return;
-      }
-      setSelectedIds(pending.map((i) => i.id));
-      await openBulkCabinetModal(pending);
-    } finally {
-      setSyncCabinetPending(false);
-    }
-  };
-
-  const selectAllPendingForCabinet = () => {
-    const ids = displayedInvoices.filter((i) => i.fileUrl && !isSentToCabinet(i)).map((i) => i.id);
-    setSelectedIds(ids);
-    if (ids.length === 0) {
-      setMessage("Aucune facture en attente de transmission dans la liste affichée.");
-    }
-  };
-
-  const postCabinetSend = async (formData: FormData, authToken: string) => {
-    const sendRes = await fetch("/api/send-to-accountant", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${authToken}` },
-      body: formData,
-      signal: AbortSignal.timeout(130_000),
-    });
-    const sendJson = await sendRes.json().catch(() => ({}));
-    return { ok: sendRes.ok, json: sendJson as { error?: string; message?: string } };
-  };
-
-  const handleBulkSendWithEmails = async (
-    emailsByRegion: Record<string, string[]>,
-    extraByRegion: Record<string, string>,
-    byRegionRecord: Record<string, Invoice[]>
-  ) => {
-    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
-    if (!t) return;
-
-    setBulkSending(true);
-    setMessage("");
-    const allToSend = Object.values(byRegionRecord).flat();
-    setCabinetSendProgress({ sent: 0, total: allToSend.length, detail: "Préparation…" });
-
-    try {
-      const parts: string[] = [];
-      let anyFail = false;
-      let sentSoFar = 0;
-      const byRegion = new Map(Object.entries(byRegionRecord));
-
-      for (const [reg, list] of byRegion) {
-        const recipientEmails = mergeCabinetRecipients(
-          emailsByRegion[reg] ?? [],
-          extraByRegion[normalizeRegionKey(reg)] ?? extraByRegion[reg] ?? "",
-        );
-        if (recipientEmails.length === 0) {
-          parts.push(`${reg}: aucun cabinet sélectionné pour ${regionDisplayLabel(reg)}`);
-          anyFail = true;
-          continue;
-        }
-
-        for (let i = 0; i < list.length; i += CABINET_SEND_BATCH_SIZE) {
-          const chunk = list.slice(i, i + CABINET_SEND_BATCH_SIZE);
-          const batchNum = Math.floor(i / CABINET_SEND_BATCH_SIZE) + 1;
-          const batchTotal = Math.ceil(list.length / CABINET_SEND_BATCH_SIZE);
-
-          setCabinetSendProgress({
-            sent: sentSoFar,
-            total: allToSend.length,
-            detail: `${regionDisplayLabel(reg)} — lot ${batchNum}/${batchTotal} (${chunk.length} facture(s))`,
-          });
-
-          const formData = new FormData();
-          formData.append("region", reg);
-          formData.append("senderName", userEmail || "Utilisateur Compta IA");
-          appendRecipientEmails(formData, recipientEmails);
-          formData.append(
-            "message",
-            `Transmission groupée de ${chunk.length} facture(s) (${sentSoFar + 1}–${sentSoFar + chunk.length} sur ${list.length}).\nRégion : ${reg}`,
-          );
-          for (const inv of chunk) {
-            formData.append("invoiceIds", inv.id);
-          }
-
-          const { ok, json } = await postCabinetSend(formData, t);
-          sentSoFar += chunk.length;
-          setCabinetSendProgress({
-            sent: sentSoFar,
-            total: allToSend.length,
-            detail: ok ? `${sentSoFar}/${allToSend.length} facture(s) transmise(s)` : "Erreur sur le lot en cours…",
-          });
-
-          if (!ok) {
-            parts.push(`${reg} (lot ${batchNum}): ${json.error || "erreur"}`);
-            anyFail = true;
-          } else if (batchTotal === 1) {
-            parts.push(`${reg}: ${json.message || "OK"}`);
-          }
-        }
-
-        if (list.length > CABINET_SEND_BATCH_SIZE && !anyFail) {
-          parts.push(`${reg}: ${list.length} facture(s) envoyées en ${Math.ceil(list.length / CABINET_SEND_BATCH_SIZE)} lot(s)`);
-        }
-      }
-
-      setSelectedIds([]);
-      await reloadInvoices();
-      if (!anyFail) {
-        showSendSuccessToast(
-          parts.length <= 1
-            ? (parts[0]?.replace(/^[^:]+:\s*/, "").trim() || "Documents envoyés au cabinet avec succès.")
-            : `Transmission terminée — ${sentSoFar} facture(s) envoyée(s) au cabinet.`,
-        );
-      } else {
-        setMessage(parts.join(" · "));
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "";
-      setMessage(
-        msg.includes("timeout") || msg.includes("aborted")
-          ? "Délai d'envoi dépassé. Réessayez avec moins de factures ou vérifiez la connexion."
-          : "Erreur réseau lors de l'envoi groupé.",
-      );
-    } finally {
-      setBulkSending(false);
-      setCabinetSendProgress(null);
-    }
-  };
-
   const handleDelete = async (inv: Invoice) => {
     if (!window.confirm(`Supprimer la facture "${inv.fournisseur ?? inv.originalName}" ?\nCette action est irréversible.`)) return;
     setDeletingId(inv.id);
@@ -2009,112 +1563,6 @@ export default function InvoicesPage() {
     }
   };
 
-  const openSingleCabinetModal = async (inv: Invoice) => {
-    if (!inv.fileUrl) return;
-    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
-    if (!t) {
-      setMessage("Connectez-vous pour envoyer la facture.");
-      return;
-    }
-    const rows = await loadAccountants();
-    setCabinetAccountantsList(rows);
-    setConfiguredAccountants(rows);
-    setCabinetExtraEmailByRegion({});
-    setCabinetEmailsByRegion(initCabinetEmailsByRegion(rows, [inv.region]));
-    setCabinetModal({ kind: "single", invoice: inv });
-  };
-
-  const handleSendSingleInvoice = async (inv: Invoice, recipientEmails: string[]) => {
-    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
-    if (!t) {
-      setMessage("Connectez-vous pour envoyer la facture.");
-      return;
-    }
-    setSendingInvoiceId(inv.id);
-    setCabinetSendProgress({ sent: 0, total: 1, detail: "Envoi de la facture…" });
-    setMessage("");
-    try {
-      const formData = new FormData();
-      formData.append("region", inv.region);
-      formData.append("senderName", userEmail || "Utilisateur Compta IA");
-      formData.append("message", `Transmission facture ${inv.numeroFacture ?? inv.originalName}.\nRégion : ${inv.region}`);
-      appendRecipientEmails(formData, recipientEmails);
-      formData.append("invoiceIds", inv.id);
-      const { ok, json: sendJson } = await postCabinetSend(formData, t);
-      if (!ok) {
-        setMessage(sendJson.error || "Erreur lors de l'envoi au cabinet.");
-        return;
-      }
-      setMessage("");
-      showSendSuccessToast(
-        typeof sendJson.message === "string" && sendJson.message.trim()
-          ? sendJson.message
-          : "Facture envoyée au cabinet avec succès."
-      );
-      await reloadInvoices();
-    } catch {
-      setMessage("Erreur réseau lors de l'envoi.");
-    } finally {
-      setSendingInvoiceId(null);
-      setCabinetSendProgress(null);
-    }
-  };
-
-  const confirmCabinetSend = async () => {
-    if (!cabinetModal || cabinetSendPending) return;
-
-    const regions =
-      cabinetModal.kind === "bulk"
-        ? Object.keys(cabinetModal.byRegion)
-        : cabinetModal.kind === "single"
-          ? [cabinetModal.invoice.region]
-          : [region];
-
-    for (const r of regions) {
-      const emails = mergeCabinetRecipients(
-        cabinetEmailsByRegion[r] ?? [],
-        cabinetExtraEmailByRegion[normalizeRegionKey(r)] ?? cabinetExtraEmailByRegion[r] ?? "",
-      );
-      if (emails.length === 0) {
-        const err = `Sélectionnez au moins un cabinet pour ${regionDisplayLabel(r)}.`;
-        if (cabinetModal.kind === "draft") setSendResult(err);
-        else setMessage(err);
-        return;
-      }
-      if (emails.some((em) => !CABINET_EMAIL_RE.test(em))) {
-        const err = `Adresse email invalide pour ${regionDisplayLabel(r)}.`;
-        if (cabinetModal.kind === "draft") setSendResult(err);
-        else setMessage(err);
-        return;
-      }
-    }
-
-    const snapshot = cabinetModal;
-    const emailsSnapshot = { ...cabinetEmailsByRegion };
-    const extraSnapshot = { ...cabinetExtraEmailByRegion };
-    setCabinetSendPending(true);
-    try {
-      if (snapshot.kind === "single") {
-        await handleSendSingleInvoice(
-          snapshot.invoice,
-          mergeCabinetRecipients(
-            emailsSnapshot[snapshot.invoice.region] ?? [],
-            extraSnapshot[normalizeRegionKey(snapshot.invoice.region)] ?? "",
-          ),
-        );
-      } else if (snapshot.kind === "draft") {
-        await handleSendToAccountantWithEmail(
-          mergeCabinetRecipients(emailsSnapshot[region] ?? [], extraSnapshot[normalizeRegionKey(region)] ?? ""),
-        );
-      } else {
-        await handleBulkSendWithEmails(emailsSnapshot, extraSnapshot, snapshot.byRegion);
-      }
-    } finally {
-      setCabinetSendPending(false);
-      setCabinetSendProgress(null);
-      setCabinetModal(null);
-    }
-  };
 
   const openInvoiceDocument = async (invId: string) => {
     const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
@@ -2254,7 +1702,7 @@ export default function InvoicesPage() {
       return null;
     });
     setFiles([]); setUploadedUrls([]); setFileProgress({});
-    setOcrStatus(""); setUploadResult(""); setSendResult("");
+    setOcrStatus(""); setUploadResult("");
     setAmount(""); setCategory(""); setCurrency("EUR"); setMessage("");
     setInvoiceType("achat");
     setSelectedStructureId("");
@@ -2398,20 +1846,10 @@ export default function InvoicesPage() {
     filterCategory ||
     filterDateFrom ||
     filterDateTo ||
-    filterCurrency ||
-    filterCabinetStatus ||
-    filterCabinetRecipient;
+    filterCurrency;
 
   const allVisibleSelected =
     displayedInvoices.length > 0 && displayedInvoices.every((i) => selectedIds.includes(i.id));
-
-  const selectedPendingCabinetCount = useMemo(
-    () =>
-      invoices.filter(
-        (i) => selectedIds.includes(i.id) && i.fileUrl && !isSentToCabinet(i),
-      ).length,
-    [invoices, selectedIds],
-  );
 
   const actionMenuInvoice = openActionMenuId
     ? displayedInvoices.find((i) => i.id === openActionMenuId)
@@ -2480,7 +1918,7 @@ export default function InvoicesPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-lg font-semibold text-slate-900">Factures et pièces justificatives</h1>
-            <p className="mt-0.5 text-xs text-slate-500">OCR, extraction, devises, transmission cabinet</p>
+            <p className="mt-0.5 text-xs text-slate-500">OCR, extraction et devises</p>
             <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
               <Link href="/fichiers" className="font-medium text-indigo-700 hover:text-indigo-900">
                 → Galerie pièces jointes
@@ -2569,20 +2007,9 @@ export default function InvoicesPage() {
 
         {!extractionQueue && pendingConfirmationInvoices.length > 0 && (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2.5">
-            <div className="min-w-0 space-y-1">
-              <p className="text-[11px] font-medium text-indigo-950">
-                {pendingConfirmationInvoices.length} facture(s) extraite(s) — vérifiez les montants puis confirmez
-              </p>
-              <label className="flex cursor-pointer items-center gap-2 text-[10px] text-indigo-900">
-                <input
-                  type="checkbox"
-                  checked={autoSendAfterConfirm}
-                  onChange={(e) => setAutoSendAfterConfirm(e.target.checked)}
-                  className="rounded border-indigo-300"
-                />
-                Envoyer automatiquement au cabinet après confirmation
-              </label>
-            </div>
+            <p className="min-w-0 text-[11px] font-medium text-indigo-950">
+              {pendingConfirmationInvoices.length} facture(s) extraite(s) — vérifiez les montants puis confirmez
+            </p>
             <button
               type="button"
               disabled={confirmAllBusy || !!confirmingId}
@@ -2644,50 +2071,6 @@ export default function InvoicesPage() {
               Vente
             </button>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[10px] text-slate-500">
-              Cabinet :{" "}
-              <strong className="text-emerald-700">{cabinetStats.sent} transmise(s)</strong>
-              {" · "}
-              <strong className="text-amber-700">{cabinetStats.pending} en attente</strong>
-              {cabinetStats.shared > 0 && (
-                <>
-                  {" · "}
-                  <strong className="text-indigo-700">{cabinetStats.shared} lien(s) partagé(s)</strong>
-                </>
-              )}
-              {cabinetBreakdown.length > 0 && (
-                <span className="ml-2 inline-flex flex-wrap items-center gap-1">
-                  {cabinetBreakdown.map((c) => (
-                    <button
-                      key={c.email}
-                      type="button"
-                      onClick={() =>
-                        setFilterCabinetRecipient(filterCabinetRecipient === c.email ? "" : c.email)
-                      }
-                      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                        filterCabinetRecipient === c.email
-                          ? "bg-indigo-600 text-white"
-                          : "bg-indigo-100 text-indigo-900 hover:bg-indigo-200"
-                      }`}
-                      title={`Filtrer : ${c.label}`}
-                    >
-                      {c.label} ({c.sent})
-                    </button>
-                  ))}
-                </span>
-              )}
-            </span>
-            <button
-              type="button"
-              disabled={syncCabinetPending || bulkSending || cabinetStats.pending === 0}
-              onClick={() => void openSyncAllCabinetModal()}
-              title={`Envoyer toutes les factures ${invoiceKind} non transmises au cabinet`}
-              className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-medium text-indigo-800 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {syncCabinetPending ? "Préparation…" : `Synchroniser tout (${invoiceKind}) avec le cabinet`}
-            </button>
-          </div>
         </div>
 
         {/* ============================================================ */}
@@ -2722,9 +2105,10 @@ export default function InvoicesPage() {
                     className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
                   >
                     <option value="">Tous</option>
-                    <option value="pending">En attente</option>
-                    <option value="sent">Envoyé</option>
-                    <option value="archived">Archivé</option>
+                    <option value="to_confirm">À confirmer</option>
+                    <option value="confirmed">Confirmées</option>
+                    <option value="not_extracted">À extraire</option>
+                    <option value="archived">Archivées</option>
                   </select>
                 </div>
 
@@ -2769,41 +2153,6 @@ export default function InvoicesPage() {
                     ))}
                   </select>
                 </div>
-
-                {/* Statut envoi cabinet */}
-                <div className="flex flex-col gap-0.5">
-                  <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Statut envoi</label>
-                  <select
-                    value={filterCabinetStatus}
-                    onChange={(e) => setFilterCabinetStatus(e.target.value)}
-                    className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
-                  >
-                    <option value="">Toutes</option>
-                    <option value="sent">Transmises au cabinet</option>
-                    <option value="not_sent">Non transmises</option>
-                    <option value="shared">Lien de partage actif</option>
-                  </select>
-                </div>
-
-                {/* Cabinet destinataire */}
-                {cabinetFilterOptions.length > 0 && (
-                  <div className="flex flex-col gap-0.5">
-                    <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Cabinet</label>
-                    <select
-                      value={filterCabinetRecipient}
-                      onChange={(e) => setFilterCabinetRecipient(e.target.value)}
-                      className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400"
-                    >
-                      <option value="">Tous les cabinets</option>
-                      {cabinetFilterOptions.map((c) => (
-                        <option key={c.email} value={c.email}>
-                          {c.label}
-                          {c.label !== c.email ? ` (${c.email})` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
 
                 {/* Extraction facture */}
                 <div className="flex flex-col gap-0.5">
@@ -2929,34 +2278,7 @@ export default function InvoicesPage() {
               <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-indigo-50/40 px-2 py-2 text-[11px]">
                 <span className="font-medium text-slate-700">
                   {selectedIds.length} sélectionné(s)
-                  {selectedPendingCabinetCount > 0 && (
-                    <span className="ml-1 font-normal text-indigo-700">
-                      · {selectedPendingCabinetCount} à transmettre au cabinet
-                    </span>
-                  )}
                 </span>
-                <button
-                  type="button"
-                  disabled={bulkSending}
-                  onClick={() => void openBulkCabinetModal()}
-                  className="inline-flex items-center gap-1.5 rounded border border-indigo-300 bg-white px-2 py-1 font-semibold text-indigo-900 hover:bg-indigo-50 disabled:opacity-50"
-                >
-                  {bulkSending ? (
-                    <>
-                      <UploadRingSpinner className="h-3.5 w-3.5" aria-hidden />
-                      Envoi au cabinet…
-                    </>
-                  ) : (
-                    "Envoyer la sélection au cabinet"
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={selectAllPendingForCabinet}
-                  className="rounded border border-slate-300 bg-white px-2 py-1 font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  Sélect. non transmises
-                </button>
                 <button
                   type="button"
                   disabled={bulkDeleting}
@@ -3039,7 +2361,6 @@ export default function InvoicesPage() {
                       <th className="w-[4.25rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-right">Montant HT</th>
                       <th className="w-[3.75rem] px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-center">Règlé</th>
                       <th className="w-[4.25rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-right">Montant TTC</th>
-                      <th className="w-[5.5rem] min-w-0 px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-center">Cabinet</th>
                       <th className="w-[3.75rem] px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-center">Statut</th>
                       <th className="w-[5.25rem] px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-right">
                         Actions
@@ -3218,85 +2539,17 @@ export default function InvoicesPage() {
                               <span className="shrink-0 text-[10px] text-slate-400">{invSymbol}</span>
                             </div>
                           </td>
-                          <td className="min-w-0 px-1 py-1.5 text-center align-top">
-                            <div className="flex min-w-0 flex-col items-center gap-0.5">
-                              {isSentToCabinet(inv) ? (
-                                <>
-                                  <span className="inline-flex rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
-                                    Transmise
-                                  </span>
-                                  {cabinetEmailKey(inv) ? (
-                                    <>
-                                      <span
-                                        className="max-w-full truncate text-[11px] font-semibold text-slate-900"
-                                        title={cabinetEmailKey(inv)}
-                                      >
-                                        {cabinetDisplayName(inv, configuredAccountants)}
-                                      </span>
-                                      {inv.accountant_label && inv.accountant_email && (
-                                        <span
-                                          className="max-w-full truncate text-[9px] text-slate-500"
-                                          title={inv.accountant_email}
-                                        >
-                                          {inv.accountant_email}
-                                        </span>
-                                      )}
-                                    </>
-                                  ) : (
-                                    <span className="text-[10px] text-amber-700">Cabinet non identifié</span>
-                                  )}
-                                  {inv.sentAt && (
-                                    <span className="text-[9px] text-slate-400">
-                                      {new Date(inv.sentAt).toLocaleDateString("fr-FR")}
-                                    </span>
-                                  )}
-                                </>
-                              ) : (
-                                <span className="text-[10px] text-slate-400">Non transmise</span>
-                              )}
-                              {isSharedToCabinet(inv) && shareLinks[inv.id] && (
-                                <a
-                                  href={shareLinks[inv.id]}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-[9px] font-medium text-indigo-600 hover:underline"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  Lien partagé
-                                </a>
-                              )}
-                            </div>
-                          </td>
                           <td className="px-0.5 py-1.5 text-center">
-                            <div className="flex flex-col items-center gap-0.5">
-                              <span className={`inline-flex rounded px-1 py-0.5 text-[10px] font-medium ${
-                                inv.status === "sent" ? "bg-emerald-100 text-emerald-700"
-                                : inv.status === "archived" ? "bg-slate-100 text-slate-600"
-                                : "bg-amber-100 text-amber-700"
-                              }`}>
-                                {inv.status === "sent" ? "Envoyé" : inv.status === "archived" ? "Archivé" : "En attente"}
-                              </span>
-                              {isAwaitingUserConfirmation(inv) && (
-                                <span className="text-[9px] font-medium text-indigo-700">À confirmer</span>
-                              )}
-                              {isUserConfirmed(inv) && !isSentToCabinet(inv) && (
-                                <span className="text-[9px] font-medium text-indigo-600">Confirmée</span>
-                              )}
-                              {inv.accountantReceivedAt && (
+                            {(() => {
+                              const wf = invoiceWorkflowBadge(inv);
+                              return (
                                 <span
-                                  className="text-[9px] font-medium text-sky-700"
-                                  title={inv.accountantReceivedByEmail ?? undefined}
+                                  className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${invoiceWorkflowBadgeClass(wf.tone)}`}
                                 >
-                                  Reçue cabinet
+                                  {wf.label}
                                 </span>
-                              )}
-                              {inv.accountantReviewStatus === "validated" && (
-                                <span className="text-[9px] font-medium text-emerald-700" title={inv.accountantReviewNote ?? undefined}>✓ Validée</span>
-                              )}
-                              {inv.accountantReviewStatus === "rejected" && (
-                                <span className="text-[9px] font-medium text-rose-700" title={inv.accountantReviewNote ?? undefined}>✗ Rejetée</span>
-                              )}
-                            </div>
+                              );
+                            })()}
                           </td>
                           <td className="relative min-w-0 px-0.5 py-1.5 text-right align-top">
                             <div
@@ -3310,11 +2563,7 @@ export default function InvoicesPage() {
                                     disabled={confirmingId === inv.id || confirmAllBusy}
                                     onClick={() => void handleConfirmInvoices([inv.id])}
                                     className="inline-flex shrink-0 items-center rounded-md border border-indigo-200 bg-indigo-50 px-1.5 py-1 text-[10px] font-semibold text-indigo-900 shadow-sm transition hover:border-indigo-300 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                    title={
-                                      autoSendAfterConfirm
-                                        ? "Confirmer et envoyer au cabinet"
-                                        : "Confirmer l'extraction"
-                                    }
+                                    title="Confirmer l'extraction"
                                   >
                                     {confirmingId === inv.id ? "Confirmation…" : "Confirmer"}
                                   </button>
@@ -3594,7 +2843,7 @@ export default function InvoicesPage() {
                     </>
                   )}
                   <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
-                    Chaque pièce importée sera enregistrée avec ce pays (filtres de la liste, envoi au cabinet).
+                    Chaque pièce importée sera enregistrée avec ce pays (filtres de la liste).
                   </p>
                 </div>
 
@@ -3807,7 +3056,7 @@ export default function InvoicesPage() {
                     </button>
                   </>
                 )}
-                <p className="mt-1 text-[10px] text-slate-500">Même liste que l&apos;import email IMAP (filtres et envoi cabinet).</p>
+                <p className="mt-1 text-[10px] text-slate-500">Même liste que l&apos;import email IMAP.</p>
               </div>
               <div>
                 <label className="mb-1.5 block text-[11px] font-medium text-slate-600">Type de facture</label>
@@ -4075,7 +3324,7 @@ export default function InvoicesPage() {
                 </div>
               )}
 
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2">
                 <button
                   type="button"
                   onClick={handleSaveInvoices}
@@ -4088,28 +3337,9 @@ export default function InvoicesPage() {
                       ? `Enregistrer (${files.length})`
                       : "Enregistrer"}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void openDraftCabinetModal()}
-                  disabled={sending || draftUploading || files.length === 0 || !draftAllOnCloudinary}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 py-2.5 text-[11px] font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {sending ? (
-                    <>
-                      <span
-                        className="inline-block h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-white/35 border-t-white"
-                        aria-hidden
-                      />
-                      Envoi en cours…
-                    </>
-                  ) : (
-                    "Envoyer au cabinet"
-                  )}
-                </button>
               </div>
 
               {uploadResult && <p className={`border-t border-slate-200 pt-2 text-[11px] ${uploadResult.includes("Erreur") ? "text-slate-800" : "text-slate-700"}`}>{uploadResult}</p>}
-              {sendResult && <p className={`border-t border-slate-200 pt-2 text-[11px] ${sendResult.includes("Erreur") || sendResult.includes("Aucun") ? "text-slate-800" : "text-slate-700"}`}>{sendResult}</p>}
             </div>
           </div>
         </div>
@@ -4186,27 +3416,6 @@ export default function InvoicesPage() {
                 {shareLinks[actionMenuInvoice.id] ? "Copier le lien de partage" : "Partager (lien)"}
               </button>
             </li>
-            <li>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={sendingInvoiceId === actionMenuInvoice.id || !actionMenuInvoice.fileUrl}
-                onClick={() => {
-                  setOpenActionMenuId(null);
-                  void openSingleCabinetModal(actionMenuInvoice);
-                }}
-                className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {sendingInvoiceId === actionMenuInvoice.id ? (
-                  <>
-                    <UploadRingSpinner className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                    Envoi…
-                  </>
-                ) : (
-                  "Envoyer au cabinet"
-                )}
-              </button>
-            </li>
             <li className="pointer-events-none mx-1.5 list-none border-t border-slate-100 py-0" role="separator" />
             <li>
               <button
@@ -4238,191 +3447,6 @@ export default function InvoicesPage() {
               </button>
             </li>
           </ul>
-        </div>
-      )}
-
-      {cabinetModal && (
-        <div
-          className="fixed inset-0 z-[210] flex items-end justify-center bg-black/45 p-3 sm:items-center"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="cabinet-send-title"
-          aria-busy={cabinetSendPending}
-          onClick={() => {
-            if (!cabinetSendPending) setCabinetModal(null);
-          }}
-        >
-          <div
-            className="relative w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {cabinetSendPending && (
-              <div
-                className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-xl bg-white/90 px-6 py-8 backdrop-blur-[2px]"
-                role="status"
-                aria-live="polite"
-              >
-                <UploadRingSpinner className="h-12 w-12" aria-label="Envoi en cours" />
-                <p className="text-sm font-semibold text-slate-900">Envoi en cours…</p>
-                {cabinetSendProgress ? (
-                  <>
-                    <p className="text-xs font-medium text-slate-800">
-                      {cabinetSendProgress.sent}/{cabinetSendProgress.total} facture(s)
-                    </p>
-                    <p className="max-w-[280px] text-center text-[11px] leading-snug text-slate-500">
-                      {cabinetSendProgress.detail}
-                    </p>
-                    <div className="mt-1 h-1.5 w-48 overflow-hidden rounded-full bg-slate-200">
-                      <div
-                        className="h-full bg-slate-800 transition-all duration-300"
-                        style={{
-                          width: `${cabinetSendProgress.total > 0 ? Math.round((cabinetSendProgress.sent / cabinetSendProgress.total) * 100) : 0}%`,
-                        }}
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <p className="max-w-[260px] text-center text-[11px] leading-snug text-slate-500">
-                    Transmission du message et des pièces jointes vers le cabinet.
-                  </p>
-                )}
-              </div>
-            )}
-            <div className="border-b border-slate-100 px-4 py-3">
-              <h2 id="cabinet-send-title" className="text-sm font-semibold text-slate-900">
-                Envoyer au cabinet
-              </h2>
-              <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                Cochez un ou plusieurs cabinets pour ce pays. Chaque destinataire recevra un email avec la pièce jointe.
-              </p>
-            </div>
-            <div className="max-h-[min(60dvh,420px)] space-y-3 overflow-y-auto px-4 py-3">
-              {(cabinetModal.kind === "bulk"
-                ? Object.keys(cabinetModal.byRegion)
-                : cabinetModal.kind === "single"
-                  ? [cabinetModal.invoice.region]
-                  : [region]
-              ).map((r) => {
-                const suggestions = accountantsForRegion(cabinetAccountantsList, r);
-                const regionKey = normalizeRegionKey(r);
-                const selected = cabinetEmailsByRegion[r] ?? [];
-                const extra = cabinetExtraEmailByRegion[regionKey] ?? "";
-                return (
-                  <div key={r}>
-                    <label className="mb-1 block text-[11px] font-medium text-slate-700">
-                      {regionDisplayLabel(r)}
-                      {cabinetModal.kind === "bulk" && (
-                        <span className="font-normal text-slate-400">
-                          {" "}
-                          ({cabinetModal.byRegion[r]?.length ?? 0} facture(s))
-                        </span>
-                      )}
-                    </label>
-                    {suggestions.length > 0 ? (
-                      <ul className="mb-2 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50/80 p-2">
-                        {suggestions.map((a) => {
-                          const checked = selected.some(
-                            (e) => e.trim().toLowerCase() === a.email.trim().toLowerCase(),
-                          );
-                          return (
-                            <li key={a.id}>
-                              <label className="flex cursor-pointer items-start gap-2 rounded-md px-1 py-0.5 hover:bg-white">
-                                <input
-                                  type="checkbox"
-                                  disabled={cabinetSendPending}
-                                  checked={checked}
-                                  className="mt-0.5 shrink-0"
-                                  onChange={(e) => {
-                                    setCabinetEmailsByRegion((prev) => {
-                                      const current = prev[r] ?? [];
-                                      if (e.target.checked) {
-                                        if (current.some((x) => x.toLowerCase() === a.email.toLowerCase())) {
-                                          return prev;
-                                        }
-                                        return { ...prev, [r]: [...current, a.email] };
-                                      }
-                                      return {
-                                        ...prev,
-                                        [r]: current.filter((x) => x.toLowerCase() !== a.email.toLowerCase()),
-                                      };
-                                    });
-                                  }}
-                                />
-                                <span className="min-w-0 text-sm text-slate-800">
-                                  {a.label ? (
-                                    <>
-                                      <span className="font-medium">{a.label}</span>
-                                      <span className="block truncate text-xs text-slate-500">{a.email}</span>
-                                    </>
-                                  ) : (
-                                    a.email
-                                  )}
-                                </span>
-                              </label>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    ) : (
-                      <p className="mb-2 text-[10px] text-amber-800">
-                        Aucun cabinet enregistré pour ce pays.{" "}
-                        <Link href="/settings" className="font-medium underline hover:text-amber-950">
-                          Paramètres (Cabinets)
-                        </Link>
-                      </p>
-                    )}
-                    <label className="mb-1 block text-[10px] font-medium text-slate-600">
-                      Autre adresse (optionnel, séparer par virgule)
-                    </label>
-                    <input
-                      type="text"
-                      autoComplete="off"
-                      disabled={cabinetSendPending}
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:opacity-70"
-                      value={extra}
-                      onChange={(e) =>
-                        setCabinetExtraEmailByRegion((prev) => ({ ...prev, [regionKey]: e.target.value }))
-                      }
-                      placeholder="autre@cabinet.fr"
-                    />
-                    {mergeCabinetRecipients(selected, extra).length > 1 && (
-                      <p className="mt-1 text-[10px] text-indigo-700">
-                        {mergeCabinetRecipients(selected, extra).length} destinataires sélectionnés.
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
-              <button
-                type="button"
-                disabled={cabinetSendPending}
-                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={() => setCabinetModal(null)}
-              >
-                Annuler
-              </button>
-              <button
-                type="button"
-                disabled={cabinetSendPending}
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-90"
-                onClick={() => void confirmCabinetSend()}
-              >
-                {cabinetSendPending ? (
-                  <>
-                    <span
-                      className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-white/35 border-t-white"
-                      aria-hidden
-                    />
-                    Envoi…
-                  </>
-                ) : (
-                  "Envoyer"
-                )}
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
