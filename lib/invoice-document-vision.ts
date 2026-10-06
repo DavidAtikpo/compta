@@ -1,5 +1,10 @@
 import { v2 as cloudinary } from "cloudinary";
 import { configureCloudinaryFromEnv } from "@/lib/cloudinary-delivery";
+import {
+  fetchCloudinaryInvoiceBuffer,
+  parseCloudinaryStoredUrl,
+  setupCloudinaryFromEnv,
+} from "@/lib/cloudinary-invoice-asset";
 
 /** Extract public_id from a Cloudinary URL (strips version prefix, keeps folder/name.ext) */
 function extractPublicId(url: string): { publicId: string; resourceType: "image" | "raw" } | null {
@@ -168,26 +173,96 @@ async function pdfCloudinaryToJpegDataUrl(fileUrl: string): Promise<string | nul
   return null;
 }
 
-/** Build a base64 image data URL from a stored invoice file URL. */
+function bufferToImageDataUrl(buffer: Buffer, contentType: string): string | null {
+  const ct = contentType.startsWith("image/") ? contentType.split(";")[0]!.trim() : "image/jpeg";
+  if (!ct.startsWith("image/")) return null;
+  if (buffer.length < 64) return null;
+  return `data:${ct};base64,${buffer.toString("base64")}`;
+}
+
+/** JPG page 1 pour OCR (même compte Cloudinary que l’upload). */
+async function cloudinaryStoredUrlToJpegDataUrl(fileUrl: string): Promise<string | null> {
+  if (!setupCloudinaryFromEnv()) return null;
+  const parsed = parseCloudinaryStoredUrl(fileUrl.split("?")[0] ?? fileUrl);
+  if (!parsed) return null;
+  const rt = parsed.resourceType === "raw" ? "image" : parsed.resourceType;
+  const jpgUrl = cloudinary.url(parsed.publicId, {
+    resource_type: rt,
+    type: parsed.deliveryType,
+    sign_url: true,
+    secure: true,
+    transformation: [{ page: 1, format: "jpg", width: 2400, crop: "limit", quality: "auto:good" }],
+  });
+  return imageUrlToDataUrl(jpgUrl);
+}
+
+/**
+ * Build a base64 image data URL from a stored invoice file URL.
+ * Utilise le même téléchargement Cloudinary que « Voir le fichier ».
+ */
 export async function resolveDocumentImageDataUrl(
   fileUrl: string,
   originalName: string,
   mimeType: string | null,
 ): Promise<string | null> {
+  const url = String(fileUrl || "").trim();
+  if (!url) return null;
+
   const lowerName = String(originalName || "").toLowerCase();
   const lowerMime = String(mimeType || "").toLowerCase();
   const isPdf =
-    lowerMime.includes("pdf") || lowerName.endsWith(".pdf") || /\.pdf(\?|$)/i.test(fileUrl);
-  const isCloudinaryDelivery = /\/image\/upload\//i.test(fileUrl);
+    lowerMime.includes("pdf") || lowerName.endsWith(".pdf") || /\.pdf(\?|$)/i.test(url);
+
+  if (url.includes("res.cloudinary.com")) {
+    const downloaded = await fetchCloudinaryInvoiceBuffer(url, originalName, mimeType);
+    if (downloaded) {
+      const ct = downloaded.contentType.toLowerCase();
+      if (ct.includes("pdf") || isPdf) {
+        const fromTransform = await cloudinaryStoredUrlToJpegDataUrl(url);
+        if (fromTransform) return fromTransform;
+        return pdfCloudinaryToJpegDataUrl(url);
+      }
+      const dataUrl = bufferToImageDataUrl(downloaded.buffer, downloaded.contentType);
+      if (dataUrl) return dataUrl;
+    }
+
+    if (isPdf) {
+      const fromTransform = await cloudinaryStoredUrlToJpegDataUrl(url);
+      if (fromTransform) return fromTransform;
+      return pdfCloudinaryToJpegDataUrl(url);
+    }
+
+    const fromTransform = await cloudinaryStoredUrlToJpegDataUrl(url);
+    if (fromTransform) return fromTransform;
+
+    const legacy = await imageUrlToDataUrl(url);
+    if (legacy) return legacy;
+  }
+
+  const isCloudinaryDelivery = /\/image\/upload\//i.test(url);
   const isImage =
     !isPdf &&
     (lowerMime.startsWith("image/") ||
       lowerMime === "" ||
       /\.(jpg|jpeg|png|webp|gif|heic|heif)(\?|$)/i.test(lowerName) ||
-      /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(fileUrl) ||
+      /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(url) ||
       isCloudinaryDelivery);
 
-  if (isPdf) return pdfCloudinaryToJpegDataUrl(fileUrl);
-  if (isImage) return imageUrlToDataUrl(fileUrl);
+  if (isPdf) return pdfCloudinaryToJpegDataUrl(url);
+  if (isImage) return imageUrlToDataUrl(url);
   return null;
+}
+
+export type ResolveDocumentImageFailure =
+  | "empty_url"
+  | "not_cloudinary"
+  | "cloudinary_download_failed"
+  | "unsupported_type";
+
+export function diagnoseResolveDocumentImageUrl(fileUrl: string): ResolveDocumentImageFailure | null {
+  const url = String(fileUrl || "").trim();
+  if (!url) return "empty_url";
+  if (!url.includes("res.cloudinary.com")) return "not_cloudinary";
+  if (!parseCloudinaryStoredUrl(url.split("?")[0] ?? url)) return "not_cloudinary";
+  return "cloudinary_download_failed";
 }

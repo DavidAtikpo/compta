@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/auth-request";
-import { resolveDocumentImageDataUrl } from "@/lib/invoice-document-vision";
+import {
+  diagnoseResolveDocumentImageUrl,
+  resolveDocumentImageDataUrl,
+} from "@/lib/invoice-document-vision";
 import { ocrFromImageDataUrl, probeVisionOcrApi } from "@/lib/server-ocr";
 import { isOcrTextLooselyUsable, isOcrTextQualityGood } from "@/lib/ocr-quality";
 import {
@@ -46,8 +49,20 @@ export async function POST(request: Request) {
 
     const visionDataUrl = await resolveDocumentImageDataUrl(fileUrl, originalName, mimeType);
     if (!visionDataUrl) {
+      const reason = diagnoseResolveDocumentImageUrl(fileUrl);
+      const hints: Record<string, string> = {
+        empty_url: "Aucune URL fournie.",
+        not_cloudinary:
+          "Collez l’URL Cloudinary complète (https://res.cloudinary.com/…/image/upload/…), pas un lien /api/invoices/…/file.",
+        cloudinary_download_failed:
+          "Cloudinary n’a pas livré le fichier : vérifiez CLOUDINARY_* sur Vercel (même compte que l’upload) ou rouvrez la facture → copier l’URL de l’image.",
+      };
       return NextResponse.json(
-        { error: "Impossible de préparer le document pour l’OCR." },
+        {
+          error: "Impossible de préparer le document pour l’OCR.",
+          reason,
+          hint: reason ? hints[reason] : undefined,
+        },
         { status: 422 },
       );
     }

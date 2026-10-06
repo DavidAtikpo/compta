@@ -114,6 +114,12 @@ export default function SettingsPage() {
   const [pdfMsg, setPdfMsg] = useState("");
   const [passwordMsg, setPasswordMsg] = useState("");
 
+  const [ocrDiagLoading, setOcrDiagLoading] = useState(false);
+  const [ocrDiagMsg, setOcrDiagMsg] = useState("");
+  const [ocrTestUrl, setOcrTestUrl] = useState("");
+  const [ocrTestLoading, setOcrTestLoading] = useState(false);
+  const [ocrTestMsg, setOcrTestMsg] = useState("");
+
   const loadMe = useCallback(async () => {
     const t = getToken();
     if (!t) return;
@@ -749,6 +755,117 @@ export default function SettingsPage() {
                 </button>
               </div>
               {!!purchaseMsg && <p className="mt-2 text-xs text-rose-600">{purchaseMsg}</p>}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Diagnostic OCR</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Vérifie la clé Google Vision sur le serveur, ou teste une facture déjà sur Cloudinary (sans console
+                développeur).
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={ocrDiagLoading}
+                  onClick={async () => {
+                    const t = getToken();
+                    if (!t) {
+                      setOcrDiagMsg("Connectez-vous d’abord.");
+                      return;
+                    }
+                    setOcrDiagLoading(true);
+                    setOcrDiagMsg("");
+                    try {
+                      const res = await fetch("/api/invoices/ocr-preview", {
+                        headers: { Authorization: `Bearer ${t}` },
+                      });
+                      const data = await res.json().catch(() => ({}));
+                      if (res.ok && data.apiReachable) {
+                        setOcrDiagMsg("✓ Serveur OCR OK (Google Vision joignable).");
+                      } else if (data.hint) {
+                        setOcrDiagMsg(`✗ ${data.hint}`);
+                      } else {
+                        setOcrDiagMsg(data.error || JSON.stringify(data));
+                      }
+                    } catch {
+                      setOcrDiagMsg("Erreur réseau.");
+                    } finally {
+                      setOcrDiagLoading(false);
+                    }
+                  }}
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+                >
+                  {ocrDiagLoading ? "Test…" : "Tester le serveur OCR"}
+                </button>
+              </div>
+              {!!ocrDiagMsg && <p className="mt-2 text-xs text-slate-700">{ocrDiagMsg}</p>}
+
+              <div className="mt-4 border-t border-slate-100 pt-4">
+                <label className="block text-xs font-medium text-slate-600">
+                  URL Cloudinary d’une facture (optionnel)
+                </label>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  Factures → aperçu du fichier → copier l’adresse de l’image (commence par https://res.cloudinary.com/…)
+                </p>
+                <input
+                  value={ocrTestUrl}
+                  onChange={(e) => setOcrTestUrl(e.target.value)}
+                  placeholder="https://res.cloudinary.com/…"
+                  className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-slate-400"
+                />
+                <button
+                  type="button"
+                  disabled={ocrTestLoading || !ocrTestUrl.trim()}
+                  onClick={async () => {
+                    const t = getToken();
+                    if (!t) {
+                      setOcrTestMsg("Connectez-vous d’abord.");
+                      return;
+                    }
+                    setOcrTestLoading(true);
+                    setOcrTestMsg("");
+                    try {
+                      const res = await fetch("/api/invoices/ocr-preview", {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                          Authorization: `Bearer ${t}`,
+                        },
+                        body: JSON.stringify({
+                          fileUrl: ocrTestUrl.trim(),
+                          originalName: "facture.jpg",
+                          mimeType: "image/jpeg",
+                        }),
+                      });
+                      const data = await res.json().catch(() => ({}));
+                      if (res.ok && data.success && data.preview) {
+                        const p = data.preview;
+                        const parts = [
+                          p.fournisseur,
+                          p.montant != null ? `TTC ${p.montant}` : null,
+                          p.dateFacture,
+                        ].filter(Boolean);
+                        setOcrTestMsg(
+                          parts.length
+                            ? `✓ ${parts.join(" · ")}`
+                            : "✓ Texte lu, mais peu de champs reconnus (photo ou parsing).",
+                        );
+                      } else {
+                        const extra = data.hint ? ` — ${data.hint}` : "";
+                        setOcrTestMsg((data.error || `Erreur ${res.status}`) + extra);
+                      }
+                    } catch {
+                      setOcrTestMsg("Erreur réseau.");
+                    } finally {
+                      setOcrTestLoading(false);
+                    }
+                  }}
+                  className="mt-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 disabled:opacity-50"
+                >
+                  {ocrTestLoading ? "Lecture…" : "Tester OCR sur cette image"}
+                </button>
+                {!!ocrTestMsg && <p className="mt-2 text-xs text-slate-700">{ocrTestMsg}</p>}
+              </div>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-600">
