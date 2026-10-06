@@ -247,7 +247,16 @@ export async function PATCH(request: NextRequest) {
     pushCoalesce("category", category ?? null);
     pushCoalesce(`"isPaid"`, typeof isPaid === "boolean" ? isPaid : null);
     pushCoalesce(`"paidDate"`, paidDate ? new Date(String(paidDate)) : paidDate === null ? null : undefined);
-    pushCoalesce("currency", normalizedCurrency);
+
+    if ("currency" in body) {
+      if (!normalizedCurrency) {
+        return NextResponse.json(
+          { error: "Devise invalide. Codes acceptés : EUR, GBP, USD, CNY, GHS, XAF, XOF." },
+          { status: 400 },
+        );
+      }
+      pushDirect("currency", normalizedCurrency);
+    }
 
     if ("montantHT" in body) {
       const ht = parsePatchAmount(montantHT);

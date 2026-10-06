@@ -81,8 +81,9 @@ export async function POST(request: Request) {
     const dateMatch =
       flat.match(/(?:date(?:\s+de)?\s+(?:transaction|facture)|date)\s*[:\-]?\s*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i) ??
       flat.match(/\b(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})\b/);
+    const regionHint = typeof body?.region === "string" ? body.region : null;
     const montant = parseMontantTTCStringFromOcr(text);
-    const currency = detectCurrencyFromOcrText(text);
+    const currency = detectCurrencyFromOcrText(text, regionHint);
 
     return NextResponse.json({
       success: true,

@@ -13,11 +13,19 @@ export function normalizeOcrAmountAllowZero(input: string): number | null {
 }
 
 function normalizeOcrAmountRaw(input: string): number | null {
-  const s = String(input || "")
+  let s = String(input || "")
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, "")
     .replace(/[€$£¥₵]/g, "")
-    .replace(/\bFCFA\b|\bXAF\b|\bXOF\b|\bGHS\b|\bEUR\b|\bGBP\b|\bUSD\b|\bCNY\b|\bCFA\b|\bBCEAO\b/gi, "")
+    .replace(/\bFCFA\b|\bXAF\b|\bXOF\b|\bGHS\b|\bEUR\b|\bGBP\b|\bUSD\b|\bCNY\b|\bCFA\b|\bBCEAO\b/gi, "");
+
+  // Format UEMOA / CEET : 28.672 ou 2.520 (point = milliers, pas décimal)
+  if (/^\d{1,3}(\.\d{3})+$/.test(s)) {
+    const nThousands = Number(s.replace(/\./g, ""));
+    if (Number.isFinite(nThousands)) return nThousands;
+  }
+
+  s = s
     .replace(/\.(?=\d{3}(\D|$))/g, "")
     .replace(/,(?=\d{3}(\D|$))/g, "")
     .replace(",", ".");
@@ -30,7 +38,7 @@ const FOURNISSEUR_SKIP =
   /^(ici|l'|l’|ac|el|a|e|de|ent|pai|pé|ma|auto|☑|☐|ob|cette|direction|date|compte|crédit|credit|montant|dépositeur|depositeur|numéro|numero|narration|vers|the|bank|pan|african|terminé|termine|succès|succes|avec|depot|dépôt|transaction|référence|reference)$/i;
 
 const FOURNISSEUR_BOOST =
-  /\b(assurances?|banque|bank|ecobank|sarl|sasu|sas|sa\b|eurl|ltd|gmbh|corp|cashxpress|sunu|orange|mtn|moov|togocel)\b/i;
+  /\b(assurances?|banque|bank|ecobank|sarl|sasu|sas|sa\b|eurl|ltd|gmbh|corp|cashxpress|sunu|orange|mtn|moov|togocel|ceet|compagnie\s+[eé]nergie)\b/i;
 
 function isLikelyFournisseurLine(line: string): boolean {
   const t = line.trim();
@@ -47,7 +55,12 @@ function isLikelyFournisseurLine(line: string): boolean {
 
 /** Détecte le nom fournisseur / émetteur depuis le texte OCR. */
 export function parseFournisseurFromOcr(text: string, originalName?: string): string | null {
-  const lines = String(text || "")
+  const full = String(text || "");
+  if (/\bCEET\b|Compagnie\s+[ÉE]nergie\s+[ÉE]lectrique\s+du\s+Togo/i.test(full)) {
+    return "CEET (Compagnie Énergie Électrique du Togo)";
+  }
+
+  const lines = full
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((l) => l.trim())
@@ -152,13 +165,42 @@ function pushScoredAmount(
   list.push({ value: n, score });
 }
 
+/** Factures énergie / CEET : bloc « Montant dû », tableau TOTAL MOIS ANNEE. */
+function parseUtilityBillTtc(flat: string): number | null {
+  const patterns = [
+    /montant\s+d[uû][\s\S]{0,180}?(?:^|\s)total\s*[:\-]?\s*([0-9][0-9\s\u00a0.]{2,15})/i,
+    /montant\s+d[uû][\s\S]{0,120}?facturation\s*[:\-]?\s*([0-9][0-9\s\u00a0.]{2,15})/i,
+    /\btotal\s+(?:jan|f[ée]v|mar|avr|mai|juin|juil|ao[uû]t|sep|oct|nov|d[ée]c)[a-zéèêù]*\s+20\d{2}[^0-9]{0,40}(?:\d[\d\s.\u00a0]{1,12}\s+){2}(\d{1,3}(?:\.\d{3})+|\d[\d\s\u00a0]{2,12})/i,
+    /\bhtva\b[\s\S]{0,500}?\btotal\b[^0-9]{0,30}(?:\d[\d\s.\u00a0]{1,12}\s+){2}(\d{1,3}(?:\.\d{3})+|\d[\d\s\u00a0]{2,12})/i,
+    /(?:^|\s)ttc\s*[:\-]?\s*([0-9][0-9\s\u00a0.]{2,15})(?:\s|$)/im,
+  ];
+  let best: { n: number; score: number } | null = null;
+  for (let pi = 0; pi < patterns.length; pi++) {
+    const re = patterns[pi]!;
+    const m = flat.match(re);
+    const cap = m?.[1];
+    if (!cap) continue;
+    const n = normalizeOcrAmountAllowZero(cap);
+    if (n == null || n <= 0) continue;
+    const score = 90 - pi * 5;
+    if (!best || score > best.score || (score === best.score && n > best.n)) {
+      best = { n, score };
+    }
+  }
+  return best?.n ?? null;
+}
+
 function parseExplicitLabeledAmount(flat: string, field: "ttc" | "ht"): number | null {
   const patterns =
     field === "ttc"
       ? [
           /(?:net\s+[àa]\s+payer|total\s+[àa]\s+payer|total\s+ttc|montant\s+ttc|facture\s+total)\s*[:\-]?\s*([0-9][0-9\s\u00a0.,]{0,18})/gi,
+          /montant\s+d[uû]\s*[:\-]?\s*([0-9][0-9\s\u00a0.]{2,18})/gi,
+          /facturation\s*[:\-]?\s*([0-9][0-9\s\u00a0.]{2,18})/gi,
         ]
-      : [/(?:total\s+ht|montant\s+ht|montant\s+unitaire\s+h\.t\.)\s*[:\-]?\s*([0-9][0-9\s\u00a0.,]{0,18})/gi];
+      : [
+          /(?:total\s+ht|montant\s+ht|montant\s+unitaire\s+h\.t\.|total\s+htva|htva)\s*[:\-]?\s*([0-9][0-9\s\u00a0.,]{0,18})/gi,
+        ];
 
   for (const re of patterns) {
     for (const m of flat.matchAll(re)) {
@@ -176,7 +218,7 @@ function scoreTtcContext(line: string): number {
   if (isLegalFooterLine(line)) return -100;
   let s = 0;
   const l = line.toLowerCase();
-  if (/facture\s+total|total\s+[àa]\s+payer|total\s+ttc|montant\s+ttc|net\s+[àa]\s+payer|amount\s+due|balance\s+due|grand\s+total|invoice\s+total/i.test(l))
+  if (/facture\s+total|total\s+[àa]\s+payer|total\s+ttc|montant\s+ttc|montant\s+d[uû]|net\s+[àa]\s+payer|amount\s+due|balance\s+due|grand\s+total|invoice\s+total|facturation/i.test(l))
     s += 70;
   if (/\btotal\s+ttc\b/i.test(l)) s += 55;
   if (/^total\s/i.test(l) && /€|\beur\b|\$|£/i.test(l)) s += 40;
@@ -349,7 +391,10 @@ function collectAmountsFromText(
 /** Extrait le montant TTC le plus probable (priorité libellés facture, exclusion pied de page). */
 export function parseMontantTTCFromOcr(text: string, currencyHint?: string | null): number | null {
   const raw = String(text || "");
-  const explicit = parseExplicitLabeledAmount(raw.replace(/\s+/g, " "), "ttc");
+  const flat = raw.replace(/\s+/g, " ");
+  const utility = parseUtilityBillTtc(flat);
+  if (utility != null) return utility;
+  const explicit = parseExplicitLabeledAmount(flat, "ttc");
   if (explicit != null) return explicit;
   return pickBestScoredAmount(collectAmountsFromText(raw, "ttc", currencyHint));
 }
@@ -407,7 +452,7 @@ export function resolveMontantTTCFromOcr(
 
   if (fromHeuristic != null && fromLabel != null) {
     const explicitTtc =
-      /(?:facture\s+total|total\s+ttc|montant\s+ttc|\bttc\b|net\s+[àa]\s+payer|total\s+[àa]\s+payer)/i.test(ctx);
+      /(?:facture\s+total|total\s+ttc|montant\s+ttc|montant\s+d[uû]|facturation|\bttc\b|net\s+[àa]\s+payer|total\s+[àa]\s+payer)/i.test(ctx);
     if (explicitTtc && fromLabel >= 0) return fromLabel;
     if (fromLabel < 10 && fromHeuristic >= 10) return fromHeuristic;
     if (fromHeuristic < 10 && fromLabel >= 10) return fromLabel;

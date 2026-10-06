@@ -31,7 +31,7 @@ export function mergeOcrCurrencyMarker(ocrBody: string, currency: string): strin
 function scoreTotalLine(line: string): number {
   let s = 0;
   if (
-    /(?:total\s*ttc|montant\s*ttc|\bttc\b|net\s+[àa]\s+payer|total\s+[àa]\s+payer|grand\s+total|amount\s+due|balance\s+due|total\s+due|subtotal|invoice\s+total)/i.test(
+    /(?:total\s*ttc|montant\s*ttc|montant\s*d[uû]|facturation|\bttc\b|net\s+[àa]\s+payer|total\s+[àa]\s+payer|grand\s+total|amount\s+due|balance\s+due|total\s+due|subtotal|invoice\s+total)/i.test(
       line,
     )
   )
@@ -45,9 +45,30 @@ function scoreTotalLine(line: string): number {
  * Détecte la devise sur un fragment (ligne ou bloc) : codes ISO, symboles, FCFA, mots-clés.
  * Retourne null si aucun signal clair.
  */
+const WEST_AFRICA_XOF_HINT =
+  /\b(?:togo|lom[ée]|lome|aneho|ceet|compagnie\s+[eé]nergie|flooz|togocel|utb\b|orabank|ecobank|moov\s+africa|bceao|zone\s+uemoa)\b/i;
+
+/** Devise par défaut selon la région facture (choix utilisateur à l’import). */
+export function defaultCurrencyForInvoiceRegion(region: string | null | undefined): string | null {
+  const r = String(region || "")
+    .trim()
+    .toLowerCase();
+  if (!r) return null;
+  if (r === "togo" || r === "benin" || r === "senegal" || r === "cote_ivoire" || r === "mali" || r === "burkina")
+    return "XOF";
+  if (r === "cameroun" || r === "gabon" || r === "congo") return "XAF";
+  if (r === "ghana") return "GHS";
+  if (r === "vietnam") return "CNY";
+  if (r === "france" || r === "belgique" || r === "luxembourg") return "EUR";
+  if (r === "royaume_uni") return "GBP";
+  if (r === "usa" || r === "etats_unis") return "USD";
+  return null;
+}
+
 export function currencyFromFragment(t: string): string | null {
   const f = String(t || "");
   if (!f.trim()) return null;
+  if (WEST_AFRICA_XOF_HINT.test(f) && !/\b(?:EUR|€|USD|\$|GBP|£)\b/i.test(f)) return "XOF";
   if (/\bXAF\b/i.test(f)) return "XAF";
   if (/\bXOF\b/i.test(f)) return "XOF";
   if (/\bGHS\b/i.test(f)) return "GHS";
@@ -78,7 +99,7 @@ export function currencyFromFragment(t: string): string | null {
 /**
  * Détection complète : marqueur OCR > lignes de total > reste du document > EUR par défaut.
  */
-export function detectCurrencyFromOcrText(raw: string): string {
+export function detectCurrencyFromOcrText(raw: string, regionHint?: string | null): string {
   const marker = parseOcrCurrencyMarker(raw);
   if (marker) return marker;
 
@@ -107,6 +128,9 @@ export function detectCurrencyFromOcrText(raw: string): string {
   const flat = normalized.replace(/\s+/g, " ");
   const fromDoc = currencyFromFragment(flat);
   if (fromDoc) return fromDoc;
+
+  const fromRegion = defaultCurrencyForInvoiceRegion(regionHint);
+  if (fromRegion) return fromRegion;
 
   return "EUR";
 }

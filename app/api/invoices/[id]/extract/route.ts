@@ -16,6 +16,7 @@ import {
 } from "@/lib/ocr-quality";
 import { resolveDocumentImageDataUrl } from "@/lib/invoice-document-vision";
 import {
+  normalizeOcrAmountAllowZero,
   parseFournisseurFromOcr,
   resolveMontantHTFromOcr,
   resolveMontantTTCFromOcr,
@@ -185,6 +186,7 @@ async function tryRulesFallbackResponse(
   invoiceId: string,
   workspaceOwnerId: string,
   warning: string,
+  invoiceRegion?: string | null,
 ): Promise<NextResponse | null> {
   const ocrTextToUse = await resolveOcrTextForRules(
     ocrText,
@@ -195,22 +197,14 @@ async function tryRulesFallbackResponse(
     workspaceOwnerId,
   );
   if (!isOcrTextLooselyUsable(ocrTextToUse) && !isOcrTextUsable(ocrTextToUse)) return null;
-  const extracted = extractStructuredFromOcr(ocrTextToUse!, originalName);
+  const extracted = extractStructuredFromOcr(ocrTextToUse!, originalName, invoiceRegion);
   if (!rulesExtractHasData(extracted)) return null;
   const data = await persistRulesExtract(extracted, ocrTextToUse!, invoiceId, workspaceOwnerId);
   return NextResponse.json({ success: true, data, fallback: "rules", warning });
 }
 
 function normalizeNumber(input: string): number | null {
-  const s = String(input || "")
-    .replace(/\s+/g, "")
-    .replace(/[€$£¥₵]/g, "")
-    .replace(/\bFCFA\b|\bXAF\b|\bXOF\b|\bGHS\b|\bEUR\b|\bGBP\b|\bUSD\b|\bCNY\b/gi, "")
-    .replace(/\.(?=\d{3}(\D|$))/g, "") // 1.234,56 -> 1234,56
-    .replace(/,(?=\d{3}(\D|$))/g, "") // 1,234.56 -> 1234.56
-    .replace(",", ".");
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
+  return normalizeOcrAmountAllowZero(input);
 }
 
 function pickFirstMatch(text: string, patterns: RegExp[]): string | null {
@@ -272,7 +266,11 @@ function pickAccountingCode(text: string): string | null {
   return null;
 }
 
-function extractStructuredFromOcr(ocrText: string, originalName: string): Record<string, unknown> {
+function extractStructuredFromOcr(
+  ocrText: string,
+  originalName: string,
+  invoiceRegion?: string | null,
+): Record<string, unknown> {
   const raw = String(ocrText || "");
   const normalized = raw.replace(/\r\n/g, "\n");
   const flat = normalized.replace(/\s+/g, " ");
@@ -290,6 +288,8 @@ function extractStructuredFromOcr(ocrText: string, originalName: string): Record
     pickFirstMatch(normalized, [
       new RegExp(String.raw`(?:facture\s+total|total\s+ttc|montant\s+ttc|ttc)\s*[:\-]?\s*([0-9][0-9\s.,]{1,18})${CUR_AFTER}`, "i"),
       new RegExp(String.raw`(?:net\s+[àa]\s+payer|total\s+[àa]\s+payer|balance\s+due|amount\s+due)\s*[:\-]?\s*([0-9][0-9\s.,]{1,18})${CUR_AFTER}`, "i"),
+      new RegExp(String.raw`montant\s+d[uû][\s\S]{0,120}?total\s*[:\-]?\s*([0-9][0-9\s.]{2,18})`, "i"),
+      new RegExp(String.raw`facturation\s*[:\-]?\s*([0-9][0-9\s.]{2,18})`, "i"),
       new RegExp(String.raw`(?:^|\n)\s*montant\s*[:\-]?\s*([0-9][0-9\s.,]{2,18})${CUR_AFTER}`, "im"),
       new RegExp(String.raw`(?:d[ée]p[oô]t|transaction|cr[ée]dit)\b[^\n]{0,80}?\b([0-9][0-9\s.,]{2,18})${CUR_AFTER}`, "i"),
     ]);
@@ -302,10 +302,11 @@ function extractStructuredFromOcr(ocrText: string, originalName: string): Record
       new RegExp(String.raw`(?:montant\s+tva|total\s+tva|tva)\s*[:\-]?\s*([0-9][0-9\s.,]{0,18})${CUR_AFTER}`, "i"),
     ]);
 
-  const currency = detectCurrencyFromOcrText(raw);
+  const currency = detectCurrencyFromOcrText(raw, invoiceRegion);
   const montantTTC = resolveMontantTTCFromOcr(raw, montantTTCStr, {
     labeledContext: normalized,
-    currencyHint: currency !== "EUR" ? currency : getExplicitCurrencyFromText(raw),
+    currencyHint:
+      currency !== "EUR" ? currency : getExplicitCurrencyFromText(raw) ?? undefined,
   });
   const montantHT = resolveMontantHTFromOcr(raw, montantHTStr);
   const montantTVA = montantTVAStr ? normalizeNumber(montantTVAStr) : null;
@@ -376,7 +377,7 @@ export async function POST(
       ? [id, workspaceOwnerId, actorUserId]
       : [id, workspaceOwnerId];
     const invoiceRes = await pool.query(
-      `SELECT "ocrText", "originalName", "fileUrl", "mimeType" FROM invoices WHERE id = $1 AND "userId" = $2 AND ("deletedAt" IS NULL)${agentClause}`,
+      `SELECT "ocrText", "originalName", "fileUrl", "mimeType", region FROM invoices WHERE id = $1 AND "userId" = $2 AND ("deletedAt" IS NULL)${agentClause}`,
       selParams
     );
 
@@ -384,11 +385,12 @@ export async function POST(
       return NextResponse.json({ error: "Facture introuvable." }, { status: 404 });
     }
 
-    let { ocrText, originalName, fileUrl, mimeType } = invoiceRes.rows[0] as {
+    let { ocrText, originalName, fileUrl, mimeType, region: invoiceRegion } = invoiceRes.rows[0] as {
       ocrText: string | null;
       originalName: string;
       fileUrl: string | null;
       mimeType: string | null;
+      region: string | null;
     };
 
     const body = await request.json().catch(() => ({}));
@@ -453,7 +455,7 @@ export async function POST(
           { status: 422 },
         );
       }
-      const extracted = extractStructuredFromOcr(ocrTextToUse, originalName);
+      const extracted = extractStructuredFromOcr(ocrTextToUse, originalName, invoiceRegion);
 
       if (!rulesExtractHasData(extracted)) {
         return NextResponse.json(
@@ -580,6 +582,7 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
               id,
               workspaceOwnerId,
               "L’API IA est injoignable (timeout réseau). Extraction effectuée en mode Sans IA (OCR).",
+              invoiceRegion,
             );
             if (fallback) return fallback;
           }
@@ -609,6 +612,7 @@ Pour currency, utilise le code ISO 4217 (EUR, GBP, USD, CNY, GHS, XAF, XOF). Dé
           id,
           workspaceOwnerId,
           "L’API IA est injoignable (timeout réseau). Extraction effectuée en mode Sans IA (OCR).",
+          invoiceRegion,
         );
         if (fallback) return fallback;
         return NextResponse.json(

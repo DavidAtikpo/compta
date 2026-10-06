@@ -501,6 +501,7 @@ export default function InvoicesPage() {
   const [aiProvider, setAiProvider] = useState<"openai" | "claude" | "perplexity">("claude");
   const [savingPaymentId, setSavingPaymentId] = useState<string | null>(null);
   const [savingMontantKey, setSavingMontantKey] = useState<string | null>(null);
+  const [savingCurrencyId, setSavingCurrencyId] = useState<string | null>(null);
   const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
   const [fiscalAiAnalyzingId, setFiscalAiAnalyzingId] = useState<string | null>(null);
   const [fiscalAiModal, setFiscalAiModal] = useState<{ title: string; body: string } | null>(null);
@@ -1398,6 +1399,35 @@ export default function InvoicesPage() {
     const n = Number(trimmed.replace(/\s/g, "").replace(",", "."));
     if (!Number.isFinite(n) || n < 0) return "invalid";
     return n;
+  };
+
+  const handleSaveCurrency = async (inv: Invoice, code: string) => {
+    const next = code.toUpperCase();
+    if ((inv.currency ?? "EUR") === next) return;
+    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+    if (!t) return;
+    setSavingCurrencyId(inv.id);
+    try {
+      const res = await fetch("/api/invoices", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${t}`,
+        },
+        body: JSON.stringify({ id: inv.id, currency: next }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setMessage(typeof err.error === "string" ? err.error : "Erreur lors de l'enregistrement de la devise.");
+        return;
+      }
+      const updated = (await res.json()) as Partial<Invoice> & { id: string };
+      setInvoices((prev) =>
+        prev.map((it) => (it.id === inv.id ? { ...it, ...updated, currency: next } : it)),
+      );
+    } finally {
+      setSavingCurrencyId(null);
+    }
   };
 
   const handleSaveMontant = async (
@@ -2498,16 +2528,27 @@ export default function InvoicesPage() {
                             </div>
                           </td>
                           <td className="px-0.5 py-1.5 text-center">
-                            <span className={`inline-flex rounded px-1 py-0.5 text-[10px] font-semibold ${
-                              invCurrency === "EUR" ? "bg-blue-50 text-blue-700"
-                              : invCurrency === "GBP" ? "bg-violet-50 text-violet-700"
-                              : invCurrency === "USD" ? "bg-green-50 text-green-700"
-                              : invCurrency === "CNY" ? "bg-red-50 text-red-700"
-                              : invCurrency === "GHS" ? "bg-amber-50 text-amber-700"
-                              : "bg-slate-100 text-slate-600"
-                            }`}>
-                              {invCurrency}
-                            </span>
+                            <select
+                              value={invCurrency}
+                              onChange={(e) => void handleSaveCurrency(inv, e.target.value)}
+                              disabled={savingCurrencyId === inv.id}
+                              title="Modifier la devise"
+                              className={`max-w-[4.25rem] rounded border border-slate-200 bg-white px-0.5 py-0.5 text-[10px] font-semibold focus:border-slate-400 focus:outline-none disabled:opacity-50 ${
+                                invCurrency === "EUR" ? "text-blue-700"
+                                : invCurrency === "GBP" ? "text-violet-700"
+                                : invCurrency === "USD" ? "text-green-700"
+                                : invCurrency === "CNY" ? "text-red-700"
+                                : invCurrency === "GHS" ? "text-amber-700"
+                                : invCurrency === "XOF" || invCurrency === "XAF" ? "text-slate-800"
+                                : "text-slate-600"
+                              }`}
+                            >
+                              {CURRENCY_OPTIONS.map((c) => (
+                                <option key={c.code} value={c.code}>
+                                  {c.code}
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td className="px-1 py-1.5 text-right font-mono text-[11px] text-slate-700">
                             <div className="flex items-center justify-end gap-0.5">
