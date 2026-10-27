@@ -266,6 +266,26 @@ function pickAccountingCode(text: string): string | null {
   return null;
 }
 
+/** Évite les faux positifs (« à payer », « impayée ») sur le statut réglé. */
+function detectEstRegleeFromOcr(flat: string): boolean | null {
+  const t = String(flat || "");
+  if (
+    /\b(non\s+r[ée]gl[ée]|impay[ée]|à\s+payer|reste\s+à\s+payer|non\s+pay[ée]|unpaid|amount\s+due|balance\s+due)\b/i.test(
+      t,
+    )
+  ) {
+    return false;
+  }
+  if (
+    /\b(pay[ée]e?\s+(?:le|par|via)|r[ée]gl[ée]e?\s+(?:le|par)|acquitt[ée]e?|paid\s+in\s+full|payment\s+received|settled)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  return null;
+}
+
 function extractStructuredFromOcr(
   ocrText: string,
   originalName: string,
@@ -326,9 +346,8 @@ function extractStructuredFromOcr(
     }
   }
 
-  const estReglee =
-    /\b(pay[ée]e?|r[ée]gl[ée]e?|acquitt[ée]e?|paid|settled)\b/i.test(flat) ? true : null;
-  const montantRegle = estReglee ? montantTTC : null;
+  const estReglee = detectEstRegleeFromOcr(flat);
+  const montantRegle = estReglee === true ? montantTTC : null;
 
   const fournisseur = parseFournisseurFromOcr(raw, originalName);
 

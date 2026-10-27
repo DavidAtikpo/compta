@@ -5,6 +5,8 @@ import { getAuthenticatedUserId } from "../../../lib/auth-request";
 import { resolveInvoiceWorkspace } from "@/lib/workspace";
 import { isOcrTextLooselyUsable, isOcrTextQualityGood } from "@/lib/ocr-quality";
 import { ensureInvoiceWorkflowColumns } from "@/lib/invoice-workflow-schema";
+import { ensureInvoiceFoldersSchema } from "@/lib/invoice-folders-schema";
+import { loadInvoiceCabinetSendsMap } from "@/lib/invoice-cabinet-sends";
 
 export async function GET(request: NextRequest) {
   const userId = getAuthenticatedUserId(request);
@@ -20,6 +22,7 @@ export async function GET(request: NextRequest) {
 
   try {
     await ensureInvoiceWorkflowColumns();
+    await ensureInvoiceFoldersSchema();
     const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
       await resolveInvoiceWorkspace(userId);
 
@@ -79,8 +82,8 @@ export async function GET(request: NextRequest) {
     }
 
     if (region) {
-      query += ` AND i.region = $${idx++}`;
-      params.push(region);
+      query += ` AND LOWER(TRIM(REPLACE(i.region, ' ', '_'))) = LOWER(TRIM(REPLACE($${idx++}::text, ' ', '_')))`;
+      params.push(String(region).trim().toLowerCase());
     }
     if (status) {
       query += ` AND i.status = $${idx++}`;
@@ -95,7 +98,16 @@ export async function GET(request: NextRequest) {
     params.push(limit);
 
     const result = await pool.query(query, params);
-    return NextResponse.json(result.rows);
+    const rows = result.rows as { id: string }[];
+    const cabinetMap = await loadInvoiceCabinetSendsMap(
+      workspaceOwnerId,
+      rows.map((r) => r.id),
+    );
+    const enriched = rows.map((row) => ({
+      ...row,
+      cabinetSentAtByRegion: cabinetMap.get(row.id) ?? {},
+    }));
+    return NextResponse.json(enriched);
   } catch (error) {
     console.error("Erreur récupération factures:", error);
     return NextResponse.json(
@@ -163,8 +175,8 @@ export async function POST(request: NextRequest) {
         : "EUR";
 
     const result = await pool.query(
-      `INSERT INTO invoices (id, "userId", "submittedByUserId", filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, "invoiceType", "structureId", status, "invoiceDate", "fileUrl", currency, "createdAt", "updatedAt")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending', $14, $15, $16, NOW(), NOW())
+      `INSERT INTO invoices (id, "userId", "submittedByUserId", filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, "invoiceType", "structureId", status, "invoiceDate", "fileUrl", currency, "isPaid", "paidDate", "createdAt", "updatedAt")
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending', $14, $15, $16, true, COALESCE($14::timestamptz, NOW()), NOW(), NOW())
        RETURNING *`,
       [
         workspaceOwnerId,
@@ -213,10 +225,23 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
+    await ensureInvoiceFoldersSchema();
     const { workspaceOwnerId, actorUserId, restrictAgentToOwnSubmissions } =
       await resolveInvoiceWorkspace(userId);
     const body = await request.json();
-    const { id, status, amount, category, isPaid, paidDate, currency, montantHT, montantTTC } = body;
+    const {
+      id,
+      status,
+      amount,
+      category,
+      isPaid,
+      paidDate,
+      currency,
+      montantHT,
+      montantTTC,
+      originalName,
+      folderId,
+    } = body;
 
     if (!id) {
       return NextResponse.json({ error: "id requis" }, { status: 400 });
@@ -256,6 +281,35 @@ export async function PATCH(request: NextRequest) {
         );
       }
       pushDirect("currency", normalizedCurrency);
+    }
+
+    if ("originalName" in body) {
+      const name = typeof originalName === "string" ? originalName.trim() : "";
+      if (!name) {
+        return NextResponse.json({ error: "Le nom de la facture ne peut pas être vide." }, { status: 400 });
+      }
+      if (name.length > 255) {
+        return NextResponse.json({ error: "Nom trop long (255 caractères max)." }, { status: 400 });
+      }
+      pushDirect('"originalName"', name);
+      pushDirect("filename", name);
+    }
+
+    if ("folderId" in body) {
+      if (folderId === null || folderId === "") {
+        pushDirect('"folderId"', null);
+      } else if (typeof folderId === "string") {
+        const folderCheck = await pool.query(
+          `SELECT id FROM invoice_folders WHERE id = $1 AND "userId" = $2`,
+          [folderId, workspaceOwnerId],
+        );
+        if (folderCheck.rows.length === 0) {
+          return NextResponse.json({ error: "Dossier introuvable." }, { status: 400 });
+        }
+        pushDirect('"folderId"', folderId);
+      } else {
+        return NextResponse.json({ error: "folderId invalide." }, { status: 400 });
+      }
     }
 
     if ("montantHT" in body) {

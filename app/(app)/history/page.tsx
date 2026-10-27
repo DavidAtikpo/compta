@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { regionOptions } from "@/lib/country-regions";
 
 function getAuthHeaders(): Record<string, string> {
   const h: Record<string, string> = {};
@@ -9,13 +10,6 @@ function getAuthHeaders(): Record<string, string> {
   if (t) h.Authorization = `Bearer ${t}`;
   return h;
 }
-
-const regionOptions = [
-  { value: "france", label: "France", flag: "🇫🇷" },
-  { value: "togo", label: "Togo", flag: "🇹🇬" },
-  { value: "vietnam", label: "Vietnam", flag: "🇻🇳" },
-  { value: "autre", label: "Autre", flag: "🌍" },
-];
 
 interface AiHistoryRecord {
   id: string;

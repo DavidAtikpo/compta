@@ -1,16 +1,29 @@
 ﻿"use client";
 
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { InvoicePhotoCropModal } from "@/components/InvoicePhotoCropModal";
+import { SendToCabinetModal, type SendToCabinetInvoice } from "@/components/SendToCabinetModal";
 import { UploadRingSpinner } from "@/components/UploadRingSpinner";
+import { isCabinetFeatureEnabledClient } from "@/lib/cabinet-feature";
 import {
   IMAP_REGION_OPTIONS_SORTED,
   imapCountryFilterMatch,
   normalizeRegionKey,
   regionDisplayLabel,
   regionsMatch,
+  sortRegionOptions,
 } from "@/lib/country-regions";
 import { MAX_PDF_INVOICES } from "../../../lib/pdf-export";
 import {
@@ -21,7 +34,10 @@ import {
   invoiceWorkflowBadge,
   invoiceWorkflowBadgeClass,
   isAwaitingUserConfirmation,
+  isSentToCabinet,
+  isSentToCabinetRegion,
   isUserConfirmed,
+  cabinetSentAtForRegion,
   matchesInvoiceWorkflowFilter,
 } from "@/lib/invoice-workflow-ui";
 import { ocrImageFileInBrowser } from "@/lib/client-ocr";
@@ -185,6 +201,7 @@ interface Invoice {
   ocrText: string | null;
   createdAt: string;
   sentAt: string | null;
+  cabinetSentAtByRegion?: Record<string, string>;
   accountant_email: string | null;
   accountant_label?: string | null;
   fileUrl: string | null;
@@ -208,6 +225,7 @@ interface Invoice {
   submittedByName?: string | null;
 }
 
+/** Montant réglé suggéré par l’extraction (indication seulement, ne force pas « Règlé = Oui »). */
 function extractPaidAmount(ocrText: string | null): number | null {
   if (!ocrText) return null;
   const aiMarkers = [...ocrText.matchAll(/\[AI_PAID_AMOUNT\]\s*=\s*([0-9]+(?:[.,][0-9]{1,2})?)/gi)];
@@ -235,6 +253,20 @@ function extractPaidAmount(ocrText: string | null): number | null {
     }
   }
   return null;
+}
+
+function extractAiPaidFlag(ocrText: string | null): boolean | null {
+  if (!ocrText) return null;
+  const markers = [...ocrText.matchAll(/\[AI_PAID_FLAG\]\s*=\s*(true|false)/gi)];
+  if (markers.length === 0) return null;
+  const last = markers[markers.length - 1]?.[1]?.toLowerCase();
+  if (last === "true") return true;
+  if (last === "false") return false;
+  return null;
+}
+
+function invoiceIsPaidForUi(inv: { isPaid: boolean | null }): boolean {
+  return inv.isPaid === true;
 }
 
 function buildInvoiceContextForAi(inv: Invoice): string {
@@ -358,7 +390,16 @@ function formatFiscalAiAnswer(text: string) {
   });
 }
 
-type Tab = "invoices" | "email";
+type Tab = "invoices" | "email" | `cabinet-${string}`;
+
+function isCabinetTab(tab: Tab): tab is `cabinet-${string}` {
+  return tab.startsWith("cabinet-");
+}
+
+function cabinetTabRegion(tab: Tab): string | null {
+  if (!isCabinetTab(tab)) return null;
+  return tab.slice("cabinet-".length);
+}
 
 /** Largeur minimale du menu actions (aligné avec min-w-[11rem]) */
 const ACTION_MENU_WIDTH_PX = 176;
@@ -434,7 +475,16 @@ export default function InvoicesPage() {
   const [invoiceKind, setInvoiceKind] = useState<"achat" | "vente">("achat");
   const [token, setToken] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState("");
+  const [userDisplayName, setUserDisplayName] = useState("");
+  const cabinetFeatureOn = isCabinetFeatureEnabledClient();
+  const [sendCabinetOpen, setSendCabinetOpen] = useState(false);
+  const [sendCabinetInvoices, setSendCabinetInvoices] = useState<SendToCabinetInvoice[]>([]);
+  /** Envoie réservé au cabinet de l’onglet pays ouvert (pas les autres pays). */
+  const [sendCabinetRestrictRegion, setSendCabinetRestrictRegion] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("invoices");
+  const [cabinetRegions, setCabinetRegions] = useState<string[]>([]);
+  /** Liste complète (sans filtre pays) pour les compteurs des onglets cabinet. */
+  const [invoicesAllRegions, setInvoicesAllRegions] = useState<Invoice[]>([]);
 
   // Upload / OCR states
   const [files, setFiles] = useState<File[]>([]);
@@ -502,6 +552,9 @@ export default function InvoicesPage() {
   const [savingPaymentId, setSavingPaymentId] = useState<string | null>(null);
   const [savingMontantKey, setSavingMontantKey] = useState<string | null>(null);
   const [savingCurrencyId, setSavingCurrencyId] = useState<string | null>(null);
+  const [renameInvoice, setRenameInvoice] = useState<Invoice | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
   const [extractResults, setExtractResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
   const [fiscalAiAnalyzingId, setFiscalAiAnalyzingId] = useState<string | null>(null);
   const [fiscalAiModal, setFiscalAiModal] = useState<{ title: string; body: string } | null>(null);
@@ -553,17 +606,37 @@ export default function InvoicesPage() {
   /** Photo caméra en attente de recadrage (URL object + fichier source) */
   const [photoCrop, setPhotoCrop] = useState<{ src: string; file: File } | null>(null);
 
+  const loadCabinetRegions = useCallback(async (t: string) => {
+    if (!cabinetFeatureOn) {
+      setCabinetRegions([]);
+      return;
+    }
+    try {
+      const res = await fetch("/api/accountants", { headers: { Authorization: `Bearer ${t}` } });
+      if (!res.ok) return;
+      const rows = (await res.json()) as { region: string }[];
+      const unique = Array.from(new Set(rows.map((r) => normalizeRegionKey(r.region)).filter(Boolean)));
+      const sorted = sortRegionOptions(
+        unique.map((value) => ({ value, label: regionDisplayLabel(value) })),
+      ).map((o) => o.value);
+      setCabinetRegions(sorted);
+    } catch {
+      setCabinetRegions([]);
+    }
+  }, [cabinetFeatureOn]);
+
   useEffect(() => {
     const savedToken = window.localStorage.getItem("compta-token");
     if (savedToken) {
       setToken(savedToken);
       fetchMe(savedToken);
+      void loadCabinetRegions(savedToken);
     }
     loadInvoices();
     // Pre-fill IMAP from env/settings if available
     const savedImapUser = window.localStorage.getItem("imap-user");
     if (savedImapUser) setImapUser(savedImapUser);
-  }, []);
+  }, [loadCabinetRegions]);
 
   useEffect(() => {
     if (!createOpen) return;
@@ -693,7 +766,44 @@ export default function InvoicesPage() {
       const res = await fetch("/api/auth/me", { headers: { Authorization: `Bearer ${t}` } });
       const data = await res.json();
       if (data.email) setUserEmail(data.email);
+      if (typeof data.name === "string" && data.name.trim()) setUserDisplayName(data.name.trim());
     } catch { /* silent */ }
+  };
+
+  const openSendCabinetModal = (items: Invoice[], restrictToCabinetRegion?: string | null) => {
+    const tabRegion =
+      restrictToCabinetRegion ??
+      (isCabinetTab(activeTab) ? normalizeRegionKey(cabinetTabRegion(activeTab) ?? "") : null);
+    const withFile = items.filter((inv) => inv.fileUrl);
+    if (withFile.length === 0) return;
+    setSendCabinetRestrictRegion(tabRegion && tabRegion.length > 0 ? tabRegion : null);
+    setSendCabinetInvoices(
+      withFile.map((inv) => ({
+        id: inv.id,
+        region: inv.region,
+        originalName: inv.originalName,
+        fileUrl: inv.fileUrl,
+        userConfirmedAt: inv.userConfirmedAt,
+        sentAt: inv.sentAt,
+        status: inv.status,
+      })),
+    );
+    setSendCabinetOpen(true);
+  };
+
+  const switchToInvoicesTab = () => {
+    setActiveTab("invoices");
+    setFilterRegion("");
+    applyFilters({ reg: "" });
+  };
+
+  const switchToCabinetTab = (regionKey: string) => {
+    const normalized = normalizeRegionKey(regionKey);
+    const tab = `cabinet-${normalized}` as Tab;
+    setActiveTab(tab);
+    setSelectedIds([]);
+    setFilterRegion("");
+    applyFilters({ reg: "" });
   };
 
   const loadInvoices = async (
@@ -741,6 +851,7 @@ export default function InvoicesPage() {
           data = data.filter((inv) => matchesInvoiceWorkflowFilter(inv, status));
         }
         setInvoices(data);
+        if (!reg) setInvoicesAllRegions(data);
         const links: Record<string, string> = {};
         data.forEach((inv) => {
           if (inv.shareToken) links[inv.id] = `${window.location.origin}/share/${inv.shareToken}`;
@@ -868,7 +979,22 @@ export default function InvoicesPage() {
     loadInvoices();
   };
 
-  const displayedInvoices = invoices;
+  const activeCabinetRegionKey = useMemo(() => {
+    if (!isCabinetTab(activeTab)) return null;
+    const raw = cabinetTabRegion(activeTab);
+    return raw ? normalizeRegionKey(raw) : null;
+  }, [activeTab]);
+
+  const displayedInvoices = useMemo(() => {
+    if (!isCabinetTab(activeTab)) return invoices;
+    return invoices.filter((inv) => inv.fileUrl && isInvoiceExtractionDone(inv));
+  }, [invoices, activeTab]);
+
+  /** Même liste extraite dans chaque onglet cabinet ; l’envoi cible le pays de l’onglet. */
+  const cabinetExtractedTotal = useMemo(() => {
+    const source = invoicesAllRegions.length > 0 ? invoicesAllRegions : invoices;
+    return source.filter((inv) => inv.fileUrl && isInvoiceExtractionDone(inv)).length;
+  }, [invoices, invoicesAllRegions]);
 
   const invoicesGroupedByMonth = useMemo(() => {
     const byMonth = new Map<string, Invoice[]>();
@@ -892,7 +1018,8 @@ export default function InvoicesPage() {
       }));
   }, [displayedInvoices]);
 
-  const invoiceTableColCount = showAddedByColumn ? 13 : 12;
+  const invoiceTableColCount =
+    (showAddedByColumn ? 13 : 12) + (isCabinetTab(activeTab) && cabinetFeatureOn ? 1 : 0);
 
   const toggleSelectMany = (ids: string[]) => {
     if (ids.length === 0) return;
@@ -1399,6 +1526,44 @@ export default function InvoicesPage() {
     const n = Number(trimmed.replace(/\s/g, "").replace(",", "."));
     if (!Number.isFinite(n) || n < 0) return "invalid";
     return n;
+  };
+
+  const handleSaveOriginalName = async (inv: Invoice, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === inv.originalName) return;
+    const t = token ?? (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null);
+    if (!t) return;
+    setRenameSaving(true);
+    try {
+      const res = await fetch("/api/invoices", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${t}`,
+        },
+        body: JSON.stringify({ id: inv.id, originalName: trimmed }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setMessage(typeof err.error === "string" ? err.error : "Erreur lors du renommage.");
+        return false;
+      }
+      const updated = (await res.json()) as Partial<Invoice> & { id: string };
+      setInvoices((prev) =>
+        prev.map((it) =>
+          it.id === inv.id ? { ...it, ...updated, originalName: trimmed } : it,
+        ),
+      );
+      return true;
+    } finally {
+      setRenameSaving(false);
+    }
+  };
+
+  const openRenameDialog = (inv: Invoice) => {
+    setRenameInvoice(inv);
+    setRenameValue(inv.originalName);
+    setOpenActionMenuId(null);
   };
 
   const handleSaveCurrency = async (inv: Invoice, code: string) => {
@@ -1940,6 +2105,21 @@ export default function InvoicesPage() {
     () => invoices.filter((inv) => isAwaitingUserConfirmation(inv)),
     [invoices],
   );
+
+  const readyForCabinetInView = useMemo(
+    () =>
+      displayedInvoices.filter(
+        (inv) =>
+          inv.fileUrl &&
+          isInvoiceExtractionDone(inv) &&
+          (!activeCabinetRegionKey ||
+            !isSentToCabinetRegion(inv, activeCabinetRegionKey)) &&
+          inv.status !== "archived",
+      ),
+    [displayedInvoices, activeCabinetRegionKey],
+  );
+
+  const activeCabinetRegion = activeCabinetRegionKey;
   const structuresForRegion = structures.filter((s) => s.region === region);
 
   return (
@@ -1986,7 +2166,12 @@ export default function InvoicesPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-lg font-semibold text-slate-900">Factures et pièces justificatives</h1>
-            <p className="mt-0.5 text-xs text-slate-500">OCR, extraction et devises</p>
+            <p className="mt-0.5 text-xs text-slate-500">
+              OCR, extraction et devises —{" "}
+              {cabinetFeatureOn
+                ? "envoi au cabinet manuel (onglets par pays, jamais automatique)"
+                : "sans envoi cabinet"}
+            </p>
             <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
               <Link href="/fichiers" className="font-medium text-indigo-700 hover:text-indigo-900">
                 → Galerie pièces jointes
@@ -2092,23 +2277,47 @@ export default function InvoicesPage() {
         )}
 
         {/* Tabs */}
-        <div className="flex gap-0 border-b border-slate-200">
+        <div className="flex gap-0 overflow-x-auto border-b border-slate-200">
           <button
             type="button"
-            onClick={() => setActiveTab("invoices")}
-            className={`flex-1 border-b-2 px-3 py-2 text-xs font-medium transition ${activeTab === "invoices" ? "border-slate-900 text-slate-900" : "border-transparent text-slate-500 hover:text-slate-800"}`}
+            onClick={() => switchToInvoicesTab()}
+            className={`shrink-0 border-b-2 px-3 py-2 text-xs font-medium transition ${activeTab === "invoices" ? "border-slate-900 text-slate-900" : "border-transparent text-slate-500 hover:text-slate-800"}`}
           >
-            Factures
+            Toutes les factures
             {invoices.length > 0 && (
               <span className="ml-1.5 rounded bg-slate-200 px-1 py-0 text-[10px] font-semibold text-slate-700">
                 {invoices.length}
               </span>
             )}
           </button>
+          {cabinetFeatureOn &&
+            cabinetRegions.map((regionKey) => (
+              <button
+                key={regionKey}
+                type="button"
+                onClick={() => switchToCabinetTab(regionKey)}
+                className={`shrink-0 border-b-2 px-3 py-2 text-xs font-medium transition ${
+                  activeTab === `cabinet-${regionKey}`
+                    ? "border-emerald-700 text-emerald-900"
+                    : "border-transparent text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                Cabinet {regionDisplayLabel(regionKey)}
+                <span className="ml-1 tabular-nums opacity-70">({cabinetExtractedTotal})</span>
+              </button>
+            ))}
+          {cabinetFeatureOn && cabinetRegions.length === 0 && (
+            <Link
+              href="/settings"
+              className="shrink-0 border-b-2 border-transparent px-3 py-2 text-xs font-medium text-indigo-700 hover:text-indigo-900"
+            >
+              + Configurer un cabinet (pays)
+            </Link>
+          )}
           <button
             type="button"
             onClick={() => setActiveTab("email")}
-            className={`flex-1 border-b-2 px-3 py-2 text-xs font-medium transition ${activeTab === "email" ? "border-slate-900 text-slate-900" : "border-transparent text-slate-500 hover:text-slate-800"}`}
+            className={`ml-auto shrink-0 border-b-2 px-3 py-2 text-xs font-medium transition ${activeTab === "email" ? "border-slate-900 text-slate-900" : "border-transparent text-slate-500 hover:text-slate-800"}`}
           >
             Import email (IMAP)
           </button>
@@ -2144,12 +2353,38 @@ export default function InvoicesPage() {
         {/* ============================================================ */}
         {/* TAB: FACTURES */}
         {/* ============================================================ */}
-        {activeTab === "invoices" && (
+        {(activeTab === "invoices" || isCabinetTab(activeTab)) && (
           <div className="w-full min-w-0 max-w-full overflow-hidden">
+            {isCabinetTab(activeTab) && activeCabinetRegion && (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-100 bg-emerald-50/60 px-3 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-emerald-950">
+                    Envoi vers le cabinet {regionDisplayLabel(activeCabinetRegion)}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-emerald-900/80">
+                    Toutes les factures <strong>déjà extraites</strong> sont listées ici (quel que soit leur pays
+                    d’origine). Le bouton Envoyer transmet au cabinet{" "}
+                    <strong>{regionDisplayLabel(activeCabinetRegion)}</strong> uniquement — jamais d’envoi automatique.
+                    Les non extraites restent sur « Toutes les factures ».
+                  </p>
+                </div>
+                {readyForCabinetInView.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => openSendCabinetModal(readyForCabinetInView)}
+                    className="shrink-0 rounded-lg bg-emerald-800 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-900"
+                  >
+                    Envoyer {readyForCabinetInView.length} facture(s) au cabinet
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Filters bar */}
             <div className="border-b border-slate-200 py-2">
               <div className="flex flex-wrap items-end gap-2">
                 {/* Region */}
+                {!isCabinetTab(activeTab) && (
                 <div className="flex flex-col gap-0.5">
                   <label className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Région</label>
                   <select
@@ -2163,6 +2398,7 @@ export default function InvoicesPage() {
                     ))}
                   </select>
                 </div>
+                )}
 
                 {/* Status */}
                 <div className="flex flex-col gap-0.5">
@@ -2174,7 +2410,13 @@ export default function InvoicesPage() {
                   >
                     <option value="">Tous</option>
                     <option value="to_confirm">À confirmer</option>
-                    <option value="confirmed">Confirmées</option>
+                    <option value="confirmed">Confirmées (non envoyées)</option>
+                    {cabinetFeatureOn && (
+                      <>
+                        <option value="to_send">Prêtes à envoyer au cabinet</option>
+                        <option value="sent">Envoyées au cabinet</option>
+                      </>
+                    )}
                     <option value="not_extracted">À extraire</option>
                     <option value="archived">Archivées</option>
                   </select>
@@ -2347,6 +2589,19 @@ export default function InvoicesPage() {
                 <span className="font-medium text-slate-700">
                   {selectedIds.length} sélectionné(s)
                 </span>
+                {cabinetFeatureOn && isCabinetTab(activeTab) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const picked = displayedInvoices.filter((i) => selectedIds.includes(i.id));
+                      if (picked.length === 0) return;
+                      openSendCabinetModal(picked);
+                    }}
+                    className="rounded border border-emerald-700 bg-emerald-50 px-2 py-1 font-medium text-emerald-900 hover:bg-emerald-100"
+                  >
+                    Envoyer la sélection au cabinet
+                  </button>
+                )}
                 <button
                   type="button"
                   disabled={bulkDeleting}
@@ -2376,8 +2631,16 @@ export default function InvoicesPage() {
                 </div>
               ) : displayedInvoices.length === 0 ? (
                 <div className="p-8 text-center text-slate-400">
-                  <p className="text-xs font-medium text-slate-600">Aucune facture trouvée</p>
-                  <p className="mt-1 text-[11px] text-slate-500">{hasActiveFilters ? "Modifiez les filtres ou " : ""}ajoutez une facture ou importez depuis votre email.</p>
+                  <p className="text-xs font-medium text-slate-600">
+                    {isCabinetTab(activeTab)
+                      ? "Aucune facture extraite pour ce cabinet"
+                      : "Aucune facture trouvée"}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    {isCabinetTab(activeTab)
+                      ? "Les factures non extraites restent sur l’onglet « Toutes les factures ». Extrayez-les puis revenez ici."
+                      : `${hasActiveFilters ? "Modifiez les filtres ou " : ""}ajoutez une facture ou importez depuis votre email.`}
+                  </p>
                   <div className="mt-3 flex justify-center gap-2">
                     <button
                       type="button"
@@ -2430,6 +2693,11 @@ export default function InvoicesPage() {
                       <th className="w-[3.75rem] px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-center">Règlé</th>
                       <th className="w-[4.25rem] px-1 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-right">Montant TTC</th>
                       <th className="w-[3.75rem] px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-center">Statut</th>
+                      {isCabinetTab(activeTab) && cabinetFeatureOn && (
+                        <th className="w-[4.5rem] px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-center">
+                          Envoi cabinet
+                        </th>
+                      )}
                       <th className="w-[5.25rem] px-0.5 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500 text-right">
                         Actions
                       </th>
@@ -2464,7 +2732,8 @@ export default function InvoicesPage() {
                       const invCurrency = inv.currency ?? "EUR";
                       const invSymbol   = currencySymbol(invCurrency);
                       const paidAmount = extractPaidAmount(inv.ocrText);
-                      const isPaidManual = typeof inv.isPaid === "boolean" ? inv.isPaid : paidAmount != null;
+                      const aiPaidFlag = extractAiPaidFlag(inv.ocrText);
+                      const isPaidManual = invoiceIsPaidForUi(inv);
                       const paidDateValue = inv.paidDate ? new Date(inv.paidDate).toISOString().slice(0, 10) : "";
                       const dateAjout  = inv.createdAt ? new Date(inv.createdAt).toLocaleDateString("fr-FR") : "—";
                       const dateFacture = inv.invoiceDate ? new Date(inv.invoiceDate).toLocaleDateString("fr-FR") : "—";
@@ -2524,7 +2793,14 @@ export default function InvoicesPage() {
                                   ?? (extractingId === inv.id ? "extracting" : undefined)
                                 }
                               />
-                              <p className="truncate text-[10px] text-slate-500">{inv.originalName}</p>
+                              <button
+                                type="button"
+                                title="Renommer la facture"
+                                onClick={() => openRenameDialog(inv)}
+                                className="max-w-full truncate text-left text-[10px] text-slate-500 underline decoration-slate-300 decoration-dotted underline-offset-2 hover:text-slate-800"
+                              >
+                                {inv.originalName}
+                              </button>
                             </div>
                           </td>
                           <td className="px-0.5 py-1.5 text-center">
@@ -2592,10 +2868,13 @@ export default function InvoicesPage() {
                                   className="rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px] text-slate-700 focus:outline-none"
                                 />
                               )}
-                              {paidAmount != null && (
+                              {aiPaidFlag === true && paidAmount != null && (
                                 <span className="text-[9px] text-emerald-700">
                                   IA: {paidAmount.toFixed(2)} {invSymbol}
                                 </span>
+                              )}
+                              {aiPaidFlag === true && paidAmount == null && (
+                                <span className="text-[9px] text-emerald-700">IA: réglée</span>
                               )}
                             </div>
                           </td>
@@ -2620,7 +2899,12 @@ export default function InvoicesPage() {
                           </td>
                           <td className="px-0.5 py-1.5 text-center">
                             {(() => {
-                              const wf = invoiceWorkflowBadge(inv);
+                              const wf =
+                                isCabinetTab(activeTab) && activeCabinetRegionKey
+                                  ? invoiceWorkflowBadge(inv, {
+                                      cabinetRegion: activeCabinetRegionKey,
+                                    })
+                                  : invoiceWorkflowBadge(inv);
                               return (
                                 <span
                                   className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${invoiceWorkflowBadgeClass(wf.tone)}`}
@@ -2630,6 +2914,54 @@ export default function InvoicesPage() {
                               );
                             })()}
                           </td>
+                          {isCabinetTab(activeTab) && cabinetFeatureOn && activeCabinetRegionKey && (
+                            <td className="px-0.5 py-1.5 text-center align-top">
+                              {(() => {
+                                const sentHere = isSentToCabinetRegion(
+                                  inv,
+                                  activeCabinetRegionKey,
+                                );
+                                const sentAt = cabinetSentAtForRegion(
+                                  inv.cabinetSentAtByRegion,
+                                  activeCabinetRegionKey,
+                                );
+                                return (
+                                  <div className="flex flex-col items-center gap-0.5">
+                                    {sentHere && sentAt && (
+                                      <span
+                                        className="max-w-[4.5rem] text-center text-[9px] font-medium leading-tight text-emerald-800"
+                                        title={`Envoyée au cabinet ${regionDisplayLabel(activeCabinetRegionKey)}`}
+                                      >
+                                        Envoyée le{" "}
+                                        {new Date(sentAt).toLocaleDateString("fr-FR", {
+                                          day: "2-digit",
+                                          month: "2-digit",
+                                          year: "2-digit",
+                                        })}
+                                      </span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      disabled={!inv.fileUrl || sendCabinetOpen}
+                                      onClick={() => openSendCabinetModal([inv])}
+                                      className={`inline-flex w-full max-w-[4.25rem] items-center justify-center rounded-md border px-1.5 py-1 text-[10px] font-semibold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                                        sentHere
+                                          ? "border-slate-300 bg-white text-slate-800 hover:bg-slate-50"
+                                          : "border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800"
+                                      }`}
+                                      title={
+                                        sentHere
+                                          ? `Renvoyer au cabinet ${regionDisplayLabel(activeCabinetRegionKey)}`
+                                          : `Envoyer au cabinet ${regionDisplayLabel(activeCabinetRegionKey)}`
+                                      }
+                                    >
+                                      {sentHere ? "Renvoyer" : "Envoyer"}
+                                    </button>
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                          )}
                           <td className="relative min-w-0 px-0.5 py-1.5 text-right align-top">
                             <div
                               className="relative inline-flex max-w-full flex-col items-end gap-1"
@@ -2646,7 +2978,7 @@ export default function InvoicesPage() {
                                   >
                                     {confirmingId === inv.id ? "Confirmation…" : "Confirmer"}
                                   </button>
-                                ) : (
+                                ) : !isCabinetTab(activeTab) ? (
                                   <button
                                     type="button"
                                     disabled={extractingId === inv.id || !inv.fileUrl}
@@ -2660,7 +2992,7 @@ export default function InvoicesPage() {
                                   >
                                     {extractingId === inv.id ? "Extraction…" : "Extraction"}
                                   </button>
-                                )}
+                                ) : null}
                                 <button
                                   type="button"
                                   data-invoice-menu-button={inv.id}
@@ -3495,6 +3827,38 @@ export default function InvoicesPage() {
                 {shareLinks[actionMenuInvoice.id] ? "Copier le lien de partage" : "Partager (lien)"}
               </button>
             </li>
+            <li>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => openRenameDialog(actionMenuInvoice)}
+                className="w-full px-2.5 py-1.5 text-left hover:bg-slate-50"
+              >
+                Renommer
+              </button>
+            </li>
+            {cabinetFeatureOn && (
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!actionMenuInvoice.fileUrl}
+                  onClick={() => {
+                    setOpenActionMenuId(null);
+                    openSendCabinetModal([actionMenuInvoice]);
+                  }}
+                  className="w-full px-2.5 py-1.5 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {isCabinetTab(activeTab) && activeCabinetRegionKey
+                    ? isSentToCabinetRegion(actionMenuInvoice, activeCabinetRegionKey)
+                      ? "Renvoyer au cabinet"
+                      : "Envoyer au cabinet"
+                    : isSentToCabinet(actionMenuInvoice)
+                      ? "Renvoyer au cabinet"
+                      : "Envoyer au cabinet"}
+                </button>
+              </li>
+            )}
             <li className="pointer-events-none mx-1.5 list-none border-t border-slate-100 py-0" role="separator" />
             <li>
               <button
@@ -3526,6 +3890,84 @@ export default function InvoicesPage() {
               </button>
             </li>
           </ul>
+        </div>
+      )}
+
+      {cabinetFeatureOn && (
+        <SendToCabinetModal
+          open={sendCabinetOpen}
+          invoices={sendCabinetInvoices}
+          restrictToRegion={sendCabinetRestrictRegion}
+          token={
+            token ??
+            (typeof window !== "undefined" ? window.localStorage.getItem("compta-token") : null)
+          }
+          defaultSenderName={userDisplayName}
+          onClose={() => {
+            setSendCabinetOpen(false);
+            setSendCabinetRestrictRegion(null);
+          }}
+          onSuccess={(text) => {
+            showSendSuccessToast(text);
+            void reloadInvoices({ silent: true });
+            const t = token ?? window.localStorage.getItem("compta-token");
+            if (t) void loadCabinetRegions(t);
+          }}
+        />
+      )}
+
+      {renameInvoice && (
+        <div
+          className="fixed inset-0 z-[200] flex items-end justify-center bg-black/40 p-3 sm:items-center"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="rename-invoice-title"
+        >
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
+            <h2 id="rename-invoice-title" className="text-base font-semibold text-slate-900">
+              Renommer la facture
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Libellé affiché dans la liste (fichier / pièce jointe). Le fournisseur OCR reste inchangé.
+            </p>
+            <input
+              type="text"
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              maxLength={255}
+              autoFocus
+              className="mt-3 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-300"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !renameSaving) {
+                  void handleSaveOriginalName(renameInvoice, renameValue).then((ok) => {
+                    if (ok) setRenameInvoice(null);
+                  });
+                }
+              }}
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={renameSaving}
+                onClick={() => setRenameInvoice(null)}
+                className="rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={renameSaving || !renameValue.trim()}
+                onClick={() => {
+                  void handleSaveOriginalName(renameInvoice, renameValue).then((ok) => {
+                    if (ok) setRenameInvoice(null);
+                  });
+                }}
+                className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              >
+                {renameSaving ? "Enregistrement…" : "Enregistrer"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

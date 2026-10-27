@@ -1,7 +1,11 @@
+/** Pays en tête de toutes les listes (ordre fixe). */
+export const PRIORITY_REGION_VALUES = ["togo", "france", "bulgarie"] as const;
+
 /** Anciens libellés (rétrocompatibilité affichage). */
 export const regionOptions = [
-  { value: "france", label: "France", flag: "🇫🇷" },
   { value: "togo", label: "Togo", flag: "🇹🇬" },
+  { value: "france", label: "France", flag: "🇫🇷" },
+  { value: "bulgarie", label: "Bulgarie", flag: "🇧🇬" },
   { value: "vietnam", label: "Vietnam", flag: "🇻🇳" },
   { value: "autre", label: "Autre", flag: "🌍" },
 ];
@@ -11,6 +15,7 @@ export const IMAP_COUNTRY_GROUPS: { groupName: string; options: { value: string;
     groupName: "Europe",
     options: [
       { value: "france", label: "🇫🇷 France" },
+      { value: "bulgarie", label: "🇧🇬 Bulgarie" },
       { value: "belgique", label: "🇧🇪 Belgique" },
       { value: "suisse", label: "🇨🇭 Suisse" },
       { value: "luxembourg", label: "🇱🇺 Luxembourg" },
@@ -100,10 +105,6 @@ export const IMAP_COUNTRY_GROUPS: { groupName: string; options: { value: string;
 
 export const IMAP_REGION_OPTIONS_FLAT = IMAP_COUNTRY_GROUPS.flatMap((g) => g.options);
 
-export const IMAP_REGION_OPTIONS_SORTED = [...IMAP_REGION_OPTIONS_FLAT].sort((a, b) =>
-  a.label.localeCompare(b.label, "fr", { sensitivity: "base" }),
-);
-
 export function normalizeRegionKey(region: string): string {
   return String(region || "")
     .trim()
@@ -114,6 +115,24 @@ export function normalizeRegionKey(region: string): string {
 export function regionsMatch(a: string, b: string): boolean {
   return normalizeRegionKey(a) === normalizeRegionKey(b);
 }
+
+function priorityRegionRank(value: string): number {
+  const key = normalizeRegionKey(value);
+  const idx = (PRIORITY_REGION_VALUES as readonly string[]).indexOf(key);
+  return idx === -1 ? PRIORITY_REGION_VALUES.length : idx;
+}
+
+/** Tri alphabétique FR avec Togo, France et Bulgarie en premier. */
+export function sortRegionOptions<T extends { value: string; label: string }>(options: T[]): T[] {
+  return [...options].sort((a, b) => {
+    const pa = priorityRegionRank(a.value);
+    const pb = priorityRegionRank(b.value);
+    if (pa !== pb) return pa - pb;
+    return a.label.localeCompare(b.label, "fr", { sensitivity: "base" });
+  });
+}
+
+export const IMAP_REGION_OPTIONS_SORTED = sortRegionOptions(IMAP_REGION_OPTIONS_FLAT);
 
 export function regionDisplayLabel(regionValue: string): string {
   return (

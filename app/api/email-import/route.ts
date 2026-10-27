@@ -268,8 +268,8 @@ export async function POST(request: Request) {
 
           // Save invoice to DB
           const inserted = await pool.query(
-            `INSERT INTO invoices (id, "userId", "submittedByUserId", filename, "originalName", size, "mimeType", "fileUrl", region, status, "createdAt", "updatedAt")
-             VALUES (gen_random_uuid(), $1, $1, $2, $3, $4, $5, $6, $7, 'pending', NOW(), NOW())
+            `INSERT INTO invoices (id, "userId", "submittedByUserId", filename, "originalName", size, "mimeType", "fileUrl", region, status, "isPaid", "paidDate", "createdAt", "updatedAt")
+             VALUES (gen_random_uuid(), $1, $1, $2, $3, $4, $5, $6, $7, 'pending', true, NOW(), NOW(), NOW())
              RETURNING id`,
             [
               userId,

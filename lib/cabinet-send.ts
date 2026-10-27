@@ -1,8 +1,10 @@
 import nodemailer from "nodemailer";
 import { CABINET_FEATURE_DISABLED_MESSAGE, isCabinetFeatureEnabled } from "./cabinet-feature";
+import { normalizeRegionKey, regionsMatch } from "./country-regions";
 import { pool } from "./postgres";
 import { accountantPortalLoginUrl, signAccountantPortalToken } from "./accountant-portal";
 import { persistInvoiceSendRecipients } from "./invoice-send-recipients";
+import { persistInvoiceCabinetSends } from "./invoice-cabinet-sends";
 import { downloadInvoiceFileBuffer } from "./invoice-file-download";
 import { ensureInvoiceShareTokens } from "./ensure-invoice-share-token";
 
@@ -26,14 +28,18 @@ export async function resolveCabinetRecipientEmails(
   region: string,
   workspaceOwnerId: string,
 ): Promise<string[]> {
-  const regionKey = String(region || "").trim().toLowerCase();
+  const regionKey = normalizeRegionKey(region);
   const result = await pool.query(
-    `SELECT email FROM accountants
-     WHERE LOWER(TRIM(region)) = $1 AND "userId" = $2 AND ("deletedAt" IS NULL)
+    `SELECT email, region FROM accountants
+     WHERE "userId" = $1 AND ("deletedAt" IS NULL)
      ORDER BY "createdAt" ASC`,
-    [regionKey, workspaceOwnerId],
+    [workspaceOwnerId],
   );
-  return dedupeEmails(result.rows.map((r: { email: string }) => r.email));
+  return dedupeEmails(
+    result.rows
+      .filter((r: { region: string }) => regionsMatch(r.region, regionKey))
+      .map((r: { email: string }) => r.email),
+  );
 }
 
 async function loadAttachmentsFromInvoiceIds(
@@ -292,6 +298,12 @@ export async function sendInvoicesToCabinet(options: {
         workspaceOwnerId,
         attachmentInvoiceIds,
         recipientEmails,
+        new Date(),
+      );
+      await persistInvoiceCabinetSends(
+        workspaceOwnerId,
+        attachmentInvoiceIds,
+        regionKey,
         new Date(),
       );
     } catch (dbError) {

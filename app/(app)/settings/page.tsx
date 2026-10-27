@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { IMAP_REGION_OPTIONS_SORTED } from "@/lib/country-regions";
+import {
+  IMAP_REGION_OPTIONS_SORTED,
+  regionDisplayLabel,
+  regionOptions,
+  sortRegionOptions,
+} from "@/lib/country-regions";
+import { isCabinetFeatureEnabledClient } from "@/lib/cabinet-feature";
 import { PdfHeaderPreview } from "@/components/PdfHeaderPreview";
 import {
   normalizePdfHeaderLayout,
@@ -16,13 +22,6 @@ import { billingPlanDisplayName, TEAM_MODE_UI } from "@/lib/plans";
 const emptyPdfTable = (): string[][] => [
   ["", "", "", ""],
   ["", "", "", ""],
-];
-
-const regionOptions = [
-  { value: "france", label: "France", flag: "🇫🇷" },
-  { value: "togo", label: "Togo", flag: "🇹🇬" },
-  { value: "vietnam", label: "Vietnam", flag: "🇻🇳" },
-  { value: "autre", label: "Autre", flag: "🌍" },
 ];
 
 const businessTypes = [
@@ -47,7 +46,14 @@ interface Structure {
 
 const LS_DEFAULT_REGION = "compta-default-invoice-region";
 
-type TabId = "overview" | "profile" | "pdf" | "preferences" | "structures";
+type TabId = "overview" | "profile" | "pdf" | "preferences" | "structures" | "cabinets";
+
+type AccountantRow = {
+  id: string;
+  region: string;
+  email: string;
+  label: string | null;
+};
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "overview", label: "Vue d’ensemble" },
@@ -120,6 +126,35 @@ export default function SettingsPage() {
   const [ocrTestLoading, setOcrTestLoading] = useState(false);
   const [ocrTestMsg, setOcrTestMsg] = useState("");
 
+  const cabinetFeatureOn = isCabinetFeatureEnabledClient();
+  const [accountants, setAccountants] = useState<AccountantRow[]>([]);
+  const [newCabinet, setNewCabinet] = useState({ region: "france", email: "", label: "" });
+  const [cabinetMsg, setCabinetMsg] = useState("");
+  const [cabinetSaving, setCabinetSaving] = useState(false);
+
+  const visibleTabs = useMemo(() => {
+    const tabs = [...TABS];
+    if (cabinetFeatureOn) {
+      tabs.push({ id: "cabinets", label: "Cabinets par pays" });
+    }
+    return tabs;
+  }, [cabinetFeatureOn]);
+
+  const loadAccountants = useCallback(async () => {
+    if (!cabinetFeatureOn) return;
+    const t = getToken();
+    if (!t) return;
+    try {
+      const res = await fetch("/api/accountants", { headers: { Authorization: `Bearer ${t}` } });
+      if (res.ok) {
+        const data = (await res.json()) as AccountantRow[];
+        setAccountants(Array.isArray(data) ? data : []);
+      }
+    } catch {
+      /* silent */
+    }
+  }, [cabinetFeatureOn]);
+
   const loadMe = useCallback(async () => {
     const t = getToken();
     if (!t) return;
@@ -157,6 +192,7 @@ export default function SettingsPage() {
     })();
     void loadMe();
     void loadCredits();
+    void loadAccountants();
     if (typeof window !== "undefined") {
       const r = window.localStorage.getItem(LS_DEFAULT_REGION);
       if (r?.trim()) setDefaultInvoiceRegion(r.trim().toLowerCase());
@@ -167,7 +203,7 @@ export default function SettingsPage() {
         notifyProfileChanged();
       }
     }
-  }, [loadMe]);
+  }, [loadMe, loadAccountants]);
 
   const loadCredits = async () => {
     const t = getToken();
@@ -239,16 +275,17 @@ export default function SettingsPage() {
     }
   };
 
-  const knownRegions = useMemo(
-    () =>
-      Array.from(
-        new Set([
-          ...structures.map((s) => s.region).filter(Boolean),
-          ...regionOptions.map((r) => r.value),
-        ]),
-      ).sort((a, b) => a.localeCompare(b, "fr")),
-    [structures],
-  );
+  const knownRegions = useMemo(() => {
+    const values = Array.from(
+      new Set([
+        ...structures.map((s) => s.region).filter(Boolean),
+        ...regionOptions.map((r) => r.value),
+      ]),
+    );
+    return sortRegionOptions(values.map((value) => ({ value, label: regionDisplayLabel(value) }))).map(
+      (o) => o.value,
+    );
+  }, [structures]);
 
   const loadStructures = async () => {
     const t = getToken();
@@ -538,6 +575,67 @@ export default function SettingsPage() {
     }
   };
 
+  const handleAddCabinet = async () => {
+    const t = getToken();
+    if (!t) return;
+    const region = newCabinet.region.trim().toLowerCase();
+    const email = newCabinet.email.trim();
+    if (!region || !email) {
+      setCabinetMsg("Pays et email requis.");
+      return;
+    }
+    setCabinetSaving(true);
+    setCabinetMsg("");
+    try {
+      const res = await fetch("/api/accountants", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify({
+          region,
+          email,
+          label: newCabinet.label.trim() || null,
+        }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCabinetMsg(typeof d.error === "string" ? d.error : "Erreur enregistrement.");
+        return;
+      }
+      setCabinetMsg("Cabinet enregistré.");
+      setNewCabinet((p) => ({ ...p, email: "", label: "" }));
+      await loadAccountants();
+    } catch {
+      setCabinetMsg("Erreur réseau.");
+    } finally {
+      setCabinetSaving(false);
+      setTimeout(() => setCabinetMsg(""), 4000);
+    }
+  };
+
+  const handleDeleteCabinet = async (id: string) => {
+    const t = getToken();
+    if (!t) return;
+    if (!window.confirm("Retirer ce cabinet de la liste ?")) return;
+    await fetch(`/api/accountants/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${t}` },
+    });
+    await loadAccountants();
+  };
+
+  const accountantsByRegion = useMemo(() => {
+    const map = new Map<string, AccountantRow[]>();
+    for (const a of accountants) {
+      const key = a.region.trim().toLowerCase();
+      const list = map.get(key) ?? [];
+      list.push(a);
+      map.set(key, list);
+    }
+    return [...map.entries()].sort((a, b) =>
+      regionDisplayLabel(a[0]).localeCompare(regionDisplayLabel(b[0]), "fr"),
+    );
+  }, [accountants]);
+
   const handleDeleteStructure = async (id: string) => {
     const t = getToken();
     if (!t) return;
@@ -590,7 +688,7 @@ export default function SettingsPage() {
         </div>
 
         <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
-          {TABS.map(({ id, label }) => (
+          {visibleTabs.map(({ id, label }) => (
             <button
               key={id}
               type="button"
@@ -1400,6 +1498,98 @@ export default function SettingsPage() {
                   Sur la page Factures, cochez les pièces puis lancez l’export : un seul fichier peut regrouper plusieurs
                   factures à la fois ; un plafond peut s’appliquer selon la liste.
                 </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "cabinets" && cabinetFeatureOn && (
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-100 px-6 py-4">
+              <h2 className="font-semibold text-slate-900">Cabinets comptables par pays</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Une facture Togo part vers le cabinet Togo, une facture France vers le cabinet France, etc. Plusieurs
+                emails par pays sont possibles (copie, associé, secrétariat).
+              </p>
+              <Link href="/history" className="mt-2 inline-block text-xs font-medium text-indigo-700 hover:underline">
+                Historique des envois →
+              </Link>
+            </div>
+            <div className="space-y-5 p-6">
+              {accountantsByRegion.length === 0 ? (
+                <p className="text-sm text-slate-500">Aucun cabinet configuré.</p>
+              ) : (
+                <ul className="space-y-4">
+                  {accountantsByRegion.map(([regionKey, rows]) => (
+                    <li key={regionKey} className="rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+                      <p className="text-sm font-semibold text-slate-900">{regionDisplayLabel(regionKey)}</p>
+                      <ul className="mt-2 space-y-2">
+                        {rows.map((a) => (
+                          <li
+                            key={a.id}
+                            className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2"
+                          >
+                            <div className="min-w-0">
+                              {a.label && <p className="text-sm font-medium text-slate-900">{a.label}</p>}
+                              <p className="truncate text-xs text-slate-600">{a.email}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteCabinet(a.id)}
+                              className="shrink-0 text-xs text-rose-500 hover:text-rose-700"
+                            >
+                              Retirer
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-medium text-slate-800">Ajouter un cabinet</p>
+                <select
+                  value={newCabinet.region}
+                  onChange={(e) => setNewCabinet((p) => ({ ...p, region: e.target.value }))}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 focus:outline-none"
+                >
+                  {IMAP_REGION_OPTIONS_SORTED.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="email"
+                  value={newCabinet.email}
+                  onChange={(e) => setNewCabinet((p) => ({ ...p, email: e.target.value }))}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 focus:outline-none"
+                  placeholder="Email du cabinet"
+                />
+                <input
+                  type="text"
+                  value={newCabinet.label}
+                  onChange={(e) => setNewCabinet((p) => ({ ...p, label: e.target.value }))}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 focus:outline-none"
+                  placeholder="Nom du cabinet (optionnel)"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleAddCabinet()}
+                  disabled={cabinetSaving || !newCabinet.email.trim()}
+                  className="w-full rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-700 disabled:opacity-50"
+                >
+                  {cabinetSaving ? "Enregistrement…" : "Enregistrer le cabinet"}
+                </button>
+                {cabinetMsg && (
+                  <p
+                    className={`text-xs ${cabinetMsg.includes("Erreur") || cabinetMsg.includes("requis") ? "text-rose-700" : "text-emerald-700"}`}
+                  >
+                    {cabinetMsg}
+                  </p>
+                )}
               </div>
             </div>
           </div>
