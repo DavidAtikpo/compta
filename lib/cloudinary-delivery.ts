@@ -16,6 +16,7 @@ export function configureCloudinaryFromEnv(): boolean {
  */
 export function signedUrlFromStoredCloudinaryUrl(storedUrl: string): string | null {
   if (!storedUrl?.startsWith("https://res.cloudinary.com/")) return null;
+  if (/\/s--[A-Za-z0-9_-]+--\//.test(storedUrl.split("?")[0] ?? "")) return null;
   if (!configureCloudinaryFromEnv()) return null;
 
   const m = storedUrl.match(

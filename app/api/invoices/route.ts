@@ -174,9 +174,16 @@ export async function POST(request: NextRequest) {
         ? currency.toUpperCase()
         : "EUR";
 
+    let invoiceDateVal: Date | null = null;
+    if (invoiceDate) {
+      const d = new Date(String(invoiceDate));
+      if (!Number.isNaN(d.getTime())) invoiceDateVal = d;
+    }
+    const paidDateVal = invoiceDateVal ?? new Date();
+
     const result = await pool.query(
       `INSERT INTO invoices (id, "userId", "submittedByUserId", filename, "originalName", size, "mimeType", "ocrText", region, "accountantId", amount, category, "invoiceType", "structureId", status, "invoiceDate", "fileUrl", currency, "isPaid", "paidDate", "createdAt", "updatedAt")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending', $14, $15, $16, true, COALESCE($14::timestamptz, NOW()), NOW(), NOW())
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending', $14, $15, $16, true, $17, NOW(), NOW())
        RETURNING *`,
       [
         workspaceOwnerId,
@@ -195,9 +202,10 @@ export async function POST(request: NextRequest) {
         category || null,
         normalizedInvoiceType,
         structureId || null,
-        invoiceDate || null,
+        invoiceDateVal,
         fileUrl || null,
         normalizedCurrency,
+        paidDateVal,
       ]
     );
 
